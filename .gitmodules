@@ -1,3 +1,6 @@
 [submodule "src/libactionet"]
 	path = src/libactionet
 	url = https://github.com/KellisLab/libactionet.git
+[submodule "src/nanobind"]
+	path = src/nanobind
+	url = https://github.com/wjakob/nanobind
