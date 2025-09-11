@@ -1,0 +1,3 @@
+[submodule "src/libactionet"]
+	path = src/libactionet
+	url = https://github.com/KellisLab/libactionet.git
