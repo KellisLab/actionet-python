@@ -1,20 +1,60 @@
-.Rproj.user
-.Rhistory
-.RData
-.Ruserdata
-*.Rproj*
-*.swp
-*.o
-~*
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
 *.so
-*.a
-.fuse*
-*.back
-**/.DS_Store
-pybind11/
-.vscode/
-*.code-workspace
-build_test/
+.Python
 build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
 lib/
-testing*/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual environments
+venv/
+ENV/
+env/
+.venv
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+
+# CMake
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+Makefile
+*.cmake
+!CMakeLists.txt
+
+# scikit-build
+_skbuild/
+
+# macOS
+.DS_Store
+*.dylib
+
+# Examples output
+*.png
+*.pdf
+*.h5ad

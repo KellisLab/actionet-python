@@ -1,0 +1,7 @@
+include README.md
+include LICENSE
+include pyproject.toml
+include CMakeLists.txt
+recursive-include src/libactionet/include *.h *.hpp
+recursive-exclude src/libactionet/include/extern *
+include src/libactionet/include/extern/armadillo
