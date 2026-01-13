@@ -117,10 +117,46 @@ Compute archetype/cluster-specific marker genes.
 ### Layout Visualization
 
 ```python
-an.layout_network(adata, network_key='actionet', 
+an.layout_network(adata, network_key='actionet',
                   method='umap', n_components=2)
 ```
 Compute 2D/3D layout using UMAP or t-SNE.
+
+### Batch Correction
+
+```python
+an.correct_batch_effect(adata, batch_key='batch',
+                        reduction_key='action',
+                        corrected_key='action_corrected')
+```
+Remove batch effects from reduced representation using orthogonalization.
+
+```python
+an.correct_basal_expression(adata, basal_genes=['ACTB', 'GAPDH'],
+                            reduction_key='action',
+                            corrected_key='action_basal_corrected')
+```
+Correct for basal/housekeeping gene expression.
+
+### Imputation
+
+```python
+an.impute_features(adata, features=['GENE1', 'GENE2'],
+                   network_key='actionet', alpha=0.85)
+```
+Impute gene expression using network diffusion.
+
+```python
+an.impute_from_archetypes(adata, features=['GENE1', 'GENE2'],
+                          H_key='H_merged')
+```
+Impute expression from archetype profiles.
+
+```python
+an.smooth_kernel(adata, reduction_key='action',
+                 smoothed_key='action_smoothed', alpha=0.85)
+```
+Smooth reduced representation using network diffusion.
 
 ## AnnData Structure
 
@@ -157,6 +193,11 @@ ACTIONet stores results in standard AnnData slots:
 | `compute_archetype_feature_specificity()` | `an.compute_feature_specificity()` | Marker genes |
 | `layoutNetwork()` | `an.layout_network()` | UMAP/t-SNE layout |
 | `runSVD()` | `an.run_svd()` | SVD decomposition |
+| `orthogonalizeBatchEffect()` | `an.correct_batch_effect()` | Batch correction |
+| `orthogonalizeBasal()` | `an.correct_basal_expression()` | Basal correction |
+| `imputeFeatures()` | `an.impute_features()` | Network diffusion imputation |
+| `imputeFromArchetypes()` | `an.impute_from_archetypes()` | Archetype-based imputation |
+| `smoothKernel()` | `an.smooth_kernel()` | Kernel smoothing |
 | `colMaps(ace)` | `adata.obsm` | Cell-level embeddings |
 | `colNets(ace)` | `adata.obsp` | Cell-level networks |
 | `metadata(ace)` | `adata.obs` | Cell annotations |
@@ -181,6 +222,7 @@ See `examples/` directory for complete workflows:
 - `01_basic_pipeline.py`: End-to-end ACTIONet analysis
 - `02_graph_building.py`: Network construction strategies
 - `03_integration_with_scanpy.py`: Integration with scanpy workflows
+- `04_batch_correction_imputation.py`: Batch correction and imputation workflows
 
 ## Building From Source
 
@@ -250,51 +292,43 @@ The following R package components are **not implemented** in this Python transl
 
 ### Omitted Components
 
-1. **Batch correction** (`orthogonalizeBatchEffect`, `orthogonalizeBasal`)
-   - **Reason**: R implementation marked as problematic. Unstable/incomplete.
-   - **Alternative**: Use `scanpy.pp.combat()` or `scvi-tools` for batch correction.
-
-2. **R-specific visualization helpers** (`plots.R`, `r_visualization.R`, `utils_plotting_*.R`)
+1. **R-specific visualization helpers** (`plots.R`, `r_visualization.R`, `utils_plotting_*.R`)
    - **Reason**: Python ecosystem has mature alternatives.
    - **Alternative**: Use `scanpy.pl.*` functions for visualization.
 
-3. **R-specific data I/O** (`data.R`)
+2. **R-specific data I/O** (`data.R`)
    - **Reason**: AnnData provides native I/O; scanpy handles format conversion.
    - **Alternative**: `scanpy.read_*()` and `adata.write_h5ad()`.
 
-4. **Parallel backend utilities** (`utils_parallel.R`)
+3. **Parallel backend utilities** (`utils_parallel.R`)
    - **Reason**: Different parallelization approach. C++ threading via OpenMP is preserved.
    - **Alternative**: Use `n_threads` parameter in functions.
 
-5. **Enrichment database utilities** (`enrichment.R`)
+4. **Enrichment database utilities** (`enrichment.R`)
    - **Reason**: Python has dedicated packages.
    - **Alternative**: Use `gseapy`, `gprofiler-official`, or `decoupler`.
 
-6. **Imputation** (`imputation.R`)
-   - **Reason**: External package wrappers specific to R ecosystem.
-   - **Alternative**: Use `scanpy.external.pp.magic()` or `scvi-tools`.
-
-7. **Projection** (`projection.R`)
+5. **Projection** (`projection.R`)
    - **Reason**: Requires R-specific reference dataset handling.
    - **Alternative**: Future work or use `scvi-tools` for reference mapping.
 
-8. **Pseudobulk DGE** (`pseudobulk_DGE.R`)
+6. **Pseudobulk DGE** (`pseudobulk_DGE.R`)
    - **Reason**: Wrapper around R statistics packages.
    - **Alternative**: Use `scanpy.tl.rank_genes_groups()`, `pydeseq2`, or call R via `rpy2`.
 
-9. **Marker detection helpers** (`marker_detection.R`)
+7. **Marker detection helpers** (`marker_detection.R`)
    - **Reason**: High-level R wrappers.
    - **Alternative**: `an.compute_feature_specificity()` + post-processing.
 
-10. **Alignment** (`alignment.R`)
-    - **Reason**: Multi-dataset alignment utilities specific to R workflows.
-    - **Alternative**: Use scanpy integration tools or scvi-tools.
+8. **Alignment** (`alignment.R`)
+   - **Reason**: Multi-dataset alignment utilities specific to R workflows.
+   - **Alternative**: Use scanpy integration tools or scvi-tools.
 
-11. **Filter ACE** (`filter_ace.R`)
-    - **Reason**: ACTIONetExperiment-specific filtering.
-    - **Alternative**: Standard AnnData filtering: `adata[adata.obs['column'] > threshold, :]`.
+9. **Filter ACE** (`filter_ace.R`)
+   - **Reason**: ACTIONetExperiment-specific filtering.
+   - **Alternative**: Standard AnnData filtering: `adata[adata.obs['column'] > threshold, :]`.
 
-12. **Autocorrelation statistics** (Moran's I, Geary's C)
+10. **Autocorrelation statistics** (Moran's I, Geary's C)
     - **Reason**: Low usage; available via squidpy for spatial data.
     - **Alternative**: `squidpy.gr.spatial_autocorr()`.
 

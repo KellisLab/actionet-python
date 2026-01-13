@@ -24,9 +24,19 @@ from .anndata_utils import (
     add_action_results,
     add_network_to_anndata,
 )
+from .batch_correction import (
+    correct_batch_effect,
+    correct_basal_expression,
+)
+from .imputation import (
+    impute_features,
+    impute_from_archetypes,
+    smooth_kernel,
+)
 
 __all__ = [
     "__version__",
+    # Core functions
     "reduce_kernel",
     "run_action",
     "build_network",
@@ -34,6 +44,14 @@ __all__ = [
     "compute_feature_specificity",
     "layout_network",
     "run_svd",
+    # Batch correction
+    "correct_batch_effect",
+    "correct_basal_expression",
+    # Imputation
+    "impute_features",
+    "impute_from_archetypes",
+    "smooth_kernel",
+    # Utilities
     "anndata_to_matrix",
     "matrix_to_anndata",
     "add_action_results",
