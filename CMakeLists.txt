@@ -1,5 +1,5 @@
-cmake_minimum_required(VERSION 3.18)
-project(actionet LANGUAGES CXX)
+cmake_minimum_required(VERSION 3.19)
+project(actionet_py)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -31,7 +31,7 @@ elseif(UNIX)
     set(CMAKE_BUILD_WITH_INSTALL_RPATH TRUE)
 endif()
 
-# Optional optimizations
+Optional optimizations
 option(ACTIONET_ENABLE_OPTIMIZED "Enable architecture-specific optimizations" OFF)
 if(ACTIONET_ENABLE_OPTIMIZED)
     if(NOT APPLE)
@@ -42,6 +42,8 @@ endif()
 # Find dependencies
 find_package(Python REQUIRED COMPONENTS Interpreter Development.Module)
 find_package(pybind11 CONFIG REQUIRED)
+
+add_subdirectory("${CMAKE_CURRENT_SOURCE_DIR}/src/libactionet")
 
 # OpenMP detection (optional)
 find_package(OpenMP)
@@ -103,7 +105,14 @@ target_link_libraries(libactionet_static
 
 # Create extension module
 pybind11_add_module(_core MODULE
-    src/actionet/_core.cpp
+    src/actionet/_core_new.cpp
+    src/actionet/wp_utils.cpp
+    src/actionet/wp_action.cpp
+    src/actionet/wp_network.cpp
+    src/actionet/wp_annotation.cpp
+    src/actionet/wp_decomposition.cpp
+    src/actionet/wp_tools.cpp
+    src/actionet/wp_visualization.cpp
 )
 
 target_include_directories(_core PRIVATE
@@ -150,4 +159,4 @@ elseif(UNIX)
 endif()
 
 # Install
-install(TARGETS _core LIBRARY DESTINATION actionet)
+install(TARGETS _core LIBRARY DESTINATION actionet_py)

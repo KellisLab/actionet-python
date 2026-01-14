@@ -33,6 +33,17 @@ from .imputation import (
     impute_from_archetypes,
     smooth_kernel,
 )
+from .advanced import (
+    run_archetypal_analysis,
+    decompose_action,
+    collect_archetypes,
+    merge_archetypes,
+    run_simplex_regression,
+    run_spa,
+    run_label_propagation,
+    compute_coreness,
+    compute_archetype_centrality,
+)
 
 __all__ = [
     "__version__",
@@ -51,6 +62,16 @@ __all__ = [
     "impute_features",
     "impute_from_archetypes",
     "smooth_kernel",
+    # Advanced functions
+    "run_archetypal_analysis",
+    "decompose_action",
+    "collect_archetypes",
+    "merge_archetypes",
+    "run_simplex_regression",
+    "run_spa",
+    "run_label_propagation",
+    "compute_coreness",
+    "compute_archetype_centrality",
     # Utilities
     "anndata_to_matrix",
     "matrix_to_anndata",

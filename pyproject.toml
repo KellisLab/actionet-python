@@ -56,8 +56,8 @@ cmake.verbose = true
 cmake.build-type = "Release"
 wheel.packages = ["src/actionet"]
 
-[tool.scikit-build.cmake.define]
-ACTIONET_ENABLE_OPTIMIZED = "OFF"
+# [tool.scikit-build.cmake.define]
+# ACTIONET_ENABLE_OPTIMIZED = "OFF"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
