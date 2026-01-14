@@ -10,7 +10,7 @@ The pybind11 bindings for ACTIONet Python have been reorganized to match the mod
 
 ```
 src/actionet/
-├── _core_new.cpp          # Main module definition (replaces _core.cpp)
+├── _core.cpp              # Main module definition
 ├── wp_utils.h             # Conversion utilities header
 ├── wp_utils.cpp           # Conversion utilities implementation
 ├── wp_action.cpp          # ACTION module bindings
@@ -224,7 +224,7 @@ specificity = core.compute_feature_specificity_sparse(...)
 ### Adding New Modules
 
 1. Create new `wp_<module>.cpp` file with bindings
-2. Add `void init_<module>(py::module_ &m);` forward declaration to `_core_new.cpp`
+2. Add `void init_<module>(py::module_ &m);` forward declaration to `_core.cpp`
 3. Call `init_<module>(m);` in `PYBIND11_MODULE()`
 4. Add `src/actionet/wp_<module>.cpp` to CMakeLists.txt
 
@@ -232,17 +232,12 @@ specificity = core.compute_feature_specificity_sparse(...)
 
 The modular structure does not affect testing. All existing tests continue to work because the Python API remains unchanged.
 
-## Migration Notes
+## Structure Summary
 
-### Old Structure
-- Single file: `_core.cpp` (~434 lines)
-- All bindings in one monolithic file
-- Conversion utilities inline
-
-### New Structure
-- Main file: `_core_new.cpp` (~25 lines)
-- 6 module files (~30-140 lines each)
-- Shared utilities in separate header/source
+### Current Organization
+- Main file: `_core.cpp` (~25 lines) - Module orchestrator
+- 6 module files (~30-140 lines each) - Individual module bindings
+- Shared utilities: `wp_utils.h` / `wp_utils.cpp` - Conversion utilities
 - Total: ~800 lines across 9 files
 
-The old `_core.cpp` file is preserved for reference but is no longer used in the build.
+This modular organization mirrors the R package's `wr_*.cpp` structure, making it easier for developers familiar with the R codebase to navigate and maintain the Python bindings.

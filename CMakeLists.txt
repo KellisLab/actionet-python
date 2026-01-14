@@ -105,7 +105,7 @@ target_link_libraries(libactionet_static
 
 # Create extension module
 pybind11_add_module(_core MODULE
-    src/actionet/_core_new.cpp
+    src/actionet/_core.cpp
     src/actionet/wp_utils.cpp
     src/actionet/wp_action.cpp
     src/actionet/wp_network.cpp
