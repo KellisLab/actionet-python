@@ -1,77 +1,83 @@
 cmake_minimum_required(VERSION 3.19)
-project(actionet_py)
+project(actionet_python VERSION 0.1.0 LANGUAGES CXX)
 
+# ==============================================================================
+# Build Configuration
+# ==============================================================================
+
+# C++ standard (must match libactionet)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
-# Platform-specific settings
+# Export compile commands for IDE integration
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+
+# ==============================================================================
+# Platform-Specific Configuration
+# ==============================================================================
+
 if(APPLE)
+    # macOS: Support macOS >= 11.0 for both x86_64 and arm64
     set(CMAKE_MACOSX_RPATH ON)
     set(CMAKE_INSTALL_RPATH "@loader_path")
     set(CMAKE_BUILD_WITH_INSTALL_RPATH TRUE)
     
-    # Set deployment target (CMake will handle -mmacosx-version-min automatically)
     if(NOT CMAKE_OSX_DEPLOYMENT_TARGET)
         set(CMAKE_OSX_DEPLOYMENT_TARGET "11.0" CACHE STRING "Minimum macOS version")
     endif()
 
-    # Set architecture (default to native, can be overridden)
+    # Architecture is typically set by scikit-build-core
     if(NOT CMAKE_OSX_ARCHITECTURES)
         execute_process(
             COMMAND uname -m
-            OUTPUT_VARIABLE ARCH
+            OUTPUT_VARIABLE NATIVE_ARCH
             OUTPUT_STRIP_TRAILING_WHITESPACE
         )
-        set(CMAKE_OSX_ARCHITECTURES ${ARCH})
+        set(CMAKE_OSX_ARCHITECTURES ${NATIVE_ARCH} CACHE STRING "macOS architectures")
     endif()
-elseif(UNIX)
-    # Linux: manylinux2014 compatibility
+
+    message(STATUS "Building for macOS ${CMAKE_OSX_DEPLOYMENT_TARGET}, arch: ${CMAKE_OSX_ARCHITECTURES}")
+
+elseif(UNIX AND NOT APPLE)
+    # Linux: manylinux2014 compatibility (glibc 2.17+)
     set(CMAKE_INSTALL_RPATH "$ORIGIN")
     set(CMAKE_BUILD_WITH_INSTALL_RPATH TRUE)
+
+    # Ensure compatibility with older glibc
+    add_compile_options(-fno-gnu-unique)
+
+    message(STATUS "Building for Linux (manylinux2014 compatible)")
 endif()
 
-# Optional optimizations
-option(ACTIONET_ENABLE_OPTIMIZED "Enable architecture-specific optimizations" OFF)
-if(ACTIONET_ENABLE_OPTIMIZED)
-    if(NOT APPLE)
-        add_compile_options(-march=native)
-    endif()
-endif()
+# ==============================================================================
+# Dependencies
+# ==============================================================================
 
-# Find dependencies
+# Python and pybind11
 find_package(Python REQUIRED COMPONENTS Interpreter Development.Module)
 find_package(pybind11 CONFIG REQUIRED)
 
-# libactionet setup
+# Validate libactionet submodule
 set(LIBACTIONET_DIR "${CMAKE_CURRENT_SOURCE_DIR}/src/libactionet")
-if(NOT EXISTS "${LIBACTIONET_DIR}/include")
+if(NOT EXISTS "${LIBACTIONET_DIR}/include/libactionet.hpp")
     message(FATAL_ERROR
-        "libactionet not found. Please initialize the submodule:\n"
+        "libactionet submodule not initialized. Run:\n"
         "  git submodule update --init --recursive"
     )
 endif()
 
-# Build libactionet using its own build system
+# Build libactionet static library
+# This configures BLAS, LAPACK, CHOLMOD, OpenMP, and Armadillo
 add_subdirectory("${LIBACTIONET_DIR}")
 
-# OpenMP detection (optional) - use libactionet's detection
-find_package(OpenMP)
-if(OpenMP_CXX_FOUND)
-    message(STATUS "OpenMP found for Python wrapper: ${OpenMP_CXX_VERSION}")
-    set(HAVE_OPENMP TRUE)
-else()
-    message(STATUS "OpenMP not found for Python wrapper - building without parallel support")
-    set(HAVE_OPENMP FALSE)
-endif()
+# ==============================================================================
+# Python Extension Module
+# ==============================================================================
 
-# Armadillo headers (bundled with libactionet)
-set(ARMADILLO_INCLUDE_DIR "${LIBACTIONET_DIR}/include/extern/armadillo")
-
-
-
-# Create extension module
-pybind11_add_module(_core MODULE
+# Define Python wrapper sources
+set(WRAPPER_SOURCES
     src/actionet/_core.cpp
     src/actionet/wp_utils.cpp
     src/actionet/wp_action.cpp
@@ -82,37 +88,33 @@ pybind11_add_module(_core MODULE
     src/actionet/wp_visualization.cpp
 )
 
+# Create pybind11 extension module
+pybind11_add_module(_core MODULE ${WRAPPER_SOURCES})
+
+# Set target properties
+set_target_properties(_core PROPERTIES
+    CXX_VISIBILITY_PRESET hidden
+    INTERPROCEDURAL_OPTIMIZATION TRUE
+)
+
+# Include directories
+# Must include libactionet headers and its external dependencies (Armadillo, etc.)
 target_include_directories(_core PRIVATE
     ${LIBACTIONET_DIR}/include
-    ${ARMADILLO_INCLUDE_DIR}
+    ${LIBACTIONET_DIR}/include/extern
+    ${LIBACTIONET_DIR}/include/extern/armadillo
 )
 
-target_compile_definitions(_core PRIVATE
-    ARMA_64BIT_WORD
-    ARMA_DONT_USE_WRAPPER
-    ARMA_USE_LAPACK
-    ARMA_USE_BLAS
-)
-
-# Link against the actionet library from the submodule
+# Link against libactionet
+# This provides access to all libactionet functions and transitively links
+# BLAS, LAPACK, CHOLMOD, and OpenMP (if available)
 target_link_libraries(_core PRIVATE actionet)
 
-if(HAVE_OPENMP AND OpenMP_CXX_FOUND)
-    target_link_libraries(_core PRIVATE OpenMP::OpenMP_CXX)
-    target_compile_definitions(_core PRIVATE ACTIONET_HAS_OPENMP)
-endif()
+# ==============================================================================
+# Installation
+# ==============================================================================
 
-# Platform-specific libraries (may already be linked via actionet target)
-if(APPLE)
-    find_library(ACCELERATE_FRAMEWORK Accelerate)
-    if(ACCELERATE_FRAMEWORK)
-        # Accelerate is likely already linked via actionet, but ensure headers are available
-        target_include_directories(_core PRIVATE
-            /Library/Developer/CommandLineTools/SDKs/MacOSX.sdk/System/Library/Frameworks/Accelerate.framework/Versions/Current/Frameworks/vecLib.framework/Headers
-        )
-    endif()
-endif()
-
-# Install
-install(TARGETS _core LIBRARY DESTINATION actionet)
-
+install(TARGETS _core
+    LIBRARY DESTINATION actionet
+    COMPONENT python_module
+)

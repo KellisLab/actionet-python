@@ -8,7 +8,6 @@ except PackageNotFoundError:
     __version__ = "unknown"
 
 # Import will happen after building the C++ extension
-# from . import _core
 from .core import (
     reduce_kernel,
     run_action,

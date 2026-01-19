@@ -9,14 +9,13 @@ build-backend = "scikit_build_core.build"
 [project]
 name = "actionet"
 version = "0.1.0"
-description = "ACTIONet: Single-cell multi-resolution data analysis toolkit (Python bindings)"
+description = "ACTIONet: Single-cell multi-resolution data analysis toolkit"
 readme = "README.md"
 license = {text = "GPL-3.0"}
 authors = [
     {name = "Sebastian Pineda", email = "spineda@mit.edu"},
-    {name = "Shahin Mohammadi", email = "shahin.mohammadi@gmail.com"},
 ]
-requires-python = ">=3.10"
+requires-python = ">=3.12"
 dependencies = [
     "numpy>=1.21.0",
     "scipy>=1.7.0",
@@ -29,9 +28,8 @@ classifiers = [
     "Intended Audience :: Science/Research",
     "License :: OSI Approved :: GNU General Public License v3 (GPLv3)",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.10",
-    "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
     "Programming Language :: C++",
     "Topic :: Scientific/Engineering :: Bio-Informatics",
 ]
@@ -45,7 +43,7 @@ dev = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/KellisLab/actionet-python"
+#Homepage = "https://github.com/KellisLab/actionet-python"
 Repository = "https://github.com/KellisLab/actionet-python"
 "Bug Tracker" = "https://github.com/KellisLab/actionet-python/issues"
 
@@ -66,8 +64,8 @@ python_functions = "test_*"
 
 [tool.black]
 line-length = 100
-target-version = ['py310', 'py311', 'py312']
+target-version = ['py312', 'py313']
 
 [tool.ruff]
 line-length = 100
-target-version = "py310"
+target-version = "py312"
