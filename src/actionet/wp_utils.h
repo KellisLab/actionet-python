@@ -9,9 +9,7 @@
 #include <pybind11/stl.h>
 
 // Armadillo includes (libactionet uses Armadillo)
-#define ARMA_64BIT_WORD
-#define ARMA_DONT_USE_WRAPPER
-#include <armadillo>
+#include "armadillo"
 
 namespace py = pybind11;
 

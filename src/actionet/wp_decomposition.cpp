@@ -17,7 +17,7 @@ py::dict orthogonalize_batch_effect_sparse(py::object S, py::array_t<double> old
     arma::mat V_mat = numpy_to_arma_mat(old_V);
     arma::mat A_mat = numpy_to_arma_mat(old_A);
     arma::mat B_mat = numpy_to_arma_mat(old_B);
-    arma::vec sigma_vec = arma::vec(old_sigma.data(), old_sigma.size(), false, true);
+    arma::vec sigma_vec = numpy_to_arma_vec(old_sigma);
     arma::mat design_mat = numpy_to_arma_mat(design);
 
     // Prepare SVD results field
@@ -57,7 +57,7 @@ py::dict orthogonalize_batch_effect_dense(py::array_t<double> S, py::array_t<dou
     arma::mat V_mat = numpy_to_arma_mat(old_V);
     arma::mat A_mat = numpy_to_arma_mat(old_A);
     arma::mat B_mat = numpy_to_arma_mat(old_B);
-    arma::vec sigma_vec = arma::vec(old_sigma.data(), old_sigma.size(), false, true);
+    arma::vec sigma_vec = numpy_to_arma_vec(old_sigma);
     arma::mat design_mat = numpy_to_arma_mat(design);
 
     // Prepare SVD results field
@@ -97,7 +97,7 @@ py::dict orthogonalize_basal_sparse(py::object S, py::array_t<double> old_S_r,
     arma::mat V_mat = numpy_to_arma_mat(old_V);
     arma::mat A_mat = numpy_to_arma_mat(old_A);
     arma::mat B_mat = numpy_to_arma_mat(old_B);
-    arma::vec sigma_vec = arma::vec(old_sigma.data(), old_sigma.size(), false, true);
+    arma::vec sigma_vec = numpy_to_arma_vec(old_sigma);
     arma::mat basal_mat = numpy_to_arma_mat(basal);
 
     // Prepare SVD results field

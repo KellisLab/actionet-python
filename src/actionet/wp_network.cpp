@@ -24,7 +24,7 @@ py::object build_network(py::array_t<double> H, std::string algorithm = "k*nn",
 
 // label_propagation ===================================================================================================
 
-py::array_t<double> run_lpa(py::object G, py::array_t<double> labels, double lambda = 1.0, int iters = 3,
+py::array_t<double> run_lpa(py::object G, py::array_t<double> labels, double lambda_param = 1.0, int iters = 3,
                              double sig_threshold = 3.0, py::object fixed_labels = py::none(), int thread_no = 0) {
     arma::sp_mat G_sp = scipy_to_arma_sparse(G);
     arma::vec labels_vec = numpy_to_arma_vec(labels);
@@ -40,7 +40,7 @@ py::array_t<double> run_lpa(py::object G, py::array_t<double> labels, double lam
         }
     }
 
-    arma::vec new_labels = actionet::runLPA(G_sp, labels_vec, lambda, iters, sig_threshold, fixed_labels_vec, thread_no);
+    arma::vec new_labels = actionet::runLPA(G_sp, labels_vec, lambda_param, iters, sig_threshold, fixed_labels_vec, thread_no);
 
     return arma_vec_to_numpy(new_labels);
 }
@@ -105,7 +105,7 @@ void init_network(py::module_ &m) {
 
     // label_propagation
     m.def("run_lpa", &run_lpa, "Run label propagation algorithm",
-          py::arg("G"), py::arg("labels"), py::arg("lambda") = 1.0, py::arg("iters") = 3,
+          py::arg("G"), py::arg("labels"), py::arg("lambda_param") = 1.0, py::arg("iters") = 3,
           py::arg("sig_threshold") = 3.0, py::arg("fixed_labels") = py::none(), py::arg("thread_no") = 0);
 
     // network_diffusion

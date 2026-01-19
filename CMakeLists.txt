@@ -31,7 +31,7 @@ elseif(UNIX)
     set(CMAKE_BUILD_WITH_INSTALL_RPATH TRUE)
 endif()
 
-Optional optimizations
+# Optional optimizations
 option(ACTIONET_ENABLE_OPTIMIZED "Enable architecture-specific optimizations" OFF)
 if(ACTIONET_ENABLE_OPTIMIZED)
     if(NOT APPLE)
@@ -43,18 +43,6 @@ endif()
 find_package(Python REQUIRED COMPONENTS Interpreter Development.Module)
 find_package(pybind11 CONFIG REQUIRED)
 
-add_subdirectory("${CMAKE_CURRENT_SOURCE_DIR}/src/libactionet")
-
-# OpenMP detection (optional)
-find_package(OpenMP)
-if(OpenMP_CXX_FOUND)
-    message(STATUS "OpenMP found: ${OpenMP_CXX_VERSION}")
-    set(HAVE_OPENMP TRUE)
-else()
-    message(STATUS "OpenMP not found - building without parallel support")
-    set(HAVE_OPENMP FALSE)
-endif()
-
 # libactionet setup
 set(LIBACTIONET_DIR "${CMAKE_CURRENT_SOURCE_DIR}/src/libactionet")
 if(NOT EXISTS "${LIBACTIONET_DIR}/include")
@@ -64,44 +52,23 @@ if(NOT EXISTS "${LIBACTIONET_DIR}/include")
     )
 endif()
 
-# Build libactionet as a static library
-# Collect all source files
-file(GLOB_RECURSE LIBACTIONET_SOURCES "${LIBACTIONET_DIR}/src/*.cpp")
-add_library(libactionet_static STATIC ${LIBACTIONET_SOURCES})
+# Build libactionet using its own build system
+add_subdirectory("${LIBACTIONET_DIR}")
+
+# OpenMP detection (optional) - use libactionet's detection
+find_package(OpenMP)
+if(OpenMP_CXX_FOUND)
+    message(STATUS "OpenMP found for Python wrapper: ${OpenMP_CXX_VERSION}")
+    set(HAVE_OPENMP TRUE)
+else()
+    message(STATUS "OpenMP not found for Python wrapper - building without parallel support")
+    set(HAVE_OPENMP FALSE)
+endif()
 
 # Armadillo headers (bundled with libactionet)
 set(ARMADILLO_INCLUDE_DIR "${LIBACTIONET_DIR}/include/extern/armadillo")
 
-# Find BLAS/LAPACK
-find_package(BLAS REQUIRED)
-find_package(LAPACK REQUIRED)
 
-# Configure libactionet static library
-target_include_directories(libactionet_static PRIVATE
-    ${LIBACTIONET_DIR}/include
-    ${LIBACTIONET_DIR}/include/extern
-    ${LIBACTIONET_DIR}/include/extern/armadillo
-    ${LIBACTIONET_DIR}/include/extern/gcem
-)
-
-# Add Accelerate framework headers for macOS (for cblas.h)
-if(APPLE)
-    target_include_directories(libactionet_static PRIVATE
-        /Library/Developer/CommandLineTools/SDKs/MacOSX.sdk/System/Library/Frameworks/Accelerate.framework/Versions/A/Frameworks/vecLib.framework/Versions/A/Headers
-    )
-endif()
-
-target_compile_definitions(libactionet_static PRIVATE
-    ARMA_64BIT_WORD
-    ARMA_DONT_USE_WRAPPER
-    ARMA_USE_LAPACK
-    ARMA_USE_BLAS
-)
-
-target_link_libraries(libactionet_static
-    ${BLAS_LIBRARIES}
-    ${LAPACK_LIBRARIES}
-)
 
 # Create extension module
 pybind11_add_module(_core MODULE
@@ -127,36 +94,25 @@ target_compile_definitions(_core PRIVATE
     ARMA_USE_BLAS
 )
 
-target_link_libraries(_core PRIVATE
-    libactionet_static
-    ${BLAS_LIBRARIES}
-    ${LAPACK_LIBRARIES}
-)
+# Link against the actionet library from the submodule
+target_link_libraries(_core PRIVATE actionet)
 
-if(HAVE_OPENMP)
+if(HAVE_OPENMP AND OpenMP_CXX_FOUND)
     target_link_libraries(_core PRIVATE OpenMP::OpenMP_CXX)
     target_compile_definitions(_core PRIVATE ACTIONET_HAS_OPENMP)
 endif()
 
-# Platform-specific libraries
+# Platform-specific libraries (may already be linked via actionet target)
 if(APPLE)
     find_library(ACCELERATE_FRAMEWORK Accelerate)
     if(ACCELERATE_FRAMEWORK)
-        target_link_libraries(_core PRIVATE ${ACCELERATE_FRAMEWORK})
-        # Add Accelerate framework include directory for cblas.h
+        # Accelerate is likely already linked via actionet, but ensure headers are available
         target_include_directories(_core PRIVATE
-            /Library/Developer/CommandLineTools/SDKs/MacOSX.sdk/System/Library/Frameworks/Accelerate.framework/Versions/A/Frameworks/vecLib.framework/Versions/A/Headers
+            /Library/Developer/CommandLineTools/SDKs/MacOSX.sdk/System/Library/Frameworks/Accelerate.framework/Versions/Current/Frameworks/vecLib.framework/Headers
         )
-    endif()
-elseif(UNIX)
-    # Try to find cholmod, but don't fail if not found
-    find_library(CHOLMOD_LIB cholmod)
-    if(CHOLMOD_LIB)
-        target_link_libraries(_core PRIVATE ${CHOLMOD_LIB})
-    else()
-        message(WARNING "cholmod not found - some features may be limited")
     endif()
 endif()
 
 # Install
-install(TARGETS _core LIBRARY DESTINATION actionet_py)
+install(TARGETS _core LIBRARY DESTINATION actionet)
+

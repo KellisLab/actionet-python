@@ -63,12 +63,12 @@ py::dict run_action(py::array_t<double> S_r, int k_min = 2, int k_max = 30,
     out["C_merged"] = arma_mat_to_numpy(res(3));
 
     // Convert assigned_archetypes
-    arma::vec assigned = arma::vec(res(4));
-    auto assigned_arr = py::array_t<int>(assigned.n_elem);
+    arma::mat assigned_mat = res(4);
+    auto assigned_arr = py::array_t<int>(assigned_mat.n_elem);
     auto assigned_buf = assigned_arr.request();
     int* assigned_ptr = static_cast<int*>(assigned_buf.ptr);
-    for (size_t i = 0; i < assigned.n_elem; ++i) {
-        assigned_ptr[i] = static_cast<int>(assigned(i));
+    for (size_t i = 0; i < assigned_mat.n_elem; ++i) {
+        assigned_ptr[i] = static_cast<int>(assigned_mat(i));
     }
     out["assigned_archetypes"] = assigned_arr;
 
@@ -189,7 +189,7 @@ py::dict run_spa(py::array_t<double> A, int k) {
     auto cols_buf = cols_arr.request();
     int* cols_ptr = static_cast<int*>(cols_buf.ptr);
     for (int i = 0; i < k; i++) {
-        cols_ptr[i] = static_cast<int>(res.selected_cols[i]) + 1;
+        cols_ptr[i] = static_cast<int>(res.selected_cols(i)) + 1;
     }
 
     py::dict out;
