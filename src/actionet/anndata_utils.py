@@ -62,7 +62,6 @@ def matrix_to_anndata(
     -------
     AnnData object.
     """
-    import pandas as pd
     
     adata = AnnData(X)
     
@@ -77,7 +76,6 @@ def matrix_to_anndata(
 def add_action_results(
     adata: AnnData,
     result: dict,
-    key_added: str = "action_results",
 ) -> None:
     """
     Add ACTION decomposition results to AnnData.
@@ -88,21 +86,16 @@ def add_action_results(
         AnnData object to update in-place.
     result
         Result dictionary from run_action().
-    key_added
-        Key prefix for storage.
     """
     # Store archetype matrices
     adata.obsm["H_stacked"] = result["H_stacked"].T
     adata.obsm["H_merged"] = result["H_merged"].T
-    
+
+    adata.obsm["C_stacked"] = result["C_stacked"]
+    adata.obsm["C_merged"] = result["C_merged"]
+
     # Store archetype assignments
     adata.obs["assigned_archetype"] = result["assigned_archetypes"]
-    
-    # Store full results in uns
-    adata.uns[key_added] = {
-        "C_stacked": result["C_stacked"],
-        "C_merged": result["C_merged"],
-    }
 
 
 def add_network_to_anndata(

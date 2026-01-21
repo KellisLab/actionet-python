@@ -38,6 +38,7 @@ env/
 .coverage
 htmlcov/
 .tox/
+data/
 
 # CMake
 CMakeCache.txt

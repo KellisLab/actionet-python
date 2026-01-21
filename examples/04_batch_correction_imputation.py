@@ -61,7 +61,7 @@ print(f"   Batches: {adata.obs['batch'].value_counts().to_dict()}")
 # ============================================================================
 print("\n2. Running ACTION reduction...")
 
-an.reduce_kernel(adata, k=15, reduction_key="action", verbose=False)
+an.reduce_kernel(adata, n_components=15, key_added="action", verbose=False)
 print(f"   Reduced to {adata.obsm['action'].shape[1]} dimensions")
 
 # ============================================================================
@@ -91,8 +91,8 @@ print(f"   Average variance after correction: {var_after:.4f}")
 # ============================================================================
 print("\n4. Building cell-cell networks...")
 
-an.build_network(adata, reduction_key="action", network_key="actionet_original")
-an.build_network(adata, reduction_key="action_corrected", network_key="actionet_corrected")
+an.build_network(adata, obsm_key="action", key_added="actionet_original")
+an.build_network(adata, obsm_key="action_corrected", key_added="actionet_corrected")
 
 print("   Networks built on both original and corrected reductions")
 print(f"   Original network density: {adata.obsp['actionet_original'].nnz / (adata.n_obs ** 2):.4f}")

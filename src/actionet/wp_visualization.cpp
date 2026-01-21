@@ -25,6 +25,12 @@ py::array_t<double> layout_network(py::object G, py::array_t<double> initial_coo
     return arma_mat_to_numpy(coords);
 }
 
+py::array_t<double> compute_node_colors(py::array_t<double> coordinates, int thread_no = 1) {
+    arma::mat coords_mat = numpy_to_arma_mat(coordinates);
+    arma::mat colors = actionet::computeNodeColors(coords_mat, thread_no);
+    return arma_mat_to_numpy(colors);
+}
+
 // =====================================================================================================================
 
 void init_visualization(py::module_ &m) {
@@ -33,4 +39,7 @@ void init_visualization(py::module_ &m) {
           py::arg("n_components") = 2, py::arg("spread") = 1.0, py::arg("min_dist") = 1.0,
           py::arg("n_epochs") = 0, py::arg("seed") = 0,
           py::arg("thread_no") = 0, py::arg("verbose") = true);
+
+    m.def("compute_node_colors", &compute_node_colors, "Compute node colors from coordinates",
+          py::arg("coordinates"), py::arg("thread_no") = 1);
 }

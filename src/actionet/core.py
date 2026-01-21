@@ -4,67 +4,89 @@ from typing import Optional, Union, Tuple, Literal
 import numpy as np
 import scipy.sparse as sp
 from anndata import AnnData
+from statsmodels.stats.rates import norm
 
 from . import _core
 from .anndata_utils import anndata_to_matrix, add_action_results, add_network_to_anndata
+from . import tools
 
 
 def reduce_kernel(
     adata: AnnData,
-    n_components: int = 50,
+    n_components: int = 30,
     layer: Optional[str] = None,
+    key_added: str = "action",
     svd_algorithm: int = 0,
     max_iter: int = 0,
     seed: int = 0,
-    key_added: str = "action",
     verbose: bool = True,
-) -> AnnData:
+    inplace: bool = True,
+) -> Optional[AnnData]:
     """
-    Compute reduced kernel matrix for ACTION decomposition.
-    
+    Compute a low-rank approximation of the kernel matrix for ACTION decomposition and store the results in AnnData.
+
     Parameters
     ----------
-    adata
-        Annotated data matrix.
-    n_components
-        Number of singular vectors to compute.
-    layer
-        Layer to use for computation. If None, uses .X.
-    svd_algorithm
-        SVD algorithm (0=auto).
-    max_iter
-        Maximum iterations (0=auto).
-    seed
-        Random seed.
-    key_added
-        Key to store results in adata.obsm.
-    verbose
-        Print progress.
-        
+    adata : AnnData
+        Annotated data matrix (cells × features).
+    n_components : int, optional (default: 50)
+        Number of singular vectors (components) to compute.
+    layer : str or None, optional (default: None)
+        Layer in AnnData to use for computation. If None, uses adata.X.
+    key_added : str, optional (default: "action")
+        Key under which to store the results in adata.obsm and related fields.
+    svd_algorithm : int, optional (default: 0)
+        SVD algorithm to use (0=irlb, 1=halko, 2=feng).
+    max_iter : int, optional (default: 0)
+        Maximum number of iterations for SVD solver (0=auto).
+    seed : int, optional (default: 0)
+        Random seed for reproducibility.
+    verbose : bool, optional (default: True)
+        Whether to print progress messages.
+    inplace : bool, optional (default: True)
+        If True, modifies the AnnData object in place. If False, returns a new AnnData object with the results.
+
     Returns
     -------
-    Updates adata in-place with:
-        - adata.obsm[key_added]: Reduced representation
-        - adata.uns[f"{key_added}_params"]: Parameters
+    None or AnnData
+        If inplace=True, returns None and modifies adata in place. If inplace=False, returns a new AnnData object with the results.
+
+    Updates AnnData
+    --------------
+    adata.obsm[key_added] : np.ndarray
+        Reduced representation (cells × n_components).
+    adata.obsm[f"{key_added}_B"] : np.ndarray
+        B matrix from decomposition (cells × n_components).
+    adata.varm[f"{key_added}_V"] : np.ndarray
+        V matrix from decomposition (features × n_components).
+    adata.varm[f"{key_added}_A"] : np.ndarray
+        A matrix from decomposition (features × n_components).
+    adata.uns[f"{key_added}_params"] : dict
+        Parameters used for reduction (e.g., sigma, n_components).
     """
+    if not inplace:
+        adata = adata.copy()
     S = anndata_to_matrix(adata, layer=layer, transpose=True)
-    
+
     if sp.issparse(S):
         result = _core.reduce_kernel_sparse(S, n_components, svd_algorithm, max_iter, seed, verbose)
     else:
         result = _core.reduce_kernel_dense(S, n_components, svd_algorithm, max_iter, seed, verbose)
-    
+
     # Store results
     adata.obsm[key_added] = result["S_r"].T  # Transpose to cells x components
+    adata.varm[f"{key_added}_V"] = result["V"]
+    adata.varm[f"{key_added}_A"] = result["A"]
+    adata.obsm[f"{key_added}_B"] = result["B"]
+
     adata.uns[f"{key_added}_params"] = {
         "sigma": result["sigma"],
-        "V": result["V"],
-        "A": result["A"],
-        "B": result["B"],
         "n_components": n_components,
     }
-    
-    return adata
+
+    if not inplace:
+        return adata
+    return None
 
 
 def run_action(
@@ -72,16 +94,17 @@ def run_action(
     k_min: int = 2,
     k_max: int = 30,
     reduction_key: str = "action",
-    max_iter: int = 100,
-    tolerance: float = 1e-16,
+    prenormalize: bool = True,
+    max_iter: int = 50,
+    tolerance: float = 1e-100,
     specificity_threshold: float = -3.0,
-    min_observations: int = 3,
+    min_observations: int = 2,
     n_threads: int = 0,
-    key_added: str = "action_results",
-) -> AnnData:
+    inplace: bool = True,
+) -> Optional[AnnData]:
     """
     Run ACTION archetypal analysis decomposition.
-    
+
     Parameters
     ----------
     adata
@@ -102,50 +125,67 @@ def run_action(
         Minimum observations per archetype.
     n_threads
         Number of threads (0=auto).
-    key_added
-        Key prefix for storing results.
-        
+    inplace
+        If True, modifies the AnnData object in place. If False, returns a new AnnData object with the results.
+
     Returns
     -------
-    Updates adata with:
-        - adata.obsm["H_stacked"]: Stacked archetype matrix
-        - adata.obsm["H_merged"]: Merged archetype matrix
-        - adata.obs["assigned_archetype"]: Cell assignments
-        - adata.uns[key_added]: Full results
+    None or AnnData
+        If inplace=True, returns None and modifies adata in place. If inplace=False, returns a new AnnData object with the results.
+
+    Updates AnnData
+    --------------
+    adata.obsm["H_stacked"] : np.ndarray
+        Stacked archetype matrix (cells × archetypes).
+    adata.obsm["H_merged"] : np.ndarray
+        Merged archetype matrix (cells × archetypes, after merging similar archetypes).
+    adata.obs["assigned_archetype"] : pd.Series or np.ndarray
+        Cell-to-archetype assignments.
     """
+    if not inplace:
+        adata = adata.copy()
     if reduction_key not in adata.obsm:
         raise ValueError(f"Reduction '{reduction_key}' not found. Run reduce_kernel first.")
-    
+
     S_r = adata.obsm[reduction_key].T  # Transpose to components x cells
-    
+
+    if prenormalize:
+        S_r = tools.l1_norm_scale(S_r, axis=0)
+
     result = _core.run_action(
         S_r, k_min, k_max, max_iter, tolerance,
         specificity_threshold, min_observations, n_threads
     )
-    
-    add_action_results(adata, result, key_added=key_added)
-    return adata
+
+    add_action_results(adata, result)
+    if not inplace:
+        return adata
+    return None
 
 
 def build_network(
     adata: AnnData,
-    archetype_key: str = "H_stacked",
     algorithm: Literal["knn", "k*nn"] = "k*nn",
     distance_metric: Literal["jsd", "l2", "ip"] = "jsd",
     density: float = 1.0,
-    k: int = 10,
-    mutual_edges_only: bool = True,
     n_threads: int = 0,
+    mutual_edges_only: bool = True,
+    M: float = 16,
+    ef_construction: float = 200,
+    ef: float = 200,
+    k: int = 10,
+    obsm_key: str = "H_stacked",
     key_added: str = "actionet",
-) -> AnnData:
+    inplace: bool = True,
+) -> Optional[AnnData]:
     """
     Build cell-cell interaction network from archetype footprints.
-    
+
     Parameters
     ----------
     adata
         Annotated data matrix with ACTION results.
-    archetype_key
+    obsm_key
         Key in adata.obsm containing archetype matrix.
     algorithm
         Network construction algorithm.
@@ -161,38 +201,53 @@ def build_network(
         Number of threads (0=auto).
     key_added
         Key to store network in adata.obsp.
-        
+    inplace
+        If True, modifies the AnnData object in place. If False, returns a new AnnData object with the results.
+
     Returns
     -------
-    Updates adata with:
-        - adata.obsp[key_added]: Network adjacency matrix
+    None or AnnData
+        If inplace=True, returns None and modifies adata in place. If inplace=False, returns a new AnnData object with the results.
+
+    Updates AnnData
+    --------------
+    adata.obsp[key_added] : scipy.sparse matrix or np.ndarray
+        Network adjacency matrix (cells × cells).
     """
-    if archetype_key not in adata.obsm:
-        raise ValueError(f"Archetype matrix '{archetype_key}' not found. Run run_action first.")
-    
-    H = adata.obsm[archetype_key]
-    
+    if not inplace:
+        adata = adata.copy()
+    if obsm_key not in adata.obsm:
+        raise ValueError(f"Archetype matrix '{obsm_key}' not found. Run run_action first.")
+
+    H = adata.obsm[obsm_key]
+
     G = _core.build_network(
         H.T, algorithm, distance_metric, density, n_threads,
-        16, 200, 50, mutual_edges_only, k
+        M, ef_construction, ef, mutual_edges_only, k
     )
-    
+
     add_network_to_anndata(adata, G, key_added)
-    return adata
+    if not inplace:
+        return adata
+    return None
 
 
 def compute_network_diffusion(
     adata: AnnData,
     scores: Union[str, np.ndarray],
-    network_key: str = "actionet",
+    norm_method: Literal["pagerank", "pagerank_sym"] = "pagerank",
     alpha: float = 0.85,
-    max_iter: int = 5,
     n_threads: int = 0,
+    approx: bool = True,
+    max_iter: int = 5,
+    tol = 1e-8,
+    network_key: str = "actionet",
     key_added: str = "diffused",
-) -> AnnData:
+    inplace: bool = True,
+) -> Optional[AnnData]:
     """
     Compute network diffusion/smoothing over ACTIONet graph.
-    
+
     Parameters
     ----------
     adata
@@ -209,12 +264,21 @@ def compute_network_diffusion(
         Number of threads.
     key_added
         Key to store diffused scores.
-        
+    inplace
+        If True, modifies the AnnData object in place. If False, returns a new AnnData object with the results.
+
     Returns
     -------
-    Updates adata with:
-        - adata.obsm[key_added]: Diffused scores
+    None or AnnData
+        If inplace=True, returns None and modifies adata in place. If inplace=False, returns a new AnnData object with the results.
+
+    Updates AnnData
+    --------------
+    adata.obsm[key_added] : np.ndarray
+        Diffused scores (cells × features or cells × 1).
     """
+    if not inplace:
+        adata = adata.copy()
     if network_key not in adata.obsp:
         raise ValueError(f"Network '{network_key}' not found. Run build_network first.")
     
@@ -229,13 +293,21 @@ def compute_network_diffusion(
     
     if X0.ndim == 1:
         X0 = X0.reshape(-1, 1)
-    
     X_diffused = _core.compute_network_diffusion(
-        G, X0, alpha, max_iter, n_threads, False, 0, 1e-8
+        G = G,
+        X0 = X0,
+        alpha = alpha,
+        max_it = max_iter,
+        thread_no = n_threads,
+        approx = approx,
+        norm_method = 2 if norm_method == "pagerank_sym" else 0,
+        tol = tol
     )
-    
+
     adata.obsm[key_added] = X_diffused
-    return adata
+    if not inplace:
+        return adata
+    return None
 
 
 def compute_feature_specificity(
@@ -244,10 +316,11 @@ def compute_feature_specificity(
     layer: Optional[str] = None,
     n_threads: int = 0,
     key_added: str = "specificity",
-) -> AnnData:
+    inplace: bool = True,
+) -> Optional[AnnData]:
     """
     Compute feature specificity scores for clusters/archetypes.
-    
+
     Parameters
     ----------
     adata
@@ -260,13 +333,25 @@ def compute_feature_specificity(
         Number of threads.
     key_added
         Key prefix for storing results in adata.varm.
-        
+    inplace
+        If True, modifies the AnnData object in place. If False, returns a new AnnData object with the results.
+
     Returns
     -------
-    Updates adata with:
-        - adata.varm[f"{key_added}_upper"]: Upper-tail significance
-        - adata.varm[f"{key_added}_lower"]: Lower-tail significance
+    None or AnnData
+        If inplace=True, returns None and modifies adata in place. If inplace=False, returns a new AnnData object with the results.
+
+    Updates AnnData
+    --------------
+    adata.varm[f"{key_added}_profile"] : np.ndarray
+        Average feature profile per cluster/archetype (features × clusters).
+    adata.varm[f"{key_added}_upper"] : np.ndarray
+        Upper-tail significance scores (features × clusters).
+    adata.varm[f"{key_added}_lower"] : np.ndarray
+        Lower-tail significance scores (features × clusters).
     """
+    if not inplace:
+        adata = adata.copy()
     S = anndata_to_matrix(adata, layer=layer, transpose=True)
     
     if isinstance(labels, str):
@@ -289,14 +374,16 @@ def compute_feature_specificity(
     adata.varm[f"{key_added}_profile"] = result["average_profile"]
     adata.varm[f"{key_added}_upper"] = result["upper_significance"]
     adata.varm[f"{key_added}_lower"] = result["lower_significance"]
-    
-    return adata
+    if not inplace:
+        return adata
+    return None
 
 
 def layout_network(
     adata: AnnData,
     network_key: str = "actionet",
-    initial_coords: Optional[np.ndarray] = None,
+    initial_coords: Optional[Union[str, np.ndarray]] = None,
+    layer: Optional[str] = None,
     method: Literal["umap", "tumap"] = "umap",
     n_components: int = 2,
     spread: float = 1.0,
@@ -304,11 +391,13 @@ def layout_network(
     n_epochs: int = 0,
     seed: int = 0,
     n_threads: int = 0,
+    verbose: bool = True,
     key_added: str = "X_umap",
-) -> AnnData:
+    inplace: bool = True,
+) -> Optional[AnnData]:
     """
     Compute 2D/3D layout of ACTIONet graph using UMAP.
-    
+
     Parameters
     ----------
     adata
@@ -316,7 +405,11 @@ def layout_network(
     network_key
         Key in adata.obsp containing network.
     initial_coords
-        Initial coordinates (if None, random).
+        Initial coordinates. Can be a key in adata.obsm, a numpy array, or None.
+        If None, computes initial coordinates via SVD on the specified layer.
+    layer
+        Layer to use for computing initial coordinates via SVD (if initial_coords is None).
+        If None, uses adata.X.
     method
         Layout method.
     n_components
@@ -331,30 +424,85 @@ def layout_network(
         Random seed.
     n_threads
         Number of threads.
+    verbose
+        Whether to print progress messages.
     key_added
         Key to store layout in adata.obsm.
-        
+    inplace
+        If True, modifies the AnnData object in place. If False, returns a new AnnData object with the results.
+
     Returns
     -------
-    Updates adata with:
-        - adata.obsm[key_added]: Layout coordinates
+    None or AnnData
+        If inplace=True, returns None and modifies adata in place. If inplace=False, returns a new AnnData object with the results.
+
+    Updates AnnData
+    --------------
+    adata.obsm[key_added] : np.ndarray
+        Layout coordinates (cells × n_components).
     """
+    if not inplace:
+        adata = adata.copy()
     if network_key not in adata.obsp:
         raise ValueError(f"Network '{network_key}' not found.")
     
     G = adata.obsp[network_key]
     
+    # Handle initial_coords
     if initial_coords is None:
-        rng = np.random.RandomState(seed)
-        initial_coords = rng.randn(adata.n_obs, n_components).astype(np.float32)
-    
+        # Compute initial coordinates from SVD
+        if verbose:
+            if layer is not None:
+                print(f"Computing initial coordinates from layer '{layer}' via SVD")
+            else:
+                print("Computing initial coordinates from adata.X via SVD")
+
+        S = anndata_to_matrix(adata, layer=layer, transpose=True)
+        k = max(3, n_components)
+
+        if sp.issparse(S):
+            svd_result = _core.run_svd_sparse(S, k, 0, seed, 0, verbose)
+        else:
+            svd_result = _core.run_svd_dense(S, k, 0, seed, 0, verbose)
+
+        # Get right singular vectors and scale them
+        initial_coords = svd_result["v"]  # Already transposed to cells x components
+        # Scale columns to have mean 0 and std 1
+        initial_coords = (initial_coords - initial_coords.mean(axis=0)) / initial_coords.std(axis=0)
+    elif isinstance(initial_coords, str):
+        # initial_coords is a key in adata.obsm
+        if initial_coords not in adata.obsm:
+            raise ValueError(f"Initial coordinates '{initial_coords}' not found in adata.obsm.")
+        initial_coords = adata.obsm[initial_coords]
+    else:
+        # initial_coords is a numpy array
+        initial_coords = np.asarray(initial_coords)
+
+    # Validate initial_coords shape
+    if initial_coords.shape[0] != adata.n_obs:
+        raise ValueError(
+            f"Number of rows in initial_coords ({initial_coords.shape[0]}) "
+            f"does not match number of cells in adata ({adata.n_obs})"
+        )
+
+    if initial_coords.shape[1] < n_components:
+        raise ValueError(
+            f"Number of columns in initial_coords ({initial_coords.shape[1]}) "
+            f"must be >= n_components ({n_components})"
+        )
+
+    # Ensure initial_coords is float32
+    initial_coords = initial_coords.astype(np.float32)
+
     coords = _core.layout_network(
         G, initial_coords, method, n_components,
-        spread, min_dist, n_epochs, seed, n_threads, True
+        spread, min_dist, n_epochs, seed, n_threads, verbose
     )
     
     adata.obsm[key_added] = coords
-    return adata
+    if not inplace:
+        return adata
+    return None
 
 
 def run_svd(
@@ -377,7 +525,7 @@ def run_svd(
     layer
         Layer to use (None uses .X).
     algorithm
-        SVD algorithm (0=auto).
+        SVD algorithm (0=irlb, 1=halko, 2=feng).
     seed
         Random seed.
     key_added
@@ -385,14 +533,18 @@ def run_svd(
         
     Returns
     -------
-    Updates adata with:
-        - adata.obsm[key_added]: Right singular vectors
-        - adata.uns[f"{key_added}_params"]: SVD parameters
+    AnnData
+        Returns the input AnnData object with added fields:
+        - adata.obsm[key_added]: Right singular vectors (cells × n_components)
+        - adata.uns[f"{key_added}_params"]: SVD parameters including left singular vectors (u), singular values (d), and n_components
     """
     S = anndata_to_matrix(adata, layer=layer, transpose=True)
     
-    result = _core.run_svd_sparse(S, n_components, 0, seed, algorithm, True)
-    
+    if sp.issparse(S):
+        result = _core.run_svd_sparse(S, n_components, 0, seed, algorithm, True)
+    else:
+        result = _core.run_svd_dense(S, n_components, 0, seed, algorithm, True)
+
     adata.obsm[key_added] = result["v"]
     adata.uns[f"{key_added}_params"] = {
         "u": result["u"],

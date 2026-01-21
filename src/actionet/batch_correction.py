@@ -48,18 +48,18 @@ def correct_batch_effect(
     if reduction_key not in adata.obsm:
         raise ValueError(f"Reduction '{reduction_key}' not found. Run reduce_kernel first.")
     
-    # Get reduction parameters
+    # Get reduction parameters and matrices
     params_key = f"{reduction_key}_params"
     if params_key not in adata.uns:
         raise ValueError(f"Parameters '{params_key}' not found. Run reduce_kernel first.")
     
     params = adata.uns[params_key]
     old_S_r = adata.obsm[reduction_key].T  # Components x cells
-    old_V = params["V"]
-    old_A = params["A"]
-    old_B = params["B"]
+    old_V = adata.varm[f"{reduction_key}_V"]
+    old_A = adata.varm[f"{reduction_key}_A"]
+    old_B = adata.obsm[f"{reduction_key}_B"]
     old_sigma = params["sigma"]
-    
+
     # Create design matrix from batch labels
     batch_labels = adata.obs[batch_key]
     if not isinstance(batch_labels.dtype, pd.CategoricalDtype):
@@ -140,18 +140,18 @@ def correct_basal_expression(
     if gene_mask.sum() == 0:
         raise ValueError("None of the specified basal genes found in adata.var_names")
     
-    # Get reduction parameters
+    # Get reduction parameters and matrices
     params_key = f"{reduction_key}_params"
     if params_key not in adata.uns:
         raise ValueError(f"Parameters '{params_key}' not found. Run reduce_kernel first.")
     
     params = adata.uns[params_key]
     old_S_r = adata.obsm[reduction_key].T
-    old_V = params["V"]
-    old_A = params["A"]
-    old_B = params["B"]
+    old_V = adata.varm[f"{reduction_key}_V"]
+    old_A = adata.varm[f"{reduction_key}_A"]
+    old_B = adata.obsm[f"{reduction_key}_B"]
     old_sigma = params["sigma"]
-    
+
     # Get expression matrix
     S = anndata_to_matrix(adata, layer=layer, transpose=True)
     

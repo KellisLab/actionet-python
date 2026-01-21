@@ -11,7 +11,7 @@ namespace py = pybind11;
 py::object build_network(py::array_t<double> H, std::string algorithm = "k*nn",
                          std::string distance_metric = "jsd", double density = 1.0,
                          int thread_no = 0, double M = 16, double ef_construction = 200,
-                         double ef = 50, bool mutual_edges_only = true, int k = 10) {
+                         double ef = 200, bool mutual_edges_only = true, int k = 10) {
     arma::mat H_mat = numpy_to_arma_mat(H);
 
     arma::sp_mat G = actionet::buildNetwork(
@@ -100,7 +100,7 @@ void init_network(py::module_ &m) {
     m.def("build_network", &build_network, "Build cell-cell network",
           py::arg("H"), py::arg("algorithm") = "k*nn", py::arg("distance_metric") = "jsd",
           py::arg("density") = 1.0, py::arg("thread_no") = 0, py::arg("M") = 16,
-          py::arg("ef_construction") = 200, py::arg("ef") = 50,
+          py::arg("ef_construction") = 200, py::arg("ef") = 200,
           py::arg("mutual_edges_only") = true, py::arg("k") = 10);
 
     // label_propagation
