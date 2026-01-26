@@ -1,6 +1,6 @@
 """Advanced ACTIONet functions for lower-level control."""
 
-from typing import Optional, List, Tuple
+from typing import Optional, List, Union
 import numpy as np
 import scipy.sparse as sp
 from anndata import AnnData
@@ -251,7 +251,8 @@ def compute_coreness(
     adata: AnnData,
     network_key: str = "actionet",
     key_added: str = "coreness",
-) -> AnnData:
+    inplace: bool = True,
+) -> Union[np.ndarray, None]:
     """
     Compute coreness (k-shell decomposition) of graph vertices.
 
@@ -263,11 +264,20 @@ def compute_coreness(
         Key in adata.obsp containing network.
     key_added
         Key to store coreness in adata.obs.
+    inplace
+        If True, adds coreness to adata.obs.
+        If False, returns coreness array without modifying adata.
 
     Returns
     -------
-    Updates adata with:
-        - adata.obs[key_added]: Coreness values
+    AnnData or np.ndarray
+        If inplace=True,  coreness added to obs.
+        If inplace=False, returns coreness array.
+
+    Updates adata (if inplace=True)
+    ------
+    adata.obs[key_added] : np.ndarray
+        Coreness values
     """
     if network_key not in adata.obsp:
         raise ValueError(f"Network '{network_key}' not found.")
@@ -275,8 +285,11 @@ def compute_coreness(
     G = adata.obsp[network_key]
     core_num = _core.compute_coreness(G)
 
+    if not inplace:
+        return core_num
+
     adata.obs[key_added] = core_num
-    return adata
+    return None
 
 
 def compute_archetype_centrality(

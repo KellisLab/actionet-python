@@ -1,5 +1,7 @@
 ## Primary
 * Standardize key args
+* Parallel specificity bug
+* ascontiguousarray in backend 
 
 ## Secondary
 

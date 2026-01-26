@@ -14,6 +14,7 @@ from .core import (
     build_network,
     compute_network_diffusion,
     compute_feature_specificity,
+    compute_archetype_feature_specificity,
     layout_network,
     run_svd,
 )
@@ -47,6 +48,12 @@ from .annotation import (
     find_markers,
     annotate_cells,
 )
+from .visualization import (
+    compute_node_colors,
+)
+from .pipeline import (
+    run_actionet,
+)
 
 __all__ = [
     "__version__",
@@ -56,6 +63,7 @@ __all__ = [
     "build_network",
     "compute_network_diffusion",
     "compute_feature_specificity",
+    "compute_archetype_feature_specificity",
     "layout_network",
     "run_svd",
     # Batch correction
@@ -78,6 +86,12 @@ __all__ = [
     # Annotation
     "find_markers",
     "annotate_cells",
+    # Clustering
+    "cluster_network",
+    # Visualization
+    "compute_node_colors",
+    # Pipeline
+    "run_actionet",
     # Utilities
     "anndata_to_matrix",
     "matrix_to_anndata",

@@ -152,6 +152,9 @@ def run_action(
     if prenormalize:
         S_r = tools.l1_norm_scale(S_r, axis=0)
 
+    # Ensure C-contiguous memory layout for C++ compatibility
+    S_r = np.ascontiguousarray(S_r)
+
     result = _core.run_action(
         S_r, k_min, k_max, max_iter, tolerance,
         specificity_threshold, min_observations, n_threads
@@ -221,8 +224,11 @@ def build_network(
 
     H = adata.obsm[obsm_key]
 
+    # Ensure C-contiguous memory layout for C++ compatibility
+    H = np.ascontiguousarray(H.T)
+
     G = _core.build_network(
-        H.T, algorithm, distance_metric, density, n_threads,
+        H, algorithm, distance_metric, density, n_threads,
         M, ef_construction, ef, mutual_edges_only, k
     )
 
@@ -293,6 +299,10 @@ def compute_network_diffusion(
     
     if X0.ndim == 1:
         X0 = X0.reshape(-1, 1)
+
+    # Ensure C-contiguous memory layout for C++ compatibility
+    X0 = np.ascontiguousarray(X0)
+
     X_diffused = _core.compute_network_diffusion(
         G = G,
         X0 = X0,
@@ -381,6 +391,96 @@ def compute_feature_specificity(
     adata.varm[f"{key_added}_profile"] = result["average_profile"]
     adata.varm[f"{key_added}_upper"] = result["upper_significance"]
     adata.varm[f"{key_added}_lower"] = result["lower_significance"]
+    if not inplace:
+        return adata
+    return None
+
+
+def compute_archetype_feature_specificity(
+    adata: AnnData,
+    archetype_key: Union[str, np.ndarray] = "archetype_footprint",
+    layer: Optional[str] = None,
+    n_threads: int = 0,
+    key_added: str = "archetype",
+    inplace: bool = True,
+) -> Optional[AnnData]:
+    """
+    Compute feature specificity scores for archetypes using archetype matrix.
+
+    This function is analogous to archetypeFeatureSpecificity() in R.
+    It computes feature enrichment for each archetype using the archetype
+    footprint matrix (typically the diffused H_merged matrix).
+
+    Parameters
+    ----------
+    adata
+        Annotated data matrix.
+    archetype_key
+        Either key in adata.obsm containing archetype matrix (cells × archetypes)
+        or the archetype matrix itself as numpy array.
+    layer
+        Layer to use (None uses .X).
+    n_threads
+        Number of threads.
+    key_added
+        Prefix for storing results in adata.varm.
+    inplace
+        If True, modifies the AnnData object in place. If False, returns a new AnnData object with the results.
+
+    Returns
+    -------
+    None or AnnData
+        If inplace=True, returns None and modifies adata in place.
+        If inplace=False, returns a new AnnData object with the results.
+
+    Updates AnnData
+    --------------
+    adata.varm[f"{key_added}_feat_profile"] : np.ndarray
+        Average feature profile per archetype (features × archetypes).
+    adata.varm[f"{key_added}_feat_specificity_upper"] : np.ndarray
+        Upper-tail significance scores (features × archetypes).
+    adata.varm[f"{key_added}_feat_specificity_lower"] : np.ndarray
+        Lower-tail significance scores (features × archetypes).
+
+    Examples
+    --------
+    >>> import actionet as act
+    >>> adata = act.compute_archetype_feature_specificity(
+    ...     adata,
+    ...     archetype_key="archetype_footprint"
+    ... )
+    """
+    if not inplace:
+        adata = adata.copy()
+
+    # Get feature matrix (transpose to features x cells)
+    S = anndata_to_matrix(adata, layer=layer, transpose=True)
+
+    # Get archetype matrix
+    if isinstance(archetype_key, str):
+        if archetype_key not in adata.obsm:
+            raise ValueError(f"Archetype matrix '{archetype_key}' not found in adata.obsm.")
+        H = adata.obsm[archetype_key]
+    else:
+        H = np.asarray(archetype_key)
+
+    # H should be cells x archetypes, need to transpose for C++ (archetypes x cells)
+    H = H.T
+
+    # Ensure H is float64 and C-contiguous
+    H = np.ascontiguousarray(H, dtype=np.float64)
+
+    # Call appropriate function based on matrix type
+    if sp.issparse(S):
+        result = _core.archetype_feature_specificity_sparse(S, H, n_threads)
+    else:
+        result = _core.archetype_feature_specificity_dense(S, H, n_threads)
+
+    # Store results with appropriate naming
+    adata.varm[f"{key_added}_feat_profile"] = result["archetypes"]
+    adata.varm[f"{key_added}_feat_specificity_upper"] = result["upper_significance"]
+    adata.varm[f"{key_added}_feat_specificity_lower"] = result["lower_significance"]
+
     if not inplace:
         return adata
     return None
@@ -498,8 +598,8 @@ def layout_network(
             f"must be >= n_components ({n_components})"
         )
 
-    # Ensure initial_coords is float32
-    initial_coords = initial_coords.astype(np.float32)
+    # Ensure initial_coords is float32 and C-contiguous
+    initial_coords = np.ascontiguousarray(initial_coords, dtype=np.float32)
 
     coords = _core.layout_network(
         G, initial_coords, method, n_components,
