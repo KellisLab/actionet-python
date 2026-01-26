@@ -43,6 +43,10 @@ from .advanced import (
     compute_coreness,
     compute_archetype_centrality,
 )
+from .annotation import (
+    find_markers,
+    annotate_cells,
+)
 
 __all__ = [
     "__version__",
@@ -71,6 +75,9 @@ __all__ = [
     "run_label_propagation",
     "compute_coreness",
     "compute_archetype_centrality",
+    # Annotation
+    "find_markers",
+    "annotate_cells",
     # Utilities
     "anndata_to_matrix",
     "matrix_to_anndata",

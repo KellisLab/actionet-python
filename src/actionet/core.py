@@ -369,8 +369,15 @@ def compute_feature_specificity(
     else:
         labels_int = labels_arr.astype(np.int32)
     
-    result = _core.compute_feature_specificity_sparse(S, labels_int, n_threads)
-    
+    # C++ expects 1-based labels, so add 1
+    labels_int = labels_int + 1
+
+    # Call appropriate function based on matrix type
+    if sp.issparse(S):
+        result = _core.compute_feature_specificity_sparse(S, labels_int, n_threads)
+    else:
+        result = _core.compute_feature_specificity_dense(S, labels_int, n_threads)
+
     adata.varm[f"{key_added}_profile"] = result["average_profile"]
     adata.varm[f"{key_added}_upper"] = result["upper_significance"]
     adata.varm[f"{key_added}_lower"] = result["lower_significance"]
