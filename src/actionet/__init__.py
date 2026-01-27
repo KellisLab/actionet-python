@@ -55,6 +55,14 @@ from .pipeline import (
     run_actionet,
 )
 
+from .preprocessing import (
+    filter_anndata,
+)
+
+from .tools import (
+    scale,
+)
+
 __all__ = [
     "__version__",
     # Core functions
@@ -86,8 +94,6 @@ __all__ = [
     # Annotation
     "find_markers",
     "annotate_cells",
-    # Clustering
-    "cluster_network",
     # Visualization
     "compute_node_colors",
     # Pipeline
