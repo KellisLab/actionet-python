@@ -32,6 +32,13 @@ sudo apt-get update
 sudo apt-get install build-essential cmake libopenblas-dev liblapack-dev libsuitesparse-dev
 ```
 
+**Conda (rootless / HPC):**
+```bash
+conda install -c conda-forge cmake openblas lapack suitesparse
+```
+
+libactionet now searches for CHOLMOD/SuiteSparse in conda prefixes (e.g. `CONDA_PREFIX`) in addition to system paths.
+
 ### Install from source
 
 ```bash
