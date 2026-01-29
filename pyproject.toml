@@ -15,7 +15,7 @@ license = {text = "GPL-3.0"}
 authors = [
     {name = "Sebastian Pineda", email = "spineda@mit.edu"},
 ]
-requires-python = ">=3.12"
+requires-python = ">=3.10"
 dependencies = [
     "numpy>=1.21.0",
     "scipy>=1.7.0",
