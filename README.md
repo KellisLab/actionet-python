@@ -259,7 +259,7 @@ pip install . -v
 **Linux:**
 - Targets manylinux2014 (glibc ≥ 2.17)
 - Requires `libcholmod` from SuiteSparse
-- OpenMP detected automatically; builds without it if unavailable
+- OpenMP runtime defaults to `AUTO` (compiler-selected); override with `-C cmake.define.LIBACTIONET_OPENMP_RUNTIME=GNU|INTEL|LLVM|OFF`
 
 ### Troubleshooting
 
@@ -273,6 +273,16 @@ Armadillo headers are bundled in `libactionet/include/extern`. If CMake can't fi
 
 **OpenMP warnings:**
 OpenMP is optional. If unavailable, the package builds with single-threaded C++ code (you can still use `n_threads` parameter via Python's multiprocessing).
+If using MKL (e.g., conda numpy), avoid mixed OpenMP runtimes by setting `MKL_THREADING_LAYER=GNU` when using GNU OpenMP, or by selecting Intel OpenMP with an Intel toolchain.
+
+Examples:
+```bash
+# Force GNU OpenMP and align MKL
+MKL_THREADING_LAYER=GNU pip install . -C cmake.define.LIBACTIONET_OPENMP_RUNTIME=GNU
+
+# Use Intel OpenMP (Intel/IntelLLVM toolchains)
+pip install . -C cmake.define.LIBACTIONET_OPENMP_RUNTIME=INTEL
+```
 
 **Linking errors on macOS:**
 Ensure Xcode Command Line Tools are installed and up to date.
