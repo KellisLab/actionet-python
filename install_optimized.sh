@@ -20,7 +20,11 @@ fi
 
 if [[ "$arch" != "x86_64" && "$arch" != "amd64" ]]; then
     echo "[WARN] Non-x86_64 architecture ($arch) detected; skipping native flags. Running portable build."
-    python -m pip install "$@"
+    if [[ "$#" -eq 0 ]]; then
+        python -m pip install .
+    else
+        python -m pip install "$@"
+    fi
     exit 0
 fi
 
@@ -36,4 +40,8 @@ export CMAKE_ARGS="${CMAKE_ARGS:-} ${cmake_args}"
 
 echo "[INFO] Using CMAKE_ARGS=${CMAKE_ARGS}"
 echo "[INFO] Invoking pip install with optimized flags..."
-python -m pip install "$@"
+if [[ "$#" -eq 0 ]]; then
+    python -m pip install .
+else
+    python -m pip install "$@"
+fi
