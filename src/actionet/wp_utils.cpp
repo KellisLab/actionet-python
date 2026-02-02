@@ -2,6 +2,7 @@
 // Conversion functions between Python and C++ data structures
 
 #include "wp_utils.h"
+#include <limits>
 
 // Convert NumPy array to Armadillo dense matrix
 arma::mat numpy_to_arma_mat(py::array_t<double> arr) {
@@ -27,28 +28,61 @@ arma::sp_mat scipy_to_arma_sparse(py::object scipy_sparse) {
     py::object csc = scipy_sparse.attr("tocsc")();
 
     auto data = csc.attr("data").cast<py::array_t<double>>();
-    auto indices = csc.attr("indices").cast<py::array_t<int>>();
-    auto indptr = csc.attr("indptr").cast<py::array_t<int>>();
-    auto shape = csc.attr("shape").cast<std::pair<int, int>>();
+    auto indices = csc.attr("indices").cast<py::array_t<py::ssize_t, py::array::forcecast>>();
+    auto indptr = csc.attr("indptr").cast<py::array_t<py::ssize_t, py::array::forcecast>>();
+    auto shape = csc.attr("shape").cast<std::pair<py::ssize_t, py::ssize_t>>();
 
     auto data_ptr = data.data();
     auto indices_ptr = indices.data();
     auto indptr_ptr = indptr.data();
 
-    arma::umat locations(2, data.size());
-    arma::vec values(data.size());
+    if (shape.first < 0 || shape.second < 0) {
+        throw std::runtime_error("Sparse matrix shape must be non-negative");
+    }
 
-    size_t idx = 0;
-    for (int col = 0; col < shape.second; ++col) {
-        for (int j = indptr_ptr[col]; j < indptr_ptr[col + 1]; ++j) {
-            locations(0, idx) = indices_ptr[j];  // row
-            locations(1, idx) = col;              // col
+    const size_t n_rows = static_cast<size_t>(shape.first);
+    const size_t n_cols = static_cast<size_t>(shape.second);
+    const size_t nnz = static_cast<size_t>(data.size());
+
+    if (indptr.size() < 1 || static_cast<size_t>(indptr.size()) != (n_cols + 1)) {
+        throw std::runtime_error("Invalid CSC indptr length");
+    }
+    if (indptr_ptr[indptr.size() - 1] != static_cast<py::ssize_t>(nnz)) {
+        throw std::runtime_error("CSC indptr does not match data length");
+    }
+
+    auto to_uword = [](py::ssize_t v, const char* name) -> arma::uword {
+        if (v < 0) {
+            throw std::runtime_error(std::string("Negative index in sparse matrix: ") + name);
+        }
+        if (static_cast<unsigned long long>(v) > std::numeric_limits<arma::uword>::max()) {
+            throw std::runtime_error(std::string("Index too large for Armadillo uword: ") + name);
+        }
+        return static_cast<arma::uword>(v);
+    };
+
+    arma::umat locations(2, nnz);
+    arma::vec values(nnz);
+
+    for (py::ssize_t col = 0; col < shape.second; ++col) {
+        const py::ssize_t start = indptr_ptr[col];
+        const py::ssize_t end = indptr_ptr[col + 1];
+        if (start < 0 || end < start) {
+            throw std::runtime_error("Invalid CSC indptr range");
+        }
+        for (py::ssize_t j = start; j < end; ++j) {
+            const size_t idx = static_cast<size_t>(j);
+            const py::ssize_t row = indices_ptr[j];
+            if (static_cast<size_t>(row) >= n_rows) {
+                throw std::runtime_error("Row index out of bounds in sparse matrix");
+            }
+            locations(0, idx) = to_uword(row, "row");
+            locations(1, idx) = to_uword(col, "col");
             values(idx) = data_ptr[j];
-            ++idx;
         }
     }
 
-    return arma::sp_mat(locations, values, shape.first, shape.second);
+    return arma::sp_mat(locations, values, n_rows, n_cols);
 }
 
 // Convert Armadillo dense matrix to NumPy array
@@ -70,21 +104,21 @@ py::object arma_sparse_to_scipy(const arma::sp_mat& sp_mat) {
     py::module scipy_sparse = py::module::import("scipy.sparse");
 
     std::vector<double> data;
-    std::vector<int> rows;
-    std::vector<int> cols;
+    std::vector<py::ssize_t> rows;
+    std::vector<py::ssize_t> cols;
 
     for (arma::sp_mat::const_iterator it = sp_mat.begin(); it != sp_mat.end(); ++it) {
         data.push_back(*it);
-        rows.push_back(it.row());
-        cols.push_back(it.col());
+        rows.push_back(static_cast<py::ssize_t>(it.row()));
+        cols.push_back(static_cast<py::ssize_t>(it.col()));
     }
 
     return scipy_sparse.attr("coo_matrix")(
         py::make_tuple(
             py::array_t<double>(data.size(), data.data()),
             py::make_tuple(
-                py::array_t<int>(rows.size(), rows.data()),
-                py::array_t<int>(cols.size(), cols.data())
+                py::array_t<py::ssize_t>(rows.size(), rows.data()),
+                py::array_t<py::ssize_t>(cols.size(), cols.data())
             )
         ),
         py::make_tuple(sp_mat.n_rows, sp_mat.n_cols)
