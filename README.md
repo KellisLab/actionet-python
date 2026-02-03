@@ -89,7 +89,13 @@ sc.pl.embedding(adata, basis='X_umap', color='assigned_archetype')
 ```python
 an.reduce_kernel(adata, n_components=50, layer=None, key_added='action')
 ```
-Compute reduced kernel matrix using randomized SVD.
+Compute reduced kernel matrix using SVD. **Automatically selects the optimal SVD algorithm** based on matrix properties (sparse vs dense, size, sparsity) with negligible overhead (~1-2 microseconds). See [AUTOMATIC_SELECTION.md](AUTOMATIC_SELECTION.md) for details.
+
+Available algorithms:
+- **IRLB** (default for sparse): Implicitly Restarted Lanczos Bidiagonalization
+- **Halko** (default for dense): Randomized SVD (fastest for dense matrices)
+- **PRIMME** (auto-selected for large sparse): Memory-efficient for huge sparse matrices
+- **Feng**: Alternative randomized method
 
 ### ACTION Decomposition
 

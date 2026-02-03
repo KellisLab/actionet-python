@@ -11,16 +11,94 @@ from .anndata_utils import anndata_to_matrix, add_action_results, add_network_to
 from . import tools
 
 
+def _select_svd_algorithm(
+    S: Union[sp.spmatrix, np.ndarray],
+    svd_algorithm: Optional[int],
+    auto_select_algorithm: bool,
+    verbose: bool = True
+) -> int:
+    """
+    Select the optimal SVD algorithm based on matrix properties.
+
+    Parameters
+    ----------
+    S : scipy.sparse matrix or numpy.ndarray
+        Input matrix (features × cells).
+    svd_algorithm : int or None
+        User-specified algorithm (if None, automatic selection is performed).
+    auto_select_algorithm : bool
+        Whether to enable automatic algorithm selection.
+    verbose : bool
+        Whether to print selection rationale.
+
+    Returns
+    -------
+    int
+        Selected algorithm code (0=IRLB, 1=Halko, 2=Feng, 3=PRIMME).
+
+    Selection Logic
+    ---------------
+    1. If matrix exceeds 32-bit indexing limits (>2^31-1 elements), force PRIMME
+    2. For sparse matrices:
+       - Large & very sparse (>70% sparse, >10M elements): PRIMME
+       - Otherwise: IRLB
+    3. For dense matrices: Halko (fastest)
+    """
+    # If algorithm is explicitly specified, use it
+    if svd_algorithm is not None:
+        return svd_algorithm
+
+    # If auto-select is disabled, use default
+    if not auto_select_algorithm:
+        return 0  # IRLB default
+
+    # Calculate matrix properties
+    total_elements = np.prod(S.shape)
+
+    # Check for 32-bit overflow (2^31 - 1 = 2,147,483,647)
+    # Many sparse matrix libraries use 32-bit integers for indexing
+    MAX_32BIT = 2_147_483_647
+
+    if total_elements > MAX_32BIT:
+        if verbose:
+            print(f"⚠ Matrix exceeds 32-bit indexing limit ({total_elements:,} > {MAX_32BIT:,} elements)")
+            print(f"→ Auto-selected PRIMME for safe handling of large matrices")
+        return 3  # PRIMME
+
+    # Determine sparsity and select algorithm
+    if sp.issparse(S):
+        nnz = S.nnz
+        sparsity = 1.0 - (nnz / total_elements)
+
+        # For large, very sparse matrices, PRIMME is most memory-efficient
+        if sparsity > 0.7 and total_elements > 1_000_000_000:
+            if verbose:
+                print(f"Auto-selected PRIMME for large sparse matrix "
+                      f"({sparsity:.1%} sparse, {total_elements:,} elements)")
+            return 3  # PRIMME
+        else:
+            if verbose:
+                print(f"Auto-selected IRLB for sparse matrix "
+                      f"({sparsity:.1%} sparse, {total_elements:,} elements)")
+            return 0  # IRLB
+    else:
+        # Dense matrices: Halko is typically fastest
+        if verbose:
+            print(f"Auto-selected Halko for dense matrix ({total_elements:,} elements)")
+        return 1  # Halko
+
+
 def reduce_kernel(
     adata: AnnData,
     n_components: int = 30,
     layer: Optional[str] = None,
     key_added: str = "action",
-    svd_algorithm: int = 0,
+    svd_algorithm: Optional[int] = None,
     max_iter: int = 0,
     seed: int = 0,
     verbose: bool = True,
     inplace: bool = True,
+    auto_select_algorithm: bool = True,
 ) -> Optional[AnnData]:
     """
     Compute a low-rank approximation of the kernel matrix for ACTION decomposition and store the results in AnnData.
@@ -29,14 +107,19 @@ def reduce_kernel(
     ----------
     adata : AnnData
         Annotated data matrix (cells × features).
-    n_components : int, optional (default: 50)
+    n_components : int, optional (default: 30)
         Number of singular vectors (components) to compute.
     layer : str or None, optional (default: None)
         Layer in AnnData to use for computation. If None, uses adata.X.
     key_added : str, optional (default: "action")
         Key under which to store the results in adata.obsm and related fields.
-    svd_algorithm : int, optional (default: 0)
-        SVD algorithm to use (0=irlb, 1=halko, 2=feng).
+    svd_algorithm : int or None, optional (default: None)
+        SVD algorithm to use:
+        - 0: IRLB (Implicitly Restarted Lanczos Bidiagonalization)
+        - 1: Halko (Randomized SVD)
+        - 2: Feng (Feng's randomized algorithm)
+        - 3: PRIMME (PReconditioned Iterative MultiMethod Eigensolver)
+        - None: Automatic selection based on matrix properties (recommended)
     max_iter : int, optional (default: 0)
         Maximum number of iterations for SVD solver (0=auto).
     seed : int, optional (default: 0)
@@ -45,6 +128,13 @@ def reduce_kernel(
         Whether to print progress messages.
     inplace : bool, optional (default: True)
         If True, modifies the AnnData object in place. If False, returns a new AnnData object with the results.
+    auto_select_algorithm : bool, optional (default: True)
+        If True and svd_algorithm is None, automatically selects the best algorithm based on
+        matrix properties. The overhead of this check is negligible.
+        Selection logic:
+        - For large, sparse matrices (>70% sparse, >10M elements): PRIMME
+        - For dense matrices: Halko (fastest)
+        - Otherwise: IRLB (default)
 
     Returns
     -------
@@ -62,11 +152,14 @@ def reduce_kernel(
     adata.varm[f"{key_added}_A"] : np.ndarray
         A matrix from decomposition (features × n_components).
     adata.uns[f"{key_added}_params"] : dict
-        Parameters used for reduction (e.g., sigma, n_components).
+        Parameters used for reduction (e.g., sigma, n_components, svd_algorithm).
     """
     if not inplace:
         adata = adata.copy()
     S = anndata_to_matrix(adata, layer=layer, transpose=True)
+
+    # Select SVD algorithm (automatic selection has negligible overhead: ~1-2 microseconds)
+    svd_algorithm = _select_svd_algorithm(S, svd_algorithm, auto_select_algorithm, verbose)
 
     if sp.issparse(S):
         result = _core.reduce_kernel_sparse(S, n_components, svd_algorithm, max_iter, seed, verbose)
@@ -79,9 +172,14 @@ def reduce_kernel(
     adata.varm[f"{key_added}_A"] = result["A"]
     adata.obsm[f"{key_added}_B"] = result["B"]
 
+    # Map algorithm code to name for better user understanding
+    algorithm_names = {0: 'IRLB', 1: 'Halko', 2: 'Feng', 3: 'PRIMME'}
+
     adata.uns[f"{key_added}_params"] = {
         "sigma": result["sigma"],
         "n_components": n_components,
+        "svd_algorithm": svd_algorithm,
+        "svd_algorithm_name": algorithm_names.get(svd_algorithm, f'Unknown({svd_algorithm})'),
     }
 
     if not inplace:
