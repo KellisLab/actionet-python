@@ -47,6 +47,8 @@ cmake_install.cmake
 Makefile
 *.cmake
 !CMakeLists.txt
+tests/**.csv
+tests/**.txt
 
 # scikit-build
 _skbuild/
