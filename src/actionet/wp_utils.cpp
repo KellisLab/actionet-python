@@ -5,7 +5,7 @@
 #include <limits>
 
 // Convert NumPy array to Armadillo dense matrix
-arma::mat numpy_to_arma_mat(py::array_t<double> arr) {
+arma::mat numpy_to_arma_mat(py::array_t<double, py::array::c_style | py::array::forcecast> arr) {
     py::buffer_info buf = arr.request();
     if (buf.ndim != 2) {
         throw std::runtime_error("Expected 2D array");
@@ -126,7 +126,7 @@ py::object arma_sparse_to_scipy(const arma::sp_mat& sp_mat) {
 }
 
 // Convert NumPy vector to Armadillo vector
-arma::vec numpy_to_arma_vec(py::array_t<double> arr) {
+arma::vec numpy_to_arma_vec(py::array_t<double, py::array::c_style | py::array::forcecast> arr) {
     py::buffer_info buf = arr.request();
     if (buf.ndim != 1) {
         throw std::runtime_error("Expected 1D array");
