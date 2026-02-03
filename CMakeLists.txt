@@ -69,7 +69,7 @@ if(NOT EXISTS "${LIBACTIONET_DIR}/include/libactionet.hpp")
 endif()
 
 # Build libactionet static library
-# This configures BLAS, LAPACK, CHOLMOD, OpenMP, and Armadillo
+# This configures BLAS, LAPACK, OpenMP, and Armadillo
 add_subdirectory("${LIBACTIONET_DIR}")
 
 # ==============================================================================
@@ -107,7 +107,7 @@ target_include_directories(_core PRIVATE
 
 # Link against libactionet
 # This provides access to all libactionet functions and transitively links
-# BLAS, LAPACK, CHOLMOD, and OpenMP (if available)
+# BLAS, LAPACK, and OpenMP (if available)
 target_link_libraries(_core PRIVATE actionet)
 
 # ==============================================================================

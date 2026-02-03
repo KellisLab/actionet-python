@@ -29,15 +29,13 @@ brew install cmake openblas lapack
 **Linux (Debian/Ubuntu):**
 ```bash
 sudo apt-get update
-sudo apt-get install build-essential cmake libopenblas-dev liblapack-dev libsuitesparse-dev
+sudo apt-get install build-essential cmake libopenblas-dev liblapack-dev
 ```
 
 **Conda (rootless / HPC):**
 ```bash
-conda install -c conda-forge cmake openblas lapack suitesparse
+conda install -c conda-forge cmake openblas lapack
 ```
-
-libactionet now searches for CHOLMOD/SuiteSparse in conda prefixes (e.g. `CONDA_PREFIX`) in addition to system paths.
 
 ### Install from source
 
@@ -55,6 +53,123 @@ pip install -e .
 # Or build and install
 pip install .
 ```
+
+### Building with Intel MKL (Recommended for Best Performance)
+
+Intel MKL provides highly optimized BLAS/LAPACK implementations and can significantly improve performance, especially for large matrix operations. ACTIONet will automatically detect and use MKL if available.
+
+#### Option 1: Using Conda (Easiest)
+
+```bash
+# Create a new environment with MKL
+conda create -n actionet-mkl python=3.12
+conda activate actionet-mkl
+
+# Install Intel MKL and build dependencies
+conda install -c conda-forge cmake compilers numpy scipy mkl mkl-include
+
+# Clone and build ACTIONet
+git clone https://github.com/KellisLab/actionet-python.git
+cd actionet-python
+git submodule update --init --recursive
+
+# Build with MKL (automatically detected)
+pip install -e .
+```
+
+#### Option 2: Using Intel oneAPI (Most Optimized)
+
+For maximum performance, use Intel's oneAPI toolkit with the Intel C++ compiler:
+
+```bash
+# Download and install Intel oneAPI Base Toolkit
+# https://www.intel.com/content/www/us/en/developer/tools/oneapi/base-toolkit.html
+
+# Source the Intel environment
+source /opt/intel/oneapi/setvars.sh
+
+# Set environment variables for Intel MKL and compiler
+export CC=icx
+export CXX=icpx
+export MKLROOT=/opt/intel/oneapi/mkl/latest
+
+# Clone and build
+git clone https://github.com/KellisLab/actionet-python.git
+cd actionet-python
+git submodule update --init --recursive
+
+# Build with Intel compiler and MKL
+pip install -e .
+```
+
+#### Option 3: System MKL (Linux)
+
+```bash
+# Install Intel MKL from package manager (Ubuntu/Debian)
+wget -O- https://apt.repos.intel.com/intel-gpg-keys/GPG-PUB-KEY-INTEL-SW-PRODUCTS.PUB | gpg --dearmor | sudo tee /usr/share/keyrings/oneapi-archive-keyring.gpg > /dev/null
+echo "deb [signed-by=/usr/share/keyrings/oneapi-archive-keyring.gpg] https://apt.repos.intel.com/oneapi all main" | sudo tee /etc/apt/sources.list.d/oneAPI.list
+sudo apt update
+sudo apt install intel-oneapi-mkl intel-oneapi-mkl-devel
+
+# Source MKL environment
+source /opt/intel/oneapi/mkl/latest/env/vars.sh
+
+# Build ACTIONet
+cd actionet-python
+pip install -e .
+```
+
+#### Verifying MKL Usage
+
+After installation, verify that MKL is being used:
+
+```python
+import numpy as np
+print(np.__config__.show())  # Should show MKL in BLAS/LAPACK info
+```
+
+#### Performance Tuning with MKL
+
+For optimal performance, set these environment variables:
+
+```bash
+# Use all available cores
+export MKL_NUM_THREADS=$(nproc)
+
+# For GNU OpenMP runtime (conda default)
+export MKL_THREADING_LAYER=GNU
+export OMP_NUM_THREADS=$(nproc)
+
+# For Intel OpenMP runtime (Intel compiler)
+export MKL_THREADING_LAYER=INTEL
+export OMP_NUM_THREADS=$(nproc)
+
+# Disable MKL's internal threading (if using external parallelization)
+export MKL_NUM_THREADS=1
+```
+
+#### Expected Performance Improvements
+
+With Intel MKL, you should see:
+- **2-4x faster** matrix operations (SVD, matrix multiplication)
+- **Especially beneficial** for large datasets (>100K cells)
+- **Better multi-threading** efficiency
+- **Lower memory usage** for some operations
+
+#### Troubleshooting MKL Builds
+
+**MKL not detected:**
+- Ensure `MKLROOT` environment variable is set
+- Verify `mkl-include` is installed (conda) or headers are in `/opt/intel/oneapi/mkl/latest/include`
+
+**Mixed OpenMP runtime warnings:**
+- Set `MKL_THREADING_LAYER=GNU` for conda environments
+- Set `MKL_THREADING_LAYER=INTEL` for Intel oneAPI builds
+- Or disable OpenMP: `pip install . -C cmake.define.LIBACTIONET_OPENMP_RUNTIME=OFF`
+
+**Link errors with Intel compiler:**
+- Ensure `setvars.sh` is sourced before building
+- Try: `export LDFLAGS="-L${MKLROOT}/lib/intel64"`
 
 ## Quick Start
 
@@ -89,7 +204,7 @@ sc.pl.embedding(adata, basis='X_umap', color='assigned_archetype')
 ```python
 an.reduce_kernel(adata, n_components=50, layer=None, key_added='action')
 ```
-Compute reduced kernel matrix using SVD. **Automatically selects the optimal SVD algorithm** based on matrix properties (sparse vs dense, size, sparsity) with negligible overhead (~1-2 microseconds). See [AUTOMATIC_SELECTION.md](AUTOMATIC_SELECTION.md) for details.
+Compute reduced kernel matrix using SVD. **Automatically selects the optimal SVD algorithm** based on matrix properties (sparse vs dense, size, sparsity) with negligible overhead (~1-2 microseconds).
 
 Available algorithms:
 - **IRLB** (default for sparse): Implicitly Restarted Lanczos Bidiagonalization
@@ -264,8 +379,8 @@ pip install . -v
 
 **Linux:**
 - Targets manylinux2014 (glibc ≥ 2.17)
-- Requires `libcholmod` from SuiteSparse
 - OpenMP runtime defaults to `AUTO` (compiler-selected); override with `-C cmake.define.LIBACTIONET_OPENMP_RUNTIME=GNU|INTEL|LLVM|OFF`
+- **For best performance**, consider building with Intel MKL (see installation section above)
 
 ### Troubleshooting
 
