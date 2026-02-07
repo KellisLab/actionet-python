@@ -1,9 +1,11 @@
 ## Primary
 * Standardize key args
-* Parallel specificity bug
-* ascontiguousarray in backend 
+* Fix impute features
+* Core plotting functions
 
 ## Secondary
-
+* ascontiguousarray in backend
+* 
 ## Done
 * ARMA_DONT_USE_WRAPPER multiple redefinition
+* Parallel specificity bug (fixed???)
