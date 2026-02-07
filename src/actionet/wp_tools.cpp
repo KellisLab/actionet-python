@@ -176,31 +176,6 @@ py::array_t<int> mwm_rank1(py::array_t<double> u, py::array_t<double> v,
     return result;
 }
 
-// svd =================================================================================================================
-
-py::dict run_svd_sparse(py::object A, int k = 30, int max_it = 0, int seed = 0,
-                        int algorithm = 0, bool verbose = true) {
-    arma::sp_mat A_sp = scipy_to_arma_sparse(A);
-    arma::field<arma::mat> res = actionet::runSVD(A_sp, k, max_it, seed, algorithm, verbose);
-
-    py::dict out;
-    out["u"] = arma_mat_to_numpy(res(0));
-    out["d"] = arma_mat_to_numpy(res(1));
-    out["v"] = arma_mat_to_numpy(res(2));
-    return out;
-}
-
-py::dict run_svd_dense(py::object A, int k = 30, int max_it = 0, int seed = 0,
-                       int algorithm = 0, bool verbose = true) {
-    arma::mat A_mat = numpy_to_arma_mat(A);
-    arma::field<arma::mat> res = actionet::runSVD(A_mat, k, max_it, seed, algorithm, verbose);
-
-    py::dict out;
-    out["u"] = arma_mat_to_numpy(res(0));
-    out["d"] = arma_mat_to_numpy(res(1));
-    out["v"] = arma_mat_to_numpy(res(2));
-    return out;
-}
 
 // xicor ===============================================================================================================
 
@@ -290,14 +265,6 @@ void init_tools(py::module_ &m) {
     m.def("mwm_rank1", &mwm_rank1, "Maximum weight matching (rank-1)",
           py::arg("u"), py::arg("v"), py::arg("u_threshold") = 0, py::arg("v_threshold") = 0);
 
-    // svd
-    m.def("run_svd_sparse", &run_svd_sparse, "Run SVD (sparse)",
-          py::arg("A"), py::arg("k") = 30, py::arg("max_it") = 0, py::arg("seed") = 0,
-          py::arg("algorithm") = 0, py::arg("verbose") = true);
-
-    m.def("run_svd_dense", &run_svd_dense, "Run SVD (dense)",
-          py::arg("A"), py::arg("k") = 30, py::arg("max_it") = 0, py::arg("seed") = 0,
-          py::arg("algorithm") = 0, py::arg("verbose") = true);
 
     // xicor
     m.def("xicor", &xicor, "Compute xicor correlation",
