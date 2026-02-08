@@ -14,7 +14,6 @@ from . import tools
 def _select_svd_algorithm(
     S: Union[sp.spmatrix, np.ndarray],
     svd_algorithm: Optional[int],
-    auto_select_algorithm: bool,
     verbose: bool = True
 ) -> int:
     """
@@ -46,11 +45,9 @@ def _select_svd_algorithm(
     """
     # If algorithm is explicitly specified, use it
     if svd_algorithm is not None:
+        if svd_algorithm not in [0, 1, 2, 3]:
+            raise ValueError(f"Invalid svd_algorithm {svd_algorithm}. Must be 0 (IRLB), 1 (Halko), 2 (Feng), or 3 (PRIMME).")
         return svd_algorithm
-
-    # If auto-select is disabled, use default
-    if not auto_select_algorithm:
-        return 0  # IRLB default
 
     # Calculate matrix properties
     total_elements = np.prod(S.shape)
@@ -97,8 +94,7 @@ def reduce_kernel(
     max_iter: int = 0,
     seed: int = 0,
     verbose: bool = True,
-    inplace: bool = True,
-    auto_select_algorithm: bool = True,
+    inplace: bool = True
 ) -> Optional[AnnData]:
     """
     Compute a low-rank approximation of the kernel matrix for ACTION decomposition and store the results in AnnData.
@@ -128,13 +124,6 @@ def reduce_kernel(
         Whether to print progress messages.
     inplace : bool, optional (default: True)
         If True, modifies the AnnData object in place. If False, returns a new AnnData object with the results.
-    auto_select_algorithm : bool, optional (default: True)
-        If True and svd_algorithm is None, automatically selects the best algorithm based on
-        matrix properties. The overhead of this check is negligible.
-        Selection logic:
-        - For large, sparse matrices (>70% sparse, >10M elements): PRIMME
-        - For dense matrices: Halko (fastest)
-        - Otherwise: IRLB (default)
 
     Returns
     -------
@@ -158,8 +147,7 @@ def reduce_kernel(
         adata = adata.copy()
     S = anndata_to_matrix(adata, layer=layer, transpose=True)
 
-    # Select SVD algorithm (automatic selection has negligible overhead: ~1-2 microseconds)
-    svd_algorithm = _select_svd_algorithm(S, svd_algorithm, auto_select_algorithm, verbose)
+    svd_algorithm = _select_svd_algorithm(S, svd_algorithm, verbose)
 
     if sp.issparse(S):
         result = _core.reduce_kernel_sparse(S, n_components, svd_algorithm, max_iter, seed, verbose)
@@ -461,14 +449,14 @@ def compute_feature_specificity(
     if not inplace:
         adata = adata.copy()
     S = anndata_to_matrix(adata, layer=layer, transpose=True)
-    
+
     if isinstance(labels, str):
         if labels not in adata.obs:
             raise ValueError(f"Labels '{labels}' not found in adata.obs.")
         labels_arr = adata.obs[labels].values
     else:
         labels_arr = np.asarray(labels)
-    
+
     # Convert to integer labels
     from pandas import Categorical
     if not np.issubdtype(labels_arr.dtype, np.integer):
@@ -476,11 +464,10 @@ def compute_feature_specificity(
         labels_int = cat.codes.astype(np.int32)
     else:
         labels_int = labels_arr.astype(np.int32)
-    
-    # C++ expects 1-based labels, so add 1
+
+    # Function expects 1-based labels, so add 1
     labels_int = labels_int + 1
 
-    # Call appropriate function based on matrix type
     if sp.issparse(S):
         result = _core.compute_feature_specificity_sparse(S, labels_int, n_threads)
     else:
@@ -539,22 +526,12 @@ def compute_archetype_feature_specificity(
         Upper-tail significance scores (features × archetypes).
     adata.varm[f"{key_added}_feat_specificity_lower"] : np.ndarray
         Lower-tail significance scores (features × archetypes).
-
-    Examples
-    --------
-    >>> import actionet as act
-    >>> adata = act.compute_archetype_feature_specificity(
-    ...     adata,
-    ...     archetype_key="archetype_footprint"
-    ... )
     """
     if not inplace:
         adata = adata.copy()
 
-    # Get feature matrix (transpose to features x cells)
     S = anndata_to_matrix(adata, layer=layer, transpose=True)
 
-    # Get archetype matrix
     if isinstance(archetype_key, str):
         if archetype_key not in adata.obsm:
             raise ValueError(f"Archetype matrix '{archetype_key}' not found in adata.obsm.")
@@ -562,19 +539,14 @@ def compute_archetype_feature_specificity(
     else:
         H = np.asarray(archetype_key)
 
-    # H should be cells x archetypes, need to transpose for C++ (archetypes x cells)
     H = H.T
-
-    # Ensure H is float64 and C-contiguous
     H = np.ascontiguousarray(H, dtype=np.float64)
 
-    # Call appropriate function based on matrix type
     if sp.issparse(S):
         result = _core.archetype_feature_specificity_sparse(S, H, n_threads)
     else:
         result = _core.archetype_feature_specificity_dense(S, H, n_threads)
 
-    # Store results with appropriate naming
     adata.varm[f"{key_added}_feat_profile"] = result["archetypes"]
     adata.varm[f"{key_added}_feat_specificity_upper"] = result["upper_significance"]
     adata.varm[f"{key_added}_feat_specificity_lower"] = result["lower_significance"]
@@ -703,7 +675,7 @@ def layout_network(
         G, initial_coords, method, n_components,
         spread, min_dist, n_epochs, seed, n_threads, verbose
     )
-    
+
     adata.obsm[key_added] = coords
     if not inplace:
         return adata
@@ -711,20 +683,20 @@ def layout_network(
 
 
 def run_svd(
-    adata: AnnData,
+    X: Union[np.ndarray, sp.spmatrix],
     n_components: int = 30,
-    layer: Optional[str] = None,
-    algorithm: int = 0,
+    algorithm: Union[int] = 0,
+    max_iter: int = 0,
     seed: int = 0,
-    key_added: str = "X_svd",
-) -> AnnData:
+    verbose: bool = True,
+) -> dict:
     """
     Compute truncated SVD decomposition.
     
     Parameters
     ----------
-    adata
-        Annotated data matrix.
+    X
+        Matrix to decompose (obs × vars).
     n_components
         Number of components.
     layer
@@ -735,7 +707,9 @@ def run_svd(
         Random seed.
     key_added
         Key to store results.
-        
+    verbose
+        Whether to print progress messages.
+
     Returns
     -------
     AnnData
@@ -743,18 +717,16 @@ def run_svd(
         - adata.obsm[key_added]: Right singular vectors (cells × n_components)
         - adata.uns[f"{key_added}_params"]: SVD parameters including left singular vectors (u), singular values (d), and n_components
     """
-    S = anndata_to_matrix(adata, layer=layer, transpose=True)
-    
-    if sp.issparse(S):
-        result = _core.run_svd_sparse(S, n_components, 0, seed, algorithm, True)
-    else:
-        result = _core.run_svd_dense(S, n_components, 0, seed, algorithm, True)
 
-    adata.obsm[key_added] = result["v"]
-    adata.uns[f"{key_added}_params"] = {
-        "u": result["u"],
-        "d": result["d"],
-        "n_components": n_components,
-    }
+    if sp.issparse(X):
+        if not sp.isspmatrix_csr(X):
+            X = X.tocsr()
+
+    algorithm = _select_svd_algorithm(X, algorithm, verbose)
+
+    if sp.issparse(X):
+        result = _core.run_svd_sparse(X, n_components, max_iter, seed, algorithm, verbose)
+    else:
+        result = _core.run_svd_dense(X, n_components, max_iter, seed, algorithm, verbose)
     
-    return adata
+    return result

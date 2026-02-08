@@ -3,16 +3,17 @@
 from typing import Optional, Union
 import numpy as np
 from anndata import AnnData
+from scipy import sparse as sp
 
 from . import _core
 
 
 def compute_node_colors(
-    adata: AnnData,
+    obj: Union[AnnData, np.ndarray, sp.spmatrix],
     embedding_key: str = "umap_3d_actionet",
     key_added: Optional[str] = None,
     n_threads: int = 1,
-    inplace: bool = True,
+    return_raw: bool = False,
 ) -> Optional[Union[AnnData, np.ndarray]]:
     """
     Compute RGB colors for nodes based on their 3D embedding coordinates.
@@ -23,8 +24,8 @@ def compute_node_colors(
 
     Parameters
     ----------
-    adata : AnnData
-        Annotated data matrix.
+    obj
+        Annotated data matrix or matrix-like object (coerced to np.ndarray).
     embedding_key : str, optional (default: "umap_3d_actionet")
         Key in adata.obsm containing 3D embedding coordinates.
     key_added : str, optional
@@ -35,6 +36,8 @@ def compute_node_colors(
     inplace : bool, optional (default: True)
         If True, adds colors to adata.obsm and returns adata.
         If False, returns color array without modifying adata.
+    return_raw : bool, optional (default: False)
+        If True, returns color array without adding it to adata.
 
     Returns
     -------
@@ -59,13 +62,25 @@ def compute_node_colors(
     >>> adata = act.compute_node_colors(adata, embedding_key="X_umap_3d")
     >>> print(adata.obsm['colors_X_umap_3d'])
     """
-    if embedding_key not in adata.obsm:
-        raise ValueError(
-            f"Embedding '{embedding_key}' not found in adata.obsm. "
-            f"Available keys: {list(adata.obsm.keys())}"
-        )
+    if return_raw:
+        inplace = False
 
-    coordinates = adata.obsm[embedding_key]
+    is_anndata = False
+    if isinstance(obj, AnnData):
+        is_anndata = True
+
+    if is_anndata:
+        if embedding_key not in obj.obsm:
+            raise ValueError(
+                f"Embedding '{embedding_key}' not found in adata.obsm. "
+                f"Available keys: {list(obj.obsm.keys())}"
+            )
+        coordinates = obj.obsm[embedding_key]
+    else:
+        if isinstance(obj, sp.spmatrix):
+            coordinates = obj.todense()
+        else:
+            coordinates = np.asarray(obj)
 
     if coordinates.shape[1] < 3:
         raise ValueError(
@@ -75,12 +90,12 @@ def compute_node_colors(
     # Call C++ implementation
     colors = _core.compute_node_colors(coordinates, n_threads)
 
-    if not inplace:
-        return colors
+    if is_anndata and not return_raw:
+        # Add to adata
+        if key_added is None:
+            key_added = f"colors_{embedding_key}"
 
-    # Add to adata
-    if key_added is None:
-        key_added = f"colors_{embedding_key}"
+        obj.obsm[key_added] = colors
+        return obj
 
-    adata.obsm[key_added] = colors
-    return adata
+    return colors

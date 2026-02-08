@@ -17,7 +17,7 @@ def find_markers(
     labels_use: Optional[List[str]] = None,
     top_genes: Optional[int] = 50,
     features_use: Optional[str] = None,
-    features_keep: Optional[Union[str, List[str]]] = None,
+    features_keep: Optional[Union[str, List[str], np.ndarray, pd.Series]] = None,
     layer: Optional[str] = None,
     n_threads: int = 0,
     result: Literal["table", "ranks", "scores"] = "table",
@@ -132,18 +132,26 @@ def find_markers(
     cluster_names = np.unique(labels_arr_filtered)
 
     # Handle features_keep parameter (whitelist filtering)
-    # Can be: None (no filtering), or list (explicit feature labels)
+    # Can be: None (no filtering), list/array of names, boolean mask, or adata.var column name
     if features_keep is not None:
-        # Handle boolean columns
-        if features_keep.dtype == bool:
-            if len(features_keep) != len(feature_labels):
-                raise ValueError("Length of features_keep must match number of features")
-            keep_mask = features_keep
+        if isinstance(features_keep, str):
+            if features_keep in adata_filtered.var.columns:
+                keep_values = adata_filtered.var[features_keep].to_numpy()
+                if keep_values.dtype == bool:
+                    keep_mask = keep_values
+                else:
+                    keep_mask = np.isin(feature_labels, keep_values)
+            else:
+                keep_mask = np.isin(feature_labels, [features_keep])
         else:
-            # Explicit list provided - filter to features in the list
-            keep_mask = np.isin(feature_labels, features_keep)
+            keep_values = np.asarray(features_keep)
+            if keep_values.dtype == bool:
+                if len(keep_values) != len(feature_labels):
+                    raise ValueError("Length of features_keep mask must match number of features")
+                keep_mask = keep_values
+            else:
+                keep_mask = np.isin(feature_labels, keep_values)
 
-        # Apply the filter
         feat_spec = feat_spec[keep_mask, :]
         feature_labels = feature_labels[keep_mask]
 
@@ -207,7 +215,8 @@ def annotate_cells(
     method: Literal["vision", "actionet"] = "vision",
     features_use: Optional[str] = None,
     layer: Optional[str] = None,
-    net_key: str = "actionet",
+    network_key: str = "actionet",
+    net_slot: Optional[str] = None,
     norm_method: Literal["pagerank", "pagerank_sym"] = "pagerank",
     alpha: float = 0.85,
     max_it: int = 5,
@@ -240,7 +249,7 @@ def annotate_cells(
         If None, uses adata.var_names.
     layer : str, optional
         Layer to use for expression data. If None, uses adata.X.
-    net_key : str, optional (default: "actionet")
+    network_key : str, optional (default: "actionet")
         Key in adata.obsp containing the cell-cell network graph.
     norm_method : {"pagerank", "pagerank_sym"}, optional (default: "pagerank")
         Graph normalization method.
@@ -311,9 +320,9 @@ def annotate_cells(
     S = S.T
 
     # Get network graph
-    if net_key not in adata.obsp:
-        raise ValueError(f"Network '{net_key}' not found in adata.obsp")
-    G = adata.obsp[net_key]
+    if network_key not in adata.obsp:
+        raise ValueError(f"Network '{network_key}' not found in adata.obsp")
+    G = adata.obsp[network_key]
 
     if not issparse(G):
         G = csr_matrix(G)
@@ -442,12 +451,48 @@ def _encode_markers(
         # Keys/columns are cell types, values are lists of gene names
 
         if isinstance(markers, pd.DataFrame):
-            # Convert DataFrame to dict: columns -> cell types, values -> gene lists
-            markers_dict = {}
-            for col in markers.columns:
-                # Get non-null gene names for this cell type
-                genes = markers[col].dropna().tolist()
-                markers_dict[col] = genes
+            markers_df = markers.copy()
+            columns_lower = [str(col).lower() for col in markers_df.columns]
+            marker_cols = {"marker", "markers", "gene", "genes", "feature", "features"}
+            celltype_cols = {"celltype", "cell_type", "cell", "label", "group", "cluster"}
+            weight_cols = {"weight", "weights", "score"}
+
+            is_long = any(col in marker_cols for col in columns_lower) and any(
+                col in celltype_cols for col in columns_lower
+            )
+
+            if not is_long and markers_df.shape[1] in (2, 3):
+                nunique = markers_df.nunique(dropna=True)
+                is_long = (nunique.min() <= max(10, int(np.sqrt(len(markers_df)))))
+
+            if is_long:
+                # Long format: [marker, celltype, weight?]
+                def _find_col(candidates: set[str]) -> str:
+                    for col, lower in zip(markers_df.columns, columns_lower):
+                        if lower in candidates:
+                            return col
+                    return markers_df.columns[0]
+
+                marker_col = _find_col(marker_cols)
+                celltype_col = _find_col(celltype_cols)
+                weight_col = next(
+                    (col for col, lower in zip(markers_df.columns, columns_lower) if lower in weight_cols),
+                    None
+                )
+
+                markers_dict = {}
+                for celltype, group_df in markers_df.groupby(celltype_col):
+                    genes = group_df[marker_col].dropna().astype(str).tolist()
+                    weights = None
+                    if weight_col is not None:
+                        weights = group_df[weight_col].to_numpy(dtype=float)
+                    markers_dict[celltype] = list(zip(genes, weights)) if weights is not None else genes
+            else:
+                # Wide format: columns -> cell types, values -> gene lists
+                markers_dict = {}
+                for col in markers_df.columns:
+                    genes = markers_df[col].dropna().tolist()
+                    markers_dict[col] = genes
         else:
             # Dict input - need to handle two cases:
             # 1. Dict of lists (expected): {'CT_1': ['gene1', 'gene2']}
@@ -455,13 +500,10 @@ def _encode_markers(
             markers_dict = {}
             for key, val in markers.items():
                 if isinstance(val, dict):
-                    # Case 2: Extract values from nested dict, filtering out None
                     genes = [v for v in val.values() if v is not None and str(v) != 'nan']
                 elif isinstance(val, (list, tuple)):
-                    # Case 1: Already a list, just filter None/NaN
                     genes = [g for g in val if g is not None and str(g) != 'nan']
                 else:
-                    # Single value or other type - wrap in list
                     genes = [val] if val is not None else []
                 markers_dict[key] = genes
 
@@ -475,22 +517,22 @@ def _encode_markers(
             gene_list = markers_dict[celltype]
 
             for gene_spec in gene_list:
-                # Parse signed markers (e.g., "CD3D+", "CD8A-")
+                weight = 1.0
+                if isinstance(gene_spec, tuple) and len(gene_spec) == 2:
+                    gene_spec, weight = gene_spec
+
                 if isinstance(gene_spec, str):
                     if gene_spec.endswith('+'):
                         gene = gene_spec[:-1]
-                        weight = 1.0
+                        weight *= 1.0
                     elif gene_spec.endswith('-'):
                         gene = gene_spec[:-1]
-                        weight = -1.0
+                        weight *= -1.0
                     else:
                         gene = gene_spec
-                        weight = 1.0
                 else:
                     gene = str(gene_spec)
-                    weight = 1.0
 
-                # Find gene in feature set
                 matching_idx = np.where(feature_set == gene)[0]
                 if len(matching_idx) > 0:
                     idx = matching_idx[0]

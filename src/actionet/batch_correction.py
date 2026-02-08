@@ -16,7 +16,7 @@ def correct_batch_effect(
     design: Optional[np.ndarray] = None,
     reduction_key: str = "action",
     layer: Optional[str] = None,
-    corrected_key: str = "action_corrected",
+    corrected_suffix: str = "corrected",
     inplace: bool = True,
 ) -> AnnData:
     """
@@ -37,8 +37,8 @@ def correct_batch_effect(
         Key in adata.obsm containing reduced representation from reduce_kernel().
     layer
         Layer to use for correction (None uses .X).
-    corrected_key
-        Key to store corrected reduction in adata.obsm.
+    corrected_suffix
+        Suffix for corrected key.
     inplace
         If True, modifies adata in place. If False, returns a new AnnData.
 
@@ -48,6 +48,8 @@ def correct_batch_effect(
         - adata.obsm[corrected_key]: Batch-corrected reduction
         - adata.uns[f"{corrected_key}_params"]: Correction parameters
     """
+    corrected_key = f"{reduction_key}_{corrected_suffix}"
+
     if (batch_key is None) == (design is None):
         raise ValueError("Provide exactly one of 'batch_key' or 'design'.")
 
