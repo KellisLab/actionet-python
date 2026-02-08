@@ -33,9 +33,6 @@ def compute_node_colors(
         If None, uses f"colors_{embedding_key}".
     n_threads : int, optional (default: 1)
         Number of threads to use.
-    inplace : bool, optional (default: True)
-        If True, adds colors to adata.obsm and returns adata.
-        If False, returns color array without modifying adata.
     return_raw : bool, optional (default: False)
         If True, returns color array without adding it to adata.
 
@@ -62,9 +59,6 @@ def compute_node_colors(
     >>> adata = act.compute_node_colors(adata, embedding_key="X_umap_3d")
     >>> print(adata.obsm['colors_X_umap_3d'])
     """
-    if return_raw:
-        inplace = False
-
     is_anndata = False
     if isinstance(obj, AnnData):
         is_anndata = True

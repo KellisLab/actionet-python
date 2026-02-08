@@ -257,7 +257,7 @@ def run_actionet(
             embedding_key=layout_3d_key,
             key_added=f"colors_{network_key}",
             n_threads=n_threads,
-            inplace=True,
+            return_raw=False,
         )
 
     # Step 7: Compute feature specificity for each archetype

@@ -216,7 +216,6 @@ def annotate_cells(
     features_use: Optional[str] = None,
     layer: Optional[str] = None,
     network_key: str = "actionet",
-    net_slot: Optional[str] = None,
     norm_method: Literal["pagerank", "pagerank_sym"] = "pagerank",
     alpha: float = 0.85,
     max_it: int = 5,
@@ -419,130 +418,76 @@ def _encode_markers(
     feature_set: np.ndarray,
 ) -> tuple[np.ndarray, List[str]]:
     """
-    Encode marker genes into a binary/weighted feature × celltype matrix.
+    Encode marker genes into a binary feature × celltype matrix.
 
-    Mimics R implementation: supports dict/list, wide-format DataFrame, or matrix.
-    DataFrames are treated as wide format only (columns = celltypes, values = gene names).
+    Mirrors R .encode_markers: accepts list-like (dict/DataFrame) or a numeric matrix,
+    enforces named labels, and binarizes markers.
 
     Parameters
     ----------
     markers : dict, DataFrame, or ndarray
         Marker specification:
-        - dict: Keys are cell types, values are lists of gene names
-        - DataFrame: Wide format with columns as cell types, values as gene names
-        - ndarray: Pre-computed marker matrix
+        - dict: keys are labels, values are lists of feature names
+        - DataFrame: columns are labels, values are feature names
+        - ndarray: numeric matrix (features × labels)
     feature_set : ndarray
         Array of feature names.
 
     Returns
     -------
     tuple
-        (X, celltype_names) where X is binary/weighted matrix of shape (n_features, n_celltypes)
-        and celltype_names is a list of cell type names.
+        (X, label_names) where X is a binary matrix of shape (n_features, n_labels)
+        and label_names is a list of label names.
     """
     if isinstance(markers, np.ndarray):
-        # Already a matrix - just return it with generic names
-        n_celltypes = markers.shape[1] if markers.ndim > 1 else 1
-        celltype_names = [f"Celltype_{i}" for i in range(n_celltypes)]
-        return markers, celltype_names
-
-    elif isinstance(markers, (dict, pd.DataFrame)):
-        # Both dict and DataFrame are handled the same way:
-        # Keys/columns are cell types, values are lists of gene names
-
-        if isinstance(markers, pd.DataFrame):
-            markers_df = markers.copy()
-            columns_lower = [str(col).lower() for col in markers_df.columns]
-            marker_cols = {"marker", "markers", "gene", "genes", "feature", "features"}
-            celltype_cols = {"celltype", "cell_type", "cell", "label", "group", "cluster"}
-            weight_cols = {"weight", "weights", "score"}
-
-            is_long = any(col in marker_cols for col in columns_lower) and any(
-                col in celltype_cols for col in columns_lower
-            )
-
-            if not is_long and markers_df.shape[1] in (2, 3):
-                nunique = markers_df.nunique(dropna=True)
-                is_long = (nunique.min() <= max(10, int(np.sqrt(len(markers_df)))))
-
-            if is_long:
-                # Long format: [marker, celltype, weight?]
-                def _find_col(candidates: set[str]) -> str:
-                    for col, lower in zip(markers_df.columns, columns_lower):
-                        if lower in candidates:
-                            return col
-                    return markers_df.columns[0]
-
-                marker_col = _find_col(marker_cols)
-                celltype_col = _find_col(celltype_cols)
-                weight_col = next(
-                    (col for col, lower in zip(markers_df.columns, columns_lower) if lower in weight_cols),
-                    None
-                )
-
-                markers_dict = {}
-                for celltype, group_df in markers_df.groupby(celltype_col):
-                    genes = group_df[marker_col].dropna().astype(str).tolist()
-                    weights = None
-                    if weight_col is not None:
-                        weights = group_df[weight_col].to_numpy(dtype=float)
-                    markers_dict[celltype] = list(zip(genes, weights)) if weights is not None else genes
-            else:
-                # Wide format: columns -> cell types, values -> gene lists
-                markers_dict = {}
-                for col in markers_df.columns:
-                    genes = markers_df[col].dropna().tolist()
-                    markers_dict[col] = genes
-        else:
-            # Dict input - need to handle two cases:
-            # 1. Dict of lists (expected): {'CT_1': ['gene1', 'gene2']}
-            # 2. Dict of dicts (from df.to_dict()): {'CT_1': {0: 'gene1', 1: 'gene2'}}
-            markers_dict = {}
-            for key, val in markers.items():
-                if isinstance(val, dict):
-                    genes = [v for v in val.values() if v is not None and str(v) != 'nan']
-                elif isinstance(val, (list, tuple)):
-                    genes = [g for g in val if g is not None and str(g) != 'nan']
-                else:
-                    genes = [val] if val is not None else []
-                markers_dict[key] = genes
-
-        # Process dict of markers
-        celltype_names = list(markers_dict.keys())
-        n_features = len(feature_set)
-
+        X = np.asarray(markers)
+        if not np.isfinite(X).all():
+            raise ValueError("'markers' contains non-numeric values")
+        if X.ndim != 2:
+            raise ValueError("'markers' must be a 2D array")
+        if X.shape[0] != len(feature_set):
+            raise ValueError("Number of rows in 'markers' does not match number of features")
+        X = (X != 0).astype(np.float32)
+        label_names = [f"Label_{i}" for i in range(X.shape[1])]
+    elif isinstance(markers, pd.DataFrame):
+        if markers.columns is None or markers.columns.isnull().any():
+            raise ValueError("'markers' contains unnamed entries")
+        if markers.columns.duplicated().any():
+            raise ValueError("'markers' contains duplicated labels")
+        label_names = markers.columns.tolist()
         columns = []
-        for celltype in celltype_names:
-            col_data = np.zeros(n_features, dtype=np.float32)
-            gene_list = markers_dict[celltype]
-
-            for gene_spec in gene_list:
-                weight = 1.0
-                if isinstance(gene_spec, tuple) and len(gene_spec) == 2:
-                    gene_spec, weight = gene_spec
-
-                if isinstance(gene_spec, str):
-                    if gene_spec.endswith('+'):
-                        gene = gene_spec[:-1]
-                        weight *= 1.0
-                    elif gene_spec.endswith('-'):
-                        gene = gene_spec[:-1]
-                        weight *= -1.0
-                    else:
-                        gene = gene_spec
-                else:
-                    gene = str(gene_spec)
-
-                matching_idx = np.where(feature_set == gene)[0]
-                if len(matching_idx) > 0:
-                    idx = matching_idx[0]
-                    col_data[idx] = weight
-
-            columns.append(col_data.reshape(-1, 1))
-
-        X = np.hstack(columns)
-        return X, celltype_names
-
+        for col in label_names:
+            values = markers[col].dropna().astype(str).tolist()
+            columns.append(np.isin(feature_set, values).astype(np.float32).reshape(-1, 1))
+        X = np.hstack(columns) if columns else np.zeros((len(feature_set), 0), dtype=np.float32)
+    elif isinstance(markers, dict):
+        label_names = list(markers.keys())
+        if any(name is None for name in label_names):
+            raise ValueError("'markers' contains unnamed entries")
+        if len(set(label_names)) != len(label_names):
+            raise ValueError("'markers' contains duplicated labels")
+        columns = []
+        for name in label_names:
+            vals = markers[name]
+            if isinstance(vals, (list, tuple, np.ndarray, pd.Series)):
+                values = [v for v in vals if v is not None]
+            else:
+                values = [vals] if vals is not None else []
+            values = [str(v) for v in values]
+            columns.append(np.isin(feature_set, values).astype(np.float32).reshape(-1, 1))
+        X = np.hstack(columns) if columns else np.zeros((len(feature_set), 0), dtype=np.float32)
     else:
-        raise ValueError(f"Unsupported markers type: {type(markers)}")
+        raise ValueError("'markers' must be one of: dict, DataFrame, or ndarray")
 
+    if X.shape[1] == 0:
+        raise ValueError("No markers provided")
+
+    col_sums = X.sum(axis=0)
+    zero_cols = np.where(col_sums == 0)[0]
+    if len(zero_cols) == X.shape[1]:
+        raise ValueError("No markers in 'features_use'")
+    if len(zero_cols) > 0:
+        for idx in zero_cols:
+            print(f"Label '{label_names[idx]}' has no markers")
+
+    return X, label_names

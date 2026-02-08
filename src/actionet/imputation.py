@@ -4,6 +4,7 @@ from typing import Optional, Union, List, Literal
 import numpy as np
 import scipy.sparse as sp
 from anndata import AnnData
+import pandas as pd
 
 from . import _core
 from .anndata_utils import anndata_to_matrix
@@ -21,7 +22,7 @@ def impute_features(
     max_iter: int = 5,
     norm_method: Union[int, Literal["pagerank", "pagerank_sym"]] = "pagerank_sym",
     n_threads: int = 0,
-) -> np.ndarray:
+) -> pd.DataFrame:
     """
     Impute gene expression using network diffusion.
 
@@ -55,9 +56,9 @@ def impute_features(
 
     Returns
     -------
-    imputed_expr : np.ndarray
-        Imputed expression matrix (cells x features).
-        If key_added is provided, also stores in adata.layers[key_added].
+    imputed_expr : pd.DataFrame
+        Imputed expression matrix (cells x features) with adata.obs_names as index
+        and the input features as columns.
     """
     if isinstance(norm_method, str):
         norm_method_code = 2 if norm_method == "pagerank_sym" else 0
@@ -67,7 +68,7 @@ def impute_features(
     if network_key not in adata.obsp:
         raise ValueError(f"Network '{network_key}' not found. Run build_network first.")
 
-    features = np.array(features)
+    features = np.array(features, dtype=object)
     if features_use is None:
         feature_labels = adata.var_names.to_numpy()
     else:
@@ -75,12 +76,13 @@ def impute_features(
             raise ValueError(f"Column '{features_use}' not found in adata.var")
         feature_labels = adata.var[features_use].to_numpy()
 
-    feature_mask = np.isin(feature_labels, features)
+    feature_to_idx = {feat: idx for idx, feat in enumerate(feature_labels)}
+    matched_features = [feat for feat in features.tolist() if feat in feature_to_idx]
 
-    if feature_mask.sum() == 0:
+    if len(matched_features) == 0:
         raise ValueError("None of the specified features found in adata.var_names")
 
-    feature_indices = np.where(feature_mask)[0]
+    feature_indices = np.array([feature_to_idx[feat] for feat in matched_features], dtype=int)
 
     S = anndata_to_matrix(adata, layer=layer, transpose=True)
     X0 = S[feature_indices, :]
@@ -105,9 +107,9 @@ def impute_features(
         H = smooth_out["H"]
         X_imputed = (W @ H.T).T
     else:
-        X0_T = X0.T
+        # X0_T = X0.T
         X_imputed = _core.compute_network_diffusion(
-            G, X0_T, alpha, max_iter, n_threads, True, norm_method_code, 1e-8
+            G, X0.T, alpha, max_iter, n_threads, True, norm_method_code, 1e-8
         )
 
     original_max = X0.max(axis=1)
@@ -118,7 +120,7 @@ def impute_features(
 
     X_imputed = np.maximum(X_imputed, 0)
 
-    return X_imputed
+    return pd.DataFrame(X_imputed, index=adata.obs_names, columns=matched_features)
 
 
 def impute_from_archetypes(
