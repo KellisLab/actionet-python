@@ -5,6 +5,7 @@ import numpy as np
 import scipy.sparse as sp
 from anndata import AnnData
 import pandas as pd
+import warnings
 
 from . import _core
 from .anndata_utils import anndata_to_matrix
@@ -78,6 +79,9 @@ def impute_features(
 
     feature_to_idx = {feat: idx for idx, feat in enumerate(feature_labels)}
     matched_features = [feat for feat in features.tolist() if feat in feature_to_idx]
+    missing_features = [feat for feat in features.tolist() if feat not in feature_to_idx]
+    if missing_features:
+        print(f"Features missing: {', '.join(map(str, missing_features))}")
 
     if len(matched_features) == 0:
         raise ValueError("None of the specified features found in adata.var_names")

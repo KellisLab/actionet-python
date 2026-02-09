@@ -41,6 +41,10 @@ dev = [
     "black>=22.0.0",
     "ruff>=0.0.260",
 ]
+plotting = [
+    "lets-plot>=4.0.0",
+    "plotly>=5.18.0",
+]
 
 [project.urls]
 #Homepage = "https://github.com/KellisLab/actionet-python"

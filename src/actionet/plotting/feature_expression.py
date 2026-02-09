@@ -1,0 +1,213 @@
+"""Feature expression plotting utilities for ACTIONet."""
+
+from __future__ import annotations
+
+from typing import Iterable, Literal, Optional, Sequence, Union
+
+import numpy as np
+import pandas as pd
+from anndata import AnnData
+
+from ..anndata_utils import anndata_to_matrix
+from ..imputation import impute_features
+from .umap import plot_umap
+
+
+def _flatten_features(features: Union[str, Sequence[Union[str, Iterable[str]]]]) -> list[str]:
+    if isinstance(features, str):
+        return [features]
+    out: list[str] = []
+    for item in features:
+        if isinstance(item, str):
+            out.append(item)
+        else:
+            out.extend([str(val) for val in item])
+    return out
+
+
+def _resolve_feature_labels(adata: AnnData, features_use: Optional[str]) -> np.ndarray:
+    if features_use is None:
+        return adata.var_names.to_numpy()
+    if features_use not in adata.var.columns:
+        raise ValueError(f"Column '{features_use}' not found in adata.var")
+    return adata.var[features_use].to_numpy()
+
+
+def _select_features(
+    adata: AnnData,
+    features: Union[str, Sequence[Union[str, Iterable[str]]]],
+    features_use: Optional[str],
+    sort_features: bool,
+) -> list[str]:
+    feature_labels = _resolve_feature_labels(adata, features_use)
+    feature_set = set(feature_labels.tolist())
+    flat = _flatten_features(features)
+    unique = list(dict.fromkeys(flat))
+    matched = [feat for feat in unique if feat in feature_set]
+    if sort_features:
+        matched = sorted(matched)
+    return matched
+
+
+def _extract_expression(
+    adata: AnnData,
+    features: Sequence[str],
+    features_use: Optional[str],
+    layer: Optional[str],
+) -> pd.DataFrame:
+    feature_labels = _resolve_feature_labels(adata, features_use)
+    feature_to_idx = {feat: idx for idx, feat in enumerate(feature_labels)}
+    feature_indices = np.array([feature_to_idx[feat] for feat in features], dtype=int)
+
+    matrix = anndata_to_matrix(adata, layer=layer, transpose=True)
+    expr = matrix[feature_indices, :]
+    if hasattr(expr, "toarray"):
+        expr = expr.toarray()
+    expr = np.asarray(expr).T
+    return pd.DataFrame(expr, index=adata.obs_names, columns=features)
+
+
+def _grid_shape(n_plots: int) -> tuple[int, int]:
+    ncol = int(np.ceil(np.sqrt(n_plots)))
+    nrow = int(np.ceil(n_plots / ncol))
+    return nrow, ncol
+
+
+def plot_feature_expression(
+    adata: AnnData,
+    features: Union[str, Sequence[Union[str, Iterable[str]]]],
+    features_use: Optional[str] = None,
+    alpha: float = 0.9,
+    algorithm: Literal["actionet", "pca"] = "actionet",
+    layer: Optional[str] = "logcounts",
+    trans_attr: Optional[Union[str, Sequence, np.ndarray]] = None,
+    trans_th: float = -0.5,
+    trans_fac: float = 3.0,
+    grad_palette: Union[str, Sequence[str]] = "magma",
+    point_size: float = 1.0,
+    net_slot: str = "actionet",
+    basis: str = "umap_2d_actionet",
+    single_plot: bool = False,
+    show_legend: bool = False,
+    sort_features: bool = True,
+    n_threads: int = 0,
+):
+    """Plot feature expression values on the UMAP embedding.
+
+    Parameters
+    ----------
+    adata
+        AnnData with expression data and embedding in ``adata.obsm[basis]``.
+    features
+        Feature name or collection of features to plot.
+    features_use
+        Column in ``adata.var`` to use for feature matching.
+    alpha
+        Diffusion parameter; if > 0, impute expression using network diffusion.
+    algorithm
+        Imputation algorithm (``"actionet"`` or ``"pca"``).
+    layer
+        Layer to read expression values from when alpha == 0.
+    trans_attr
+        Optional continuous attribute controlling transparency.
+    trans_th
+        Z-score threshold for transparency mapping.
+    trans_fac
+        Transparency scale factor for the logistic mapping.
+    grad_palette
+        Continuous palette for expression values.
+    point_size
+        Marker size for UMAP scatter.
+    net_slot
+        Key in ``adata.obsp`` for the ACTIONet network.
+    basis
+        Key in ``adata.obsm`` containing 2D coordinates.
+    single_plot
+        If True, arrange multiple plots into a grid.
+    show_legend
+        Whether to show the color legend.
+    sort_features
+        If True, sort matched features.
+    n_threads
+        Number of threads for imputation.
+
+    Returns
+    -------
+    lets_plot.PlotSpec or dict
+        A lets-plot object, a grid if ``single_plot`` is True, or a dict of plots.
+    """
+
+    requested = _flatten_features(features)
+    marker_set = _select_features(adata, requested, features_use, sort_features)
+    if len(marker_set) == 0:
+        raise ValueError("No features found in 'features_use'.")
+
+    if len(marker_set) == 1 and alpha != 0:
+        alpha = 0
+
+    if alpha > 0:
+        expr_profile = impute_features(
+            adata,
+            features=requested,
+            algorithm=algorithm,
+            features_use=features_use,
+            network_key=net_slot,
+            layer=layer,
+            alpha=alpha,
+            n_threads=n_threads,
+        )
+        if sort_features:
+            expr_profile = expr_profile.loc[:, [feat for feat in marker_set if feat in expr_profile.columns]]
+    else:
+        expr_profile = _extract_expression(adata, marker_set, features_use, layer)
+
+    out = {}
+    for feat_name in expr_profile.columns:
+        values = expr_profile[feat_name].to_numpy()
+        out[feat_name] = plot_umap(
+            adata,
+            color=values,
+            color_source=None,
+            cmap=grad_palette,
+            size=point_size,
+            trans_attr=trans_attr,
+            trans_fac=trans_fac,
+            trans_th=trans_th,
+            basis=basis,
+            legend=show_legend,
+            title=feat_name,
+        )
+
+    if single_plot and len(out) > 1:
+        try:
+            from lets_plot import gggrid
+        except ImportError as exc:  # pragma: no cover - optional dependency
+            raise ImportError("lets-plot is required for plot grids.") from exc
+        nrow, ncol = _grid_shape(len(out))
+        scale_size = point_size / max(nrow, 1)
+        plots = []
+        for key in list(out.keys()):
+            plots.append(
+                plot_umap(
+                    adata,
+                    color=expr_profile[key].to_numpy(),
+                    color_source=None,
+                    cmap=grad_palette,
+                    size=scale_size,
+                    trans_attr=trans_attr,
+                    trans_fac=trans_fac,
+                    trans_th=trans_th,
+                    basis=basis,
+                    legend=show_legend,
+                    title=key,
+                )
+            )
+        total_cells = nrow * ncol
+        if len(plots) < total_cells:
+            plots.extend([None] * (total_cells - len(plots)))
+        return gggrid(plots, ncol=ncol)
+
+    if len(out) == 1:
+        return next(iter(out.values()))
+    return out
+

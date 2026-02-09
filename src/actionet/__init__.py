@@ -51,6 +51,12 @@ from .annotation import (
 from .visualization import (
     compute_node_colors,
 )
+from .plotting import (
+    plot_feature_expression,
+    plot_qc_violin,
+    plot_umap,
+    plot_umap_interactive,
+)
 from .pipeline import (
     run_actionet,
 )
@@ -97,6 +103,10 @@ __all__ = [
     "annotate_cells",
     # Visualization
     "compute_node_colors",
+    "plot_feature_expression",
+    "plot_qc_violin",
+    "plot_umap",
+    "plot_umap_interactive",
     # Pipeline
     "run_actionet",
     # Utilities

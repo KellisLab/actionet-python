@@ -197,6 +197,22 @@ an.compute_feature_specificity(adata, labels='assigned_archetype')
 sc.pl.embedding(adata, basis='X_umap', color='assigned_archetype')
 ```
 
+## QC Plotting
+
+ACTIONet includes a lets-plot based QC violin helper for per-cell metrics stored in ``adata.obs``.
+
+```python
+import actionet as an
+
+an.plot_qc_violin(
+    adata,
+    keys=["n_counts", "n_genes"],
+    groupby="CellLabel",
+    log_trans="log10",
+    title="QC metrics",
+)
+```
+
 ## Core Functions
 
 ### Dimensionality Reduction
@@ -499,3 +515,28 @@ GPL-3.0 (same as R package)
 - **R Data Container**: https://github.com/shmohammadi86/ACTIONetExperiment
 - **AnnData**: https://anndata.readthedocs.io
 - **scanpy**: https://scanpy.readthedocs.io
+
+## Plotting (preview)
+
+UMAP plots use `lets-plot` for static rendering and Plotly WebGL for interactive views. Install plotting extras first.
+
+```bash
+pip install -e ".[plotting]"
+```
+
+```python
+import actionet as act
+
+# adata.obsm["X_umap"] must exist
+p_static = act.plot_umap(adata, color="cluster")
+fig = act.plot_umap_interactive(adata, color="gene1")
+
+# Feature expression overlays
+plots = act.plot_feature_expression(
+    adata,
+    features=["GeneA", "GeneB"],
+    features_use=None,
+    alpha=0,
+    layer="logcounts",
+)
+```
