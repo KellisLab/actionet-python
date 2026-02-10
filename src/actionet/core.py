@@ -685,7 +685,7 @@ def layout_network(
 def run_svd(
     X: Union[np.ndarray, sp.spmatrix],
     n_components: int = 30,
-    algorithm: Union[int] = 0,
+    algorithm: Union[int] = None,
     max_iter: int = 0,
     seed: int = 0,
     verbose: bool = True,
@@ -725,8 +725,8 @@ def run_svd(
     algorithm = _select_svd_algorithm(X, algorithm, verbose)
 
     if sp.issparse(X):
-        result = _core.run_svd_sparse(X, n_components, max_iter, seed, algorithm, verbose)
+        result = _core.run_svd_sparse(X.T, n_components, max_iter, seed, algorithm, verbose)
     else:
-        result = _core.run_svd_dense(X, n_components, max_iter, seed, algorithm, verbose)
+        result = _core.run_svd_dense(X.T, n_components, max_iter, seed, algorithm, verbose)
     
     return result
