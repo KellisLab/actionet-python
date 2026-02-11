@@ -23,6 +23,7 @@ from .anndata_utils import (
     matrix_to_anndata,
     add_action_results,
     add_network_to_anndata,
+    aggregate_anndata,
 )
 from .batch_correction import (
     correct_batch_effect,
@@ -115,5 +116,6 @@ __all__ = [
     "matrix_to_anndata",
     "add_action_results",
     "add_network_to_anndata",
+    "aggregate_anndata",
     "aggregate_matrix",
 ]
