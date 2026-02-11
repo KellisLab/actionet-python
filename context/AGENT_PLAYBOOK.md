@@ -21,6 +21,7 @@ Upstream dependency:
 - `docs/` — user and developer documentation
 - `data/` — example or reference datasets (not synced; lives locally)
 - `scripts/` — helper scripts
+- `R/` — Copy of the R API for parity reference. (not synced)
 - `CMakeLists.txt` — CMake build for extension module
 - `pyproject.toml`, `setup.py`, `MANIFEST.in` — packaging and build configuration
 - `install_optimized.sh` — optimized build/install helper

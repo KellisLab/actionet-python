@@ -74,6 +74,14 @@ py::array_t<double> compute_grouped_sums_sparse(py::object S, py::array_t<double
     return arma_mat_to_numpy(pb);
 }
 
+py::object compute_grouped_sums_sparse2(py::object S, py::array_t<double> sample_assignments, int axis = 0) {
+    arma::sp_mat S_sp = scipy_to_arma_sparse(S);
+    arma::vec assignments_vec = numpy_to_arma_vec(sample_assignments);
+
+    arma::sp_mat pb = actionet::computeGroupedSums2(S_sp, assignments_vec, axis);
+    return arma_sparse_to_scipy(pb);
+}
+
 py::array_t<double> compute_grouped_sums_dense(py::array_t<double> S, py::array_t<double> sample_assignments, int axis = 0) {
     arma::mat S_mat = numpy_to_arma_mat(S);
     arma::vec assignments_vec = numpy_to_arma_vec(sample_assignments);
@@ -90,6 +98,14 @@ py::array_t<double> compute_grouped_means_sparse(py::object S, py::array_t<doubl
     return arma_mat_to_numpy(pb);
 }
 
+py::object compute_grouped_means_sparse2(py::object S, py::array_t<double> sample_assignments, int axis = 0) {
+    arma::sp_mat S_sp = scipy_to_arma_sparse(S);
+    arma::vec assignments_vec = numpy_to_arma_vec(sample_assignments);
+
+    arma::sp_mat pb = actionet::computeGroupedMeans2(S_sp, assignments_vec, axis);
+    return arma_sparse_to_scipy(pb);
+}
+
 py::array_t<double> compute_grouped_means_dense(py::array_t<double> S, py::array_t<double> sample_assignments, int axis = 0) {
     arma::mat S_mat = numpy_to_arma_mat(S);
     arma::vec assignments_vec = numpy_to_arma_vec(sample_assignments);
@@ -104,6 +120,14 @@ py::array_t<double> compute_grouped_vars_sparse(py::object S, py::array_t<double
 
     arma::mat pb = actionet::computeGroupedVars(S_sp, assignments_vec, axis);
     return arma_mat_to_numpy(pb);
+}
+
+py::object compute_grouped_vars_sparse2(py::object S, py::array_t<double> sample_assignments, int axis = 0) {
+    arma::sp_mat S_sp = scipy_to_arma_sparse(S);
+    arma::vec assignments_vec = numpy_to_arma_vec(sample_assignments);
+
+    arma::sp_mat pb = actionet::computeGroupedVars2(S_sp, assignments_vec, axis);
+    return arma_sparse_to_scipy(pb);
 }
 
 py::array_t<double> compute_grouped_vars_dense(py::array_t<double> S, py::array_t<double> sample_assignments, int axis = 0) {
@@ -227,16 +251,25 @@ void init_tools(py::module_ &m) {
     m.def("compute_grouped_sums_sparse", &compute_grouped_sums_sparse, "Compute grouped sums (sparse)",
           py::arg("S"), py::arg("sample_assignments"), py::arg("axis") = 0);
 
+    m.def("compute_grouped_sums_sparse2", &compute_grouped_sums_sparse2, "Compute grouped sums (sparse output)",
+          py::arg("S"), py::arg("sample_assignments"), py::arg("axis") = 0);
+
     m.def("compute_grouped_sums_dense", &compute_grouped_sums_dense, "Compute grouped sums (dense)",
           py::arg("S"), py::arg("sample_assignments"), py::arg("axis") = 0);
 
     m.def("compute_grouped_means_sparse", &compute_grouped_means_sparse, "Compute grouped means (sparse)",
           py::arg("S"), py::arg("sample_assignments"), py::arg("axis") = 0);
 
+    m.def("compute_grouped_means_sparse2", &compute_grouped_means_sparse2, "Compute grouped means (sparse output)",
+          py::arg("S"), py::arg("sample_assignments"), py::arg("axis") = 0);
+
     m.def("compute_grouped_means_dense", &compute_grouped_means_dense, "Compute grouped means (dense)",
           py::arg("S"), py::arg("sample_assignments"), py::arg("axis") = 0);
 
     m.def("compute_grouped_vars_sparse", &compute_grouped_vars_sparse, "Compute grouped variances (sparse)",
+          py::arg("S"), py::arg("sample_assignments"), py::arg("axis") = 0);
+
+    m.def("compute_grouped_vars_sparse2", &compute_grouped_vars_sparse2, "Compute grouped variances (sparse output)",
           py::arg("S"), py::arg("sample_assignments"), py::arg("axis") = 0);
 
     m.def("compute_grouped_vars_dense", &compute_grouped_vars_dense, "Compute grouped variances (dense)",

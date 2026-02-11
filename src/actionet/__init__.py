@@ -68,6 +68,7 @@ from .preprocessing import (
 
 from .tools import (
     scale,
+    aggregate_matrix,
 )
 
 __all__ = [
@@ -114,4 +115,5 @@ __all__ = [
     "matrix_to_anndata",
     "add_action_results",
     "add_network_to_anndata",
+    "aggregate_matrix",
 ]
