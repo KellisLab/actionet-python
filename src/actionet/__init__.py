@@ -10,6 +10,7 @@ except PackageNotFoundError:
 # Import will happen after building the C++ extension
 from .core import (
     reduce_kernel,
+    reduce_kernel_from_svd,
     run_action,
     build_network,
     compute_network_diffusion,
@@ -76,6 +77,7 @@ __all__ = [
     "__version__",
     # Core functions
     "reduce_kernel",
+    "reduce_kernel_from_svd",
     "run_action",
     "build_network",
     "compute_network_diffusion",

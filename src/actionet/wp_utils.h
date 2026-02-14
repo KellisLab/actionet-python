@@ -10,6 +10,7 @@
 
 // Armadillo includes (libactionet uses Armadillo)
 #include "armadillo"
+#include "decomposition/matrix_operator.hpp"
 
 namespace py = pybind11;
 
@@ -30,5 +31,22 @@ arma::vec numpy_to_arma_vec(py::array_t<double, py::array::c_style | py::array::
 
 // Convert Armadillo vector to NumPy array
 py::array_t<double> arma_vec_to_numpy(const arma::vec& vec);
+
+// MatrixOperator wrapper around a Python object exposing shape/matvec/rmatvec.
+class PythonMatrixOperator final : public actionet::MatrixOperator {
+public:
+    explicit PythonMatrixOperator(py::object op);
+
+    arma::uword rows() const override { return rows_; }
+    arma::uword cols() const override { return cols_; }
+
+    void matvec(const arma::vec& x, arma::vec& y) const override;
+    void rmatvec(const arma::vec& x, arma::vec& y) const override;
+
+private:
+    py::object op_;
+    arma::uword rows_;
+    arma::uword cols_;
+};
 
 #endif // WP_UTILS_H

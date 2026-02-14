@@ -1,6 +1,6 @@
 """High-level Python API wrapping C++ bindings with AnnData integration."""
 
-from typing import Optional, Union, Tuple, Literal
+from typing import Any, Optional, Union, Tuple, Literal
 import numpy as np
 import scipy.sparse as sp
 from anndata import AnnData
@@ -11,8 +11,68 @@ from .anndata_utils import anndata_to_matrix, add_action_results, add_network_to
 from . import tools
 
 
+def _get_adata_matrix(adata: AnnData, layer: Optional[str] = None):
+    """Return an AnnData matrix-like object without forcing materialization."""
+    if layer is None:
+        return adata.X
+    return adata.layers[layer]
+
+
+def _is_backed_sparse_matrix(X: Any) -> bool:
+    """Best-effort detection for AnnData sparse backed datasets."""
+    if sp.issparse(X):
+        return False
+    cls = X.__class__
+    mod = getattr(cls, "__module__", "").lower()
+    name = getattr(cls, "__name__", "").lower()
+    return hasattr(X, "shape") and hasattr(X, "__getitem__") and "sparse" in f"{mod}.{name}"
+
+
+class _TransposeMatrixOperator:
+    """Matrix operator for S = X.T where X is cells x genes."""
+
+    def __init__(self, X: Any, chunk_size: int = 4096):
+        self._X = X
+        self._chunk_size = int(max(1, chunk_size))
+        n_cells, n_genes = X.shape
+        # Logical shape exposed to C++: features x cells
+        self.shape = (int(n_genes), int(n_cells))
+
+    def matvec(self, x: np.ndarray) -> np.ndarray:
+        # y = S @ x = X.T @ x
+        x = np.asarray(x, dtype=np.float64)
+        if x.ndim != 1 or x.shape[0] != self.shape[1]:
+            raise ValueError(f"matvec expected vector of length {self.shape[1]}, got {x.shape}")
+
+        y = np.zeros(self.shape[0], dtype=np.float64)
+        for start in range(0, self.shape[1], self._chunk_size):
+            end = min(start + self._chunk_size, self.shape[1])
+            block = self._X[start:end, :]
+            if sp.issparse(block):
+                y += np.asarray(block.T.dot(x[start:end])).ravel()
+            else:
+                y += np.asarray(block, dtype=np.float64).T @ x[start:end]
+        return y
+
+    def rmatvec(self, x: np.ndarray) -> np.ndarray:
+        # y = S.T @ x = X @ x
+        x = np.asarray(x, dtype=np.float64)
+        if x.ndim != 1 or x.shape[0] != self.shape[0]:
+            raise ValueError(f"rmatvec expected vector of length {self.shape[0]}, got {x.shape}")
+
+        y = np.zeros(self.shape[1], dtype=np.float64)
+        for start in range(0, self.shape[1], self._chunk_size):
+            end = min(start + self._chunk_size, self.shape[1])
+            block = self._X[start:end, :]
+            if sp.issparse(block):
+                y[start:end] = np.asarray(block.dot(x)).ravel()
+            else:
+                y[start:end] = np.asarray(block, dtype=np.float64) @ x
+        return y
+
+
 def _select_svd_algorithm(
-    S: Union[sp.spmatrix, np.ndarray],
+    S: Any,
     svd_algorithm: Optional[int],
     verbose: bool = True
 ) -> int:
@@ -48,6 +108,14 @@ def _select_svd_algorithm(
         if svd_algorithm not in [0, 1, 2, 3]:
             raise ValueError(f"Invalid svd_algorithm {svd_algorithm}. Must be 0 (IRLB), 1 (Halko), 2 (Feng), or 3 (PRIMME).")
         return svd_algorithm
+
+    # Backed sparse inputs should always use PRIMME in v1.
+    if _is_backed_sparse_matrix(S):
+        if svd_algorithm is not None and svd_algorithm != 3:
+            raise ValueError("Backed sparse matrices currently support only PRIMME (svd_algorithm=3)")
+        if verbose:
+            print("Detected backed sparse matrix: selecting PRIMME operator path")
+        return 3
 
     # Calculate matrix properties
     total_elements = np.prod(S.shape)
@@ -94,6 +162,8 @@ def reduce_kernel(
     max_iter: int = 0,
     seed: int = 0,
     verbose: bool = True,
+    precomputed_svd: Optional[dict] = None,
+    backed_chunk_size: int = 4096,
     inplace: bool = True
 ) -> Optional[AnnData]:
     """
@@ -145,14 +215,41 @@ def reduce_kernel(
     """
     if not inplace:
         adata = adata.copy()
-    S = anndata_to_matrix(adata, layer=layer, transpose=True)
 
-    svd_algorithm = _select_svd_algorithm(S, svd_algorithm, verbose)
+    X = _get_adata_matrix(adata, layer=layer)  # cells x genes
+    use_operator = _is_backed_sparse_matrix(X)
 
-    if sp.issparse(S):
-        result = _core.reduce_kernel_sparse(S, n_components, svd_algorithm, max_iter, seed, verbose)
+    if use_operator:
+        svd_algorithm = 3  # OOM v1 supports PRIMME only.
+        op = _TransposeMatrixOperator(X, chunk_size=backed_chunk_size)
+        if precomputed_svd is None:
+            result = _core.reduce_kernel_operator(op, n_components, max_iter, seed, verbose)
+        else:
+            result = _core.reduce_kernel_from_svd_operator(
+                op,
+                precomputed_svd["u"],
+                precomputed_svd["d"],
+                precomputed_svd["v"],
+                verbose,
+            )
     else:
-        result = _core.reduce_kernel_dense(S, n_components, svd_algorithm, max_iter, seed, verbose)
+        S = anndata_to_matrix(adata, layer=layer, transpose=True)
+        svd_algorithm = _select_svd_algorithm(S, svd_algorithm, verbose)
+
+        if precomputed_svd is None:
+            if sp.issparse(S):
+                result = _core.reduce_kernel_sparse(S, n_components, svd_algorithm, max_iter, seed, verbose)
+            else:
+                result = _core.reduce_kernel_dense(S, n_components, svd_algorithm, max_iter, seed, verbose)
+        else:
+            op = _TransposeMatrixOperator(X, chunk_size=backed_chunk_size)
+            result = _core.reduce_kernel_from_svd_operator(
+                op,
+                precomputed_svd["u"],
+                precomputed_svd["d"],
+                precomputed_svd["v"],
+                verbose,
+            )
 
     # Store results
     adata.obsm[key_added] = result["S_r"].T  # Transpose to cells x components
@@ -168,11 +265,38 @@ def reduce_kernel(
         "n_components": n_components,
         "svd_algorithm": svd_algorithm,
         "svd_algorithm_name": algorithm_names.get(svd_algorithm, f'Unknown({svd_algorithm})'),
+        "used_precomputed_svd": precomputed_svd is not None,
+        "operator_mode": use_operator,
     }
 
     if not inplace:
         return adata
     return None
+
+
+def reduce_kernel_from_svd(
+    adata: AnnData,
+    svd_result: dict,
+    layer: Optional[str] = None,
+    key_added: str = "action",
+    verbose: bool = True,
+    backed_chunk_size: int = 4096,
+    inplace: bool = True,
+) -> Optional[AnnData]:
+    """Compute reduced kernel using a precomputed SVD result."""
+    return reduce_kernel(
+        adata=adata,
+        n_components=int(np.asarray(svd_result["d"]).size),
+        layer=layer,
+        key_added=key_added,
+        svd_algorithm=3,
+        max_iter=0,
+        seed=0,
+        verbose=verbose,
+        precomputed_svd=svd_result,
+        backed_chunk_size=backed_chunk_size,
+        inplace=inplace,
+    )
 
 
 def run_action(
@@ -634,13 +758,17 @@ def layout_network(
             else:
                 print("Computing initial coordinates from adata.X via SVD")
 
-        S = anndata_to_matrix(adata, layer=layer, transpose=True)
+        X = _get_adata_matrix(adata, layer=layer)
         k = max(3, n_components)
-
-        if sp.issparse(S):
-            svd_result = _core.run_svd_sparse(S, k, 0, seed, 0, verbose)
-        else:
-            svd_result = _core.run_svd_dense(S, k, 0, seed, 0, verbose)
+        svd_result = run_svd(
+            X,
+            n_components=k,
+            algorithm=None,
+            max_iter=0,
+            seed=seed,
+            verbose=verbose,
+            return_operator_compatible=True,
+        )
 
         # Get right singular vectors and scale them
         initial_coords = svd_result["v"]  # Already transposed to cells x components
@@ -683,12 +811,14 @@ def layout_network(
 
 
 def run_svd(
-    X: Union[np.ndarray, sp.spmatrix],
+    X: Union[np.ndarray, sp.spmatrix, Any],
     n_components: int = 30,
     algorithm: Union[int] = None,
     max_iter: int = 0,
     seed: int = 0,
     verbose: bool = True,
+    return_operator_compatible: bool = True,
+    backed_chunk_size: int = 4096,
 ) -> dict:
     """
     Compute truncated SVD decomposition.
@@ -718,15 +848,26 @@ def run_svd(
         - adata.uns[f"{key_added}_params"]: SVD parameters including left singular vectors (u), singular values (d), and n_components
     """
 
-    if sp.issparse(X):
+    if _is_backed_sparse_matrix(X):
+        algorithm = 3
+        op = _TransposeMatrixOperator(X, chunk_size=backed_chunk_size)
+        result = _core.run_svd_operator(op, n_components, max_iter, seed, verbose)
+    elif sp.issparse(X):
         if not sp.isspmatrix_csr(X):
             X = X.tocsr()
 
-    algorithm = _select_svd_algorithm(X, algorithm, verbose)
-
-    if sp.issparse(X):
+        algorithm = _select_svd_algorithm(X, algorithm, verbose)
         result = _core.run_svd_sparse(X.T, n_components, max_iter, seed, algorithm, verbose)
     else:
+        algorithm = _select_svd_algorithm(X, algorithm, verbose)
         result = _core.run_svd_dense(X.T, n_components, max_iter, seed, algorithm, verbose)
-    
+
+    if return_operator_compatible:
+        # Ensure fields expected by reduce_kernel(..., precomputed_svd=...) are always present.
+        result = {
+            "u": result["u"],
+            "d": result["d"],
+            "v": result["v"],
+        }
+
     return result

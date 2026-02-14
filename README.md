@@ -222,6 +222,12 @@ an.reduce_kernel(adata, n_components=50, layer=None, key_added='action')
 ```
 Compute reduced kernel matrix using SVD. **Automatically selects the optimal SVD algorithm** based on matrix properties (sparse vs dense, size, sparsity) with negligible overhead (~1-2 microseconds).
 
+New in OOM v1:
+- Backed sparse AnnData `.X` is executed through an out-of-memory operator path (PRIMME only).
+- You can reuse an external SVD via `precomputed_svd`:
+  `an.reduce_kernel(adata, precomputed_svd=an.run_svd(adata.X, n_components=50))`
+- Explicit helper for this workflow: `an.reduce_kernel_from_svd(...)`.
+
 Available algorithms:
 - **IRLB** (default for sparse): Implicitly Restarted Lanczos Bidiagonalization
 - **Halko** (default for dense): Randomized SVD (fastest for dense matrices)

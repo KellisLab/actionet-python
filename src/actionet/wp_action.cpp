@@ -166,6 +166,52 @@ py::dict reduce_kernel_dense(py::array_t<double> S, int k = 50, int svd_alg = 0,
     return out;
 }
 
+py::dict reduce_kernel_operator(py::object op, int k = 50, int max_it = 0,
+                                int seed = 0, bool verbose = true) {
+    PythonMatrixOperator mat_op(std::move(op));
+    actionet::KernelReductionResult res = actionet::reduceKernel_Operator(mat_op, k, max_it, seed, verbose);
+
+    py::dict out;
+    out["S_r"] = arma_mat_to_numpy(res.S_r);
+    out["sigma"] = arma_vec_to_numpy(res.sigma);
+    out["V"] = arma_mat_to_numpy(res.V);
+    out["A"] = arma_mat_to_numpy(res.A);
+    out["B"] = arma_mat_to_numpy(res.B);
+    return out;
+}
+
+py::dict reduce_kernel_from_svd_operator(py::object op, py::array_t<double> u, py::object d,
+                                         py::array_t<double> v, bool verbose = true) {
+    PythonMatrixOperator mat_op(std::move(op));
+
+    actionet::SVDResult svd;
+    svd.U = numpy_to_arma_mat(u);
+    svd.V = numpy_to_arma_mat(v);
+    py::array_t<double, py::array::forcecast> d_arr = d.cast<py::array_t<double, py::array::forcecast>>();
+    py::buffer_info d_buf = d_arr.request();
+    if (d_buf.ndim == 1) {
+        auto* ptr = static_cast<double*>(d_buf.ptr);
+        svd.sigma = arma::vec(ptr, static_cast<arma::uword>(d_buf.shape[0]), true, true);
+    }
+    else if (d_buf.ndim == 2 && (d_buf.shape[0] == 1 || d_buf.shape[1] == 1)) {
+        auto* ptr = static_cast<double*>(d_buf.ptr);
+        svd.sigma = arma::vec(ptr, static_cast<arma::uword>(d_buf.shape[0] * d_buf.shape[1]), true, true);
+    }
+    else {
+        throw std::runtime_error("Expected singular values `d` to be a 1D vector or Nx1/1xN array");
+    }
+
+    actionet::KernelReductionResult res = actionet::reduceKernelFromSVD_Operator(mat_op, svd, verbose);
+
+    py::dict out;
+    out["S_r"] = arma_mat_to_numpy(res.S_r);
+    out["sigma"] = arma_vec_to_numpy(res.sigma);
+    out["V"] = arma_mat_to_numpy(res.V);
+    out["A"] = arma_mat_to_numpy(res.A);
+    out["B"] = arma_mat_to_numpy(res.B);
+    return out;
+}
+
 // simplex_regression ==================================================================================================
 
 py::array_t<double> run_simplex_regression(py::array_t<double> A, py::array_t<double> B, bool computeXtX = false) {
@@ -231,6 +277,14 @@ void init_action(py::module_ &m) {
     m.def("reduce_kernel_dense", &reduce_kernel_dense, "Reduce kernel (dense)",
           py::arg("S"), py::arg("k") = 50, py::arg("svd_alg") = 0,
           py::arg("max_it") = 0, py::arg("seed") = 0, py::arg("verbose") = true);
+
+    m.def("reduce_kernel_operator", &reduce_kernel_operator, "Reduce kernel (operator, PRIMME)",
+          py::arg("op"), py::arg("k") = 50, py::arg("max_it") = 0,
+          py::arg("seed") = 0, py::arg("verbose") = true);
+
+    m.def("reduce_kernel_from_svd_operator", &reduce_kernel_from_svd_operator,
+          "Reduce kernel from precomputed SVD (operator)",
+          py::arg("op"), py::arg("u"), py::arg("d"), py::arg("v"), py::arg("verbose") = true);
 
     // simplex_regression
     m.def("run_simplex_regression", &run_simplex_regression, "Simplex-constrained regression",

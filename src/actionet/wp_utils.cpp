@@ -3,6 +3,8 @@
 
 #include "wp_utils.h"
 #include <limits>
+#include <stdexcept>
+#include <string>
 
 // Convert NumPy array to Armadillo dense matrix
 arma::mat numpy_to_arma_mat(py::array_t<double, py::array::c_style | py::array::forcecast> arr) {
@@ -150,4 +152,49 @@ py::array_t<double> arma_vec_to_numpy(const arma::vec& vec) {
         ptr[i] = vec(i);
     }
     return arr;
+}
+
+PythonMatrixOperator::PythonMatrixOperator(py::object op) : op_(std::move(op)), rows_(0), cols_(0) {
+    py::gil_scoped_acquire gil;
+    py::object shape_obj = op_.attr("shape");
+    auto shape = shape_obj.cast<std::pair<py::ssize_t, py::ssize_t>>();
+    if (shape.first < 0 || shape.second < 0) {
+        throw std::runtime_error("PythonMatrixOperator: negative shape is invalid");
+    }
+    rows_ = static_cast<arma::uword>(shape.first);
+    cols_ = static_cast<arma::uword>(shape.second);
+}
+
+void PythonMatrixOperator::matvec(const arma::vec& x, arma::vec& y) const {
+    py::gil_scoped_acquire gil;
+    py::object out_obj = op_.attr("matvec")(arma_vec_to_numpy(x));
+    py::array_t<double, py::array::forcecast> out_arr = out_obj.cast<py::array_t<double, py::array::forcecast>>();
+    py::buffer_info buf = out_arr.request();
+
+    if (buf.ndim != 1 || static_cast<arma::uword>(buf.shape[0]) != rows_) {
+        throw std::runtime_error("PythonMatrixOperator.matvec returned vector with incorrect size");
+    }
+
+    y.set_size(rows_);
+    auto* ptr = static_cast<double*>(buf.ptr);
+    for (arma::uword i = 0; i < rows_; i++) {
+        y(i) = ptr[i];
+    }
+}
+
+void PythonMatrixOperator::rmatvec(const arma::vec& x, arma::vec& y) const {
+    py::gil_scoped_acquire gil;
+    py::object out_obj = op_.attr("rmatvec")(arma_vec_to_numpy(x));
+    py::array_t<double, py::array::forcecast> out_arr = out_obj.cast<py::array_t<double, py::array::forcecast>>();
+    py::buffer_info buf = out_arr.request();
+
+    if (buf.ndim != 1 || static_cast<arma::uword>(buf.shape[0]) != cols_) {
+        throw std::runtime_error("PythonMatrixOperator.rmatvec returned vector with incorrect size");
+    }
+
+    y.set_size(cols_);
+    auto* ptr = static_cast<double*>(buf.ptr);
+    for (arma::uword i = 0; i < cols_; i++) {
+        y(i) = ptr[i];
+    }
 }
