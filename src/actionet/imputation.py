@@ -250,15 +250,15 @@ def smooth_kernel(
     S_r = np.asarray(adata.obsm[reduction_key], dtype=float, order="C")
     sigma = np.asarray(adata.uns[params_key]["sigma"], dtype=float).reshape(-1)
 
-    V = np.asarray(adata.varm[f"{reduction_key}_V"], dtype=float, order="C")
+    U_left = np.asarray(adata.varm[f"{reduction_key}_U"], dtype=float, order="C")
     A = np.asarray(adata.varm[f"{reduction_key}_A"], dtype=float, order="C")
     B = np.asarray(adata.obsm[f"{reduction_key}_B"], dtype=float, order="C")
 
     if sigma.shape[0] != S_r.shape[1]:
         raise ValueError("Size of 'sigma' does not match number of components in reduction.")
 
-    U = S_r / sigma[np.newaxis, :]
-    svd_out = _core.perturbed_svd(V, sigma, U, -A, B)
+    V_right = S_r / sigma[np.newaxis, :]
+    svd_out = _core.perturbed_svd(U_left, sigma, V_right, -A, B)
 
     V_smooth = _core.compute_network_diffusion(
         G, svd_out["v"], alpha, max_iter, n_threads, True, norm_method_code, 1e-8

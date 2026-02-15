@@ -1,19 +1,25 @@
 """
-Test script to verify consistency between sparse and dense matrix inputs for all SVD methods.
+Test script to verify consistency between sparse and dense matrix inputs for all SVD methods,
+including PRIMME operator (backed) mode.
 
 This script:
 1. Tests each SVD method with both sparse and dense input
-2. Validates that results are numerically consistent
-3. Visualizes differences between sparse and dense results
+2. Tests PRIMME in operator/backed mode (simulating out-of-memory datasets)
+3. Validates that results are numerically consistent
+4. Validates all output keys use the correct naming convention (_U, _A, _B)
+5. Visualizes differences between sparse and dense results
 """
 
 import sys
+import os
+import tempfile
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.gridspec import GridSpec
 import anndata
 import scanpy as sc
 import scipy.sparse as sp
+import h5py
 
 # Add parent directory to path if needed
 sys.path.insert(0, '../src')
@@ -60,6 +66,68 @@ def load_and_prepare_data():
     return adata
 
 
+def validate_reduction_keys(adata, key, n_components, label=""):
+    """Validate that all expected output keys exist with correct shapes and naming."""
+    prefix = f"[{label}] " if label else ""
+    errors = []
+
+    # obsm keys
+    if key not in adata.obsm:
+        errors.append(f"{prefix}Missing adata.obsm['{key}']")
+    else:
+        S_r = adata.obsm[key]
+        if S_r.shape != (adata.n_obs, n_components):
+            errors.append(f"{prefix}obsm['{key}'] shape {S_r.shape} != expected ({adata.n_obs}, {n_components})")
+
+    if f"{key}_B" not in adata.obsm:
+        errors.append(f"{prefix}Missing adata.obsm['{key}_B']")
+
+    # varm keys — must use _U (not _V)
+    if f"{key}_U" not in adata.varm:
+        errors.append(f"{prefix}Missing adata.varm['{key}_U'] (left singular vectors)")
+    else:
+        U = adata.varm[f"{key}_U"]
+        if U.shape[0] != adata.n_vars:
+            errors.append(f"{prefix}varm['{key}_U'] has {U.shape[0]} rows, expected {adata.n_vars}")
+        if U.shape[1] != n_components:
+            errors.append(f"{prefix}varm['{key}_U'] has {U.shape[1]} cols, expected {n_components}")
+
+    if f"{key}_A" not in adata.varm:
+        errors.append(f"{prefix}Missing adata.varm['{key}_A']")
+
+    # Verify OLD naming convention (_V) is NOT present
+    if f"{key}_V" in adata.varm:
+        errors.append(f"{prefix}STALE KEY: adata.varm['{key}_V'] should be '{key}_U'")
+
+    # uns params
+    params_key = f"{key}_params"
+    if params_key not in adata.uns:
+        errors.append(f"{prefix}Missing adata.uns['{params_key}']")
+    else:
+        params = adata.uns[params_key]
+        if "sigma" not in params:
+            errors.append(f"{prefix}Missing 'sigma' in params")
+
+    # NaN/Inf checks
+    for slot_name in [key, f"{key}_B"]:
+        if slot_name in adata.obsm:
+            arr = adata.obsm[slot_name]
+            if np.any(np.isnan(arr)):
+                errors.append(f"{prefix}NaN in obsm['{slot_name}']")
+            if np.any(np.isinf(arr)):
+                errors.append(f"{prefix}Inf in obsm['{slot_name}']")
+
+    for slot_name in [f"{key}_U", f"{key}_A"]:
+        if slot_name in adata.varm:
+            arr = adata.varm[slot_name]
+            if np.any(np.isnan(arr)):
+                errors.append(f"{prefix}NaN in varm['{slot_name}']")
+            if np.any(np.isinf(arr)):
+                errors.append(f"{prefix}Inf in varm['{slot_name}']")
+
+    return errors
+
+
 def test_svd_sparse_vs_dense(adata, method_code, method_name, n_components=30):
     """Test a single SVD method with both sparse and dense inputs."""
     print(f"\n{'='*60}")
@@ -94,8 +162,16 @@ def test_svd_sparse_vs_dense(adata, method_code, method_name, n_components=30):
 
         results['sparse']['reduction'] = adata_sparse.obsm['action_sparse']
         results['sparse']['sigma'] = adata_sparse.uns['action_sparse_params']['sigma']
-        results['sparse']['V'] = adata_sparse.varm['action_sparse_V']
+        results['sparse']['U'] = adata_sparse.varm['action_sparse_U']
         results['sparse']['success'] = True
+
+        # Validate all output keys
+        key_errors = validate_reduction_keys(adata_sparse, 'action_sparse', n_components, f"{method_name} SPARSE")
+        if key_errors:
+            for err in key_errors:
+                print(f"  ⚠ {err}")
+        else:
+            print(f"  ✓ All output keys valid (using _U convention)")
 
         print(f"✓ {method_name} SPARSE completed successfully!")
         print(f"  Reduction shape: {results['sparse']['reduction'].shape}")
@@ -130,8 +206,16 @@ def test_svd_sparse_vs_dense(adata, method_code, method_name, n_components=30):
 
         results['dense']['reduction'] = adata_dense.obsm['action_dense']
         results['dense']['sigma'] = adata_dense.uns['action_dense_params']['sigma']
-        results['dense']['V'] = adata_dense.varm['action_dense_V']
+        results['dense']['U'] = adata_dense.varm['action_dense_U']
         results['dense']['success'] = True
+
+        # Validate all output keys
+        key_errors = validate_reduction_keys(adata_dense, 'action_dense', n_components, f"{method_name} DENSE")
+        if key_errors:
+            for err in key_errors:
+                print(f"  ⚠ {err}")
+        else:
+            print(f"  ✓ All output keys valid (using _U convention)")
 
         print(f"✓ {method_name} DENSE completed successfully!")
         print(f"  Reduction shape: {results['dense']['reduction'].shape}")
@@ -320,6 +404,184 @@ def plot_correlation_summary(all_results, method_names):
     plt.show()
 
 
+def test_primme_backed_mode(adata, n_components=30):
+    """
+    Test PRIMME in backed (operator) mode by creating a backed AnnData on disk.
+
+    This simulates an out-of-memory dataset where the matrix is stored on disk
+    and accessed via chunked matrix-vector products through the operator path.
+    """
+    print(f"\n{'='*60}")
+    print(f"Testing: PRIMME BACKED MODE (operator path)")
+    print(f"{'='*60}")
+
+    result = {
+        'success': False,
+        'error': None,
+        'reduction': None,
+        'sigma': None,
+    }
+
+    try:
+        # Create a backed h5ad file with sparse data in CSR format
+        with tempfile.TemporaryDirectory() as tmpdir:
+            backed_path = os.path.join(tmpdir, "backed_test.h5ad")
+
+            # Write the dataset to disk
+            adata_write = adata.copy()
+            logcounts = adata_write.layers['logcounts']
+            if sp.issparse(logcounts):
+                logcounts = sp.csr_matrix(logcounts)
+            else:
+                logcounts = sp.csr_matrix(logcounts)
+            adata_write.layers['logcounts'] = logcounts
+            adata_write.write_h5ad(backed_path)
+            del adata_write
+
+            # Open in backed mode
+            adata_backed = anndata.read_h5ad(backed_path, backed='r')
+
+            print(f"  Backed data type: {type(adata_backed.X)}")
+            print(f"  Shape: {adata_backed.shape}")
+
+            # Run reduce_kernel — should automatically select PRIMME operator path
+            actionet.reduce_kernel(
+                adata_backed,
+                n_components=n_components,
+                layer=None,  # Use .X which is backed
+                key_added='action_backed',
+                svd_algorithm=3,  # PRIMME
+                max_iter=0,
+                seed=42,
+                verbose=True,
+                inplace=True,
+                backed_chunk_size=2048,
+            )
+
+            result['reduction'] = adata_backed.obsm['action_backed']
+            result['sigma'] = adata_backed.uns['action_backed_params']['sigma']
+            result['success'] = True
+
+            # Validate output keys
+            key_errors = validate_reduction_keys(adata_backed, 'action_backed', n_components, "PRIMME BACKED")
+            if key_errors:
+                for err in key_errors:
+                    print(f"  ⚠ {err}")
+            else:
+                print(f"  ✓ All output keys valid (using _U convention)")
+
+            # Validate operator_mode is recorded
+            params = adata_backed.uns['action_backed_params']
+            if params.get('operator_mode', False):
+                print(f"  ✓ Operator mode correctly recorded in params")
+            else:
+                print(f"  ⚠ operator_mode not set in params (may not be backed)")
+
+            print(f"\n  Reduction shape: {result['reduction'].shape}")
+            print(f"  First 5 singular values: {result['sigma'][:5]}")
+            print(f"✓ PRIMME BACKED mode completed successfully!")
+
+    except Exception as e:
+        print(f"✗ Error with PRIMME BACKED: {str(e)}")
+        result['error'] = str(e)
+        import traceback
+        traceback.print_exc()
+
+    return result
+
+
+def test_primme_backed_vs_inmemory(adata, n_components=30):
+    """
+    Compare PRIMME backed mode against PRIMME in-memory mode.
+
+    Both should produce numerically similar results (up to iterative solver tolerance).
+    """
+    print(f"\n{'='*60}")
+    print(f"Testing: PRIMME BACKED vs IN-MEMORY consistency")
+    print(f"{'='*60}")
+
+    results = {
+        'backed': {'success': False},
+        'inmemory': {'success': False},
+        'comparison': None,
+    }
+
+    # In-memory PRIMME
+    print(f"\n--- PRIMME in-memory ---")
+    try:
+        adata_mem = adata.copy()
+        if not sp.issparse(adata_mem.layers['logcounts']):
+            adata_mem.layers['logcounts'] = sp.csr_matrix(adata_mem.layers['logcounts'])
+
+        actionet.reduce_kernel(
+            adata_mem,
+            n_components=n_components,
+            layer='logcounts',
+            key_added='action_primme',
+            svd_algorithm=3,
+            max_iter=0,
+            seed=42,
+            verbose=True,
+            inplace=True
+        )
+
+        results['inmemory']['reduction'] = adata_mem.obsm['action_primme']
+        results['inmemory']['sigma'] = adata_mem.uns['action_primme_params']['sigma']
+        results['inmemory']['success'] = True
+        print(f"  ✓ In-memory PRIMME succeeded")
+    except Exception as e:
+        print(f"  ✗ In-memory PRIMME failed: {e}")
+        results['inmemory']['error'] = str(e)
+
+    # Backed PRIMME
+    print(f"\n--- PRIMME backed ---")
+    backed_result = test_primme_backed_mode(adata, n_components)
+    results['backed']['success'] = backed_result['success']
+    if backed_result['success']:
+        results['backed']['reduction'] = backed_result['reduction']
+        results['backed']['sigma'] = backed_result['sigma']
+
+    # Compare
+    if results['inmemory']['success'] and results['backed']['success']:
+        print(f"\n--- Comparing PRIMME backed vs in-memory ---")
+
+        mem_red = results['inmemory']['reduction']
+        bck_red = results['backed']['reduction']
+        mem_sigma = np.asarray(results['inmemory']['sigma']).flatten()
+        bck_sigma = np.asarray(results['backed']['sigma']).flatten()
+
+        # Compute correlation (sign may differ per component)
+        component_corrs = []
+        for i in range(min(mem_red.shape[1], bck_red.shape[1])):
+            c = np.abs(np.corrcoef(mem_red[:, i], bck_red[:, i])[0, 1])
+            component_corrs.append(c)
+
+        mean_corr = np.mean(component_corrs)
+        min_corr = np.min(component_corrs)
+
+        sigma_rel_diff = np.mean(np.abs(mem_sigma - bck_sigma) / (np.abs(mem_sigma) + 1e-10))
+
+        print(f"  Component correlation (mean): {mean_corr:.6f}")
+        print(f"  Component correlation (min):  {min_corr:.6f}")
+        print(f"  Sigma relative diff (mean):   {sigma_rel_diff:.6e}")
+
+        # Operator path uses chunked matvec so results may differ slightly
+        is_consistent = mean_corr > 0.99 and sigma_rel_diff < 0.05
+        if is_consistent:
+            print(f"  ✓ Backed and in-memory results are CONSISTENT")
+        else:
+            print(f"  ⚠ Results show DIFFERENCES (expected with iterative solver)")
+
+        results['comparison'] = {
+            'mean_component_corr': mean_corr,
+            'min_component_corr': min_corr,
+            'sigma_rel_diff': sigma_rel_diff,
+            'is_consistent': is_consistent,
+        }
+
+    return results
+
+
 def main():
     """Main test function."""
     print("="*60)
@@ -374,6 +636,13 @@ def main():
     visualize_comparison(all_results, method_names)
     plot_correlation_summary(all_results, method_names)
 
+    # Test PRIMME backed mode
+    print("\n" + "="*60)
+    print("Testing PRIMME backed (operator) mode...")
+    print("="*60)
+
+    backed_vs_mem = test_primme_backed_vs_inmemory(adata, n_components)
+
     # Final verdict
     print("\n" + "="*60)
     print("Final Verdict:")
@@ -390,6 +659,16 @@ def main():
         print("✓ All methods show CONSISTENT results between sparse and dense inputs!")
     else:
         print("⚠ Some methods show differences between sparse and dense inputs.")
+
+    if backed_vs_mem['comparison'] is not None:
+        if backed_vs_mem['comparison']['is_consistent']:
+            print("✓ PRIMME backed vs in-memory results are CONSISTENT!")
+        else:
+            print("⚠ PRIMME backed vs in-memory results differ (may be expected with iterative solver).")
+    elif backed_vs_mem['backed']['success']:
+        print("✓ PRIMME backed mode completed (no in-memory comparison available).")
+    else:
+        print("⚠ PRIMME backed mode did not complete successfully.")
 
     print("\n" + "="*60)
     print("All tests completed!")

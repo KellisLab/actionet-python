@@ -20,6 +20,11 @@ echo "------------------------------------------"
 python test_svd_sparse_vs_dense.py
 echo ""
 
+echo "Running PRIMME backed vs in-memory test..."
+echo "-------------------------------------------"
+python test_svd_backed_vs_inmemory.py
+echo ""
+
 echo "=================================="
 echo "All tests completed!"
 echo "=================================="
@@ -29,4 +34,7 @@ echo "  - svd_methods_comparison.png"
 echo "  - svd_singular_values.png"
 echo "  - svd_sparse_vs_dense_comparison.png"
 echo "  - svd_sparse_vs_dense_summary.png"
+echo "  - svd_backed_vs_inmemory_comparison.png"
+echo "  - svd_backed_vs_inmemory_summary.png"
+echo "  - svd_backed_vs_inmemory_sigma.png"
 echo ""

@@ -9,12 +9,12 @@ namespace py = pybind11;
 // orthogonalization ===================================================================================================
 
 py::dict orthogonalize_batch_effect_sparse(py::object S, py::array_t<double> old_S_r,
-                                             py::array_t<double> old_V, py::array_t<double> old_A,
+                                             py::array_t<double> old_U, py::array_t<double> old_A,
                                              py::array_t<double> old_B, py::array_t<double> old_sigma,
                                              py::array_t<double> design) {
     arma::sp_mat S_sp = scipy_to_arma_sparse(S);
     arma::mat S_r_mat = numpy_to_arma_mat(old_S_r);
-    arma::mat V_mat = numpy_to_arma_mat(old_V);
+    arma::mat U_mat = numpy_to_arma_mat(old_U);
     arma::mat A_mat = numpy_to_arma_mat(old_A);
     arma::mat B_mat = numpy_to_arma_mat(old_B);
     arma::vec sigma_vec = numpy_to_arma_vec(old_sigma);
@@ -22,7 +22,7 @@ py::dict orthogonalize_batch_effect_sparse(py::object S, py::array_t<double> old
 
     // Prepare SVD results field
     arma::field<arma::mat> SVD_results(5);
-    SVD_results(0) = V_mat;
+    SVD_results(0) = U_mat;
     SVD_results(1) = sigma_vec;
     SVD_results(2) = S_r_mat;
     for (size_t i = 0; i < sigma_vec.n_elem; i++) {
@@ -40,7 +40,7 @@ py::dict orthogonalize_batch_effect_sparse(py::object S, py::array_t<double> old
     }
 
     py::dict out;
-    out["V"] = arma_mat_to_numpy(orth_reduction(0));
+    out["U"] = arma_mat_to_numpy(orth_reduction(0));
     out["sigma"] = arma_mat_to_numpy(sigma);
     out["S_r"] = arma_mat_to_numpy(V.t());
     out["A"] = arma_mat_to_numpy(orth_reduction(3));
@@ -49,12 +49,12 @@ py::dict orthogonalize_batch_effect_sparse(py::object S, py::array_t<double> old
 }
 
 py::dict orthogonalize_batch_effect_dense(py::array_t<double> S, py::array_t<double> old_S_r,
-                                            py::array_t<double> old_V, py::array_t<double> old_A,
+                                            py::array_t<double> old_U, py::array_t<double> old_A,
                                             py::array_t<double> old_B, py::array_t<double> old_sigma,
                                             py::array_t<double> design) {
     arma::mat S_mat = numpy_to_arma_mat(S);
     arma::mat S_r_mat = numpy_to_arma_mat(old_S_r);
-    arma::mat V_mat = numpy_to_arma_mat(old_V);
+    arma::mat U_mat = numpy_to_arma_mat(old_U);
     arma::mat A_mat = numpy_to_arma_mat(old_A);
     arma::mat B_mat = numpy_to_arma_mat(old_B);
     arma::vec sigma_vec = numpy_to_arma_vec(old_sigma);
@@ -62,7 +62,7 @@ py::dict orthogonalize_batch_effect_dense(py::array_t<double> S, py::array_t<dou
 
     // Prepare SVD results field
     arma::field<arma::mat> SVD_results(5);
-    SVD_results(0) = V_mat;
+    SVD_results(0) = U_mat;
     SVD_results(1) = sigma_vec;
     SVD_results(2) = S_r_mat;
     for (size_t i = 0; i < sigma_vec.n_elem; i++) {
@@ -80,7 +80,7 @@ py::dict orthogonalize_batch_effect_dense(py::array_t<double> S, py::array_t<dou
     }
 
     py::dict out;
-    out["V"] = arma_mat_to_numpy(orth_reduction(0));
+    out["U"] = arma_mat_to_numpy(orth_reduction(0));
     out["sigma"] = arma_mat_to_numpy(sigma);
     out["S_r"] = arma_mat_to_numpy(V.t());
     out["A"] = arma_mat_to_numpy(orth_reduction(3));
@@ -89,12 +89,12 @@ py::dict orthogonalize_batch_effect_dense(py::array_t<double> S, py::array_t<dou
 }
 
 py::dict orthogonalize_basal_sparse(py::object S, py::array_t<double> old_S_r,
-                                      py::array_t<double> old_V, py::array_t<double> old_A,
+                                      py::array_t<double> old_U, py::array_t<double> old_A,
                                       py::array_t<double> old_B, py::array_t<double> old_sigma,
                                       py::array_t<double> basal) {
     arma::sp_mat S_sp = scipy_to_arma_sparse(S);
     arma::mat S_r_mat = numpy_to_arma_mat(old_S_r);
-    arma::mat V_mat = numpy_to_arma_mat(old_V);
+    arma::mat U_mat = numpy_to_arma_mat(old_U);
     arma::mat A_mat = numpy_to_arma_mat(old_A);
     arma::mat B_mat = numpy_to_arma_mat(old_B);
     arma::vec sigma_vec = numpy_to_arma_vec(old_sigma);
@@ -102,7 +102,7 @@ py::dict orthogonalize_basal_sparse(py::object S, py::array_t<double> old_S_r,
 
     // Prepare SVD results field
     arma::field<arma::mat> SVD_results(5);
-    SVD_results(0) = V_mat;
+    SVD_results(0) = U_mat;
     SVD_results(1) = sigma_vec;
     SVD_results(2) = S_r_mat;
     for (size_t i = 0; i < sigma_vec.n_elem; i++) {
@@ -120,7 +120,7 @@ py::dict orthogonalize_basal_sparse(py::object S, py::array_t<double> old_S_r,
     }
 
     py::dict out;
-    out["V"] = arma_mat_to_numpy(orth_reduction(0));
+    out["U"] = arma_mat_to_numpy(orth_reduction(0));
     out["sigma"] = arma_mat_to_numpy(sigma);
     out["S_r"] = arma_mat_to_numpy(V.t());
     out["A"] = arma_mat_to_numpy(orth_reduction(3));
@@ -129,12 +129,12 @@ py::dict orthogonalize_basal_sparse(py::object S, py::array_t<double> old_S_r,
 }
 
 py::dict orthogonalize_basal_dense(py::array_t<double> S, py::array_t<double> old_S_r,
-                                     py::array_t<double> old_V, py::array_t<double> old_A,
+                                     py::array_t<double> old_U, py::array_t<double> old_A,
                                      py::array_t<double> old_B, py::array_t<double> old_sigma,
                                      py::array_t<double> basal) {
     arma::mat S_mat = numpy_to_arma_mat(S);
     arma::mat S_r_mat = numpy_to_arma_mat(old_S_r);
-    arma::mat V_mat = numpy_to_arma_mat(old_V);
+    arma::mat U_mat = numpy_to_arma_mat(old_U);
     arma::mat A_mat = numpy_to_arma_mat(old_A);
     arma::mat B_mat = numpy_to_arma_mat(old_B);
     arma::vec sigma_vec = numpy_to_arma_vec(old_sigma);
@@ -142,7 +142,7 @@ py::dict orthogonalize_basal_dense(py::array_t<double> S, py::array_t<double> ol
 
     // Prepare SVD results field
     arma::field<arma::mat> SVD_results(5);
-    SVD_results(0) = V_mat;
+    SVD_results(0) = U_mat;
     SVD_results(1) = sigma_vec;
     SVD_results(2) = S_r_mat;
     for (size_t i = 0; i < sigma_vec.n_elem; i++) {
@@ -160,7 +160,7 @@ py::dict orthogonalize_basal_dense(py::array_t<double> S, py::array_t<double> ol
     }
 
     py::dict out;
-    out["V"] = arma_mat_to_numpy(orth_reduction(0));
+    out["U"] = arma_mat_to_numpy(orth_reduction(0));
     out["sigma"] = arma_mat_to_numpy(sigma);
     out["S_r"] = arma_mat_to_numpy(V.t());
     out["A"] = arma_mat_to_numpy(orth_reduction(3));
@@ -236,22 +236,22 @@ void init_decomposition(py::module_ &m) {
     // orthogonalization
     m.def("orthogonalize_batch_effect_sparse", &orthogonalize_batch_effect_sparse,
           "Orthogonalize batch effects (sparse)",
-          py::arg("S"), py::arg("old_S_r"), py::arg("old_V"), py::arg("old_A"),
+          py::arg("S"), py::arg("old_S_r"), py::arg("old_U"), py::arg("old_A"),
           py::arg("old_B"), py::arg("old_sigma"), py::arg("design"));
 
     m.def("orthogonalize_batch_effect_dense", &orthogonalize_batch_effect_dense,
           "Orthogonalize batch effects (dense)",
-          py::arg("S"), py::arg("old_S_r"), py::arg("old_V"), py::arg("old_A"),
+          py::arg("S"), py::arg("old_S_r"), py::arg("old_U"), py::arg("old_A"),
           py::arg("old_B"), py::arg("old_sigma"), py::arg("design"));
 
     m.def("orthogonalize_basal_sparse", &orthogonalize_basal_sparse,
           "Orthogonalize basal expression (sparse)",
-          py::arg("S"), py::arg("old_S_r"), py::arg("old_V"), py::arg("old_A"),
+          py::arg("S"), py::arg("old_S_r"), py::arg("old_U"), py::arg("old_A"),
           py::arg("old_B"), py::arg("old_sigma"), py::arg("basal"));
 
     m.def("orthogonalize_basal_dense", &orthogonalize_basal_dense,
           "Orthogonalize basal expression (dense)",
-          py::arg("S"), py::arg("old_S_r"), py::arg("old_V"), py::arg("old_A"),
+          py::arg("S"), py::arg("old_S_r"), py::arg("old_U"), py::arg("old_A"),
           py::arg("old_B"), py::arg("old_sigma"), py::arg("basal"));
 
     // svd_main

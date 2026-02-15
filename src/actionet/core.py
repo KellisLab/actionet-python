@@ -4,7 +4,6 @@ from typing import Any, Optional, Union, Tuple, Literal
 import numpy as np
 import scipy.sparse as sp
 from anndata import AnnData
-from statsmodels.stats.rates import norm
 
 from . import _core
 from .anndata_utils import anndata_to_matrix, add_action_results, add_network_to_anndata
@@ -19,17 +18,77 @@ def _get_adata_matrix(adata: AnnData, layer: Optional[str] = None):
 
 
 def _is_backed_sparse_matrix(X: Any) -> bool:
-    """Best-effort detection for AnnData sparse backed datasets."""
+    """Detect whether X is a backed (on-disk) sparse dataset from AnnData.
+
+    Uses AnnData's native ``isbacked`` property when available (AnnData >= 0.7).
+    Falls back to duck-type detection for older versions or non-AnnData objects.
+
+    Parameters
+    ----------
+    X
+        A matrix-like object, typically ``adata.X`` or ``adata.layers[layer]``.
+
+    Returns
+    -------
+    bool
+        True if X is backed (not fully materialised in memory).
+    """
+    # Already a regular in-memory sparse matrix — not backed.
     if sp.issparse(X):
         return False
-    cls = X.__class__
-    mod = getattr(cls, "__module__", "").lower()
-    name = getattr(cls, "__name__", "").lower()
-    return hasattr(X, "shape") and hasattr(X, "__getitem__") and "sparse" in f"{mod}.{name}"
+
+    # AnnData backed sparse datasets expose an ``isbacked`` property (or the
+    # internal SparseDataset / backed-mode sparse wrapper does).  Check for it.
+    if hasattr(X, "isbacked"):
+        return bool(X.isbacked)
+
+    # Fallback: AnnData ≥ 0.10 uses SparseDataset (anndata.experimental) for
+    # backed sparse .X.  These lack ``isbacked`` but can be detected by class
+    # hierarchy or the presence of a backing group attribute.
+    if hasattr(X, "group"):
+        # h5py / zarr backed SparseDataset
+        return True
+
+    return False
 
 
 class _TransposeMatrixOperator:
-    """Matrix operator for S = X.T where X is cells x genes."""
+    """Matrix operator for S = X.T where X is cells x genes (backed sparse).
+
+    Implements chunked matrix-vector products that stream through X in
+    row-blocks of ``chunk_size`` cells at a time, keeping peak memory
+    proportional to ``chunk_size * n_genes`` rather than ``n_cells * n_genes``.
+
+    Parameters
+    ----------
+    X
+        Backed sparse dataset (cells × genes).  Accessed via ``X[start:end, :]``.
+    chunk_size : int
+        Number of cell-rows to load per chunk.  Larger values reduce Python
+        loop overhead and improve BLAS utilisation, but increase peak memory.
+        The default (4096) works well for datasets where each chunk fits
+        comfortably in L3 cache (~256 MB at 64k genes, float64).
+
+    Performance notes
+    -----------------
+    - Each PRIMME iteration calls ``matvec`` and ``rmatvec`` once per block
+      vector, so I/O is the dominant cost.  Consider increasing ``chunk_size``
+      if the dataset is on fast local SSD, or decreasing it on network storage.
+    - Each chunk is converted to dense (if sparse) via ``np.asarray``, which
+      creates a temporary ``(chunk_size, n_genes)`` float64 array.  For very
+      large gene dimensions (>100k) this temporary may dominate memory.
+    - Accumulated floating-point rounding across chunks is negligible for
+      typical single-cell data but is documented here for completeness.
+
+    Possible future improvements
+    ----------------------------
+    - Accept a ``dtype`` parameter and accumulate in float32 for memory savings
+      when full double precision is unnecessary.
+    - Pre-fetch the next chunk in a background thread while computing on the
+      current chunk (double-buffering) to hide I/O latency.
+    - Expose a ``rechunk`` helper that rewrites backed data into an optimal
+      on-disk chunk layout for row-slicing.
+    """
 
     def __init__(self, X: Any, chunk_size: int = 4096):
         self._X = X
@@ -81,12 +140,10 @@ def _select_svd_algorithm(
 
     Parameters
     ----------
-    S : scipy.sparse matrix or numpy.ndarray
+    S : scipy.sparse matrix, numpy.ndarray, or backed sparse dataset
         Input matrix (features × cells).
     svd_algorithm : int or None
         User-specified algorithm (if None, automatic selection is performed).
-    auto_select_algorithm : bool
-        Whether to enable automatic algorithm selection.
     verbose : bool
         Whether to print selection rationale.
 
@@ -97,25 +154,27 @@ def _select_svd_algorithm(
 
     Selection Logic
     ---------------
-    1. If matrix exceeds 32-bit indexing limits (>2^31-1 elements), force PRIMME
-    2. For sparse matrices:
-       - Large & very sparse (>70% sparse, >10M elements): PRIMME
+    1. Backed sparse inputs always use PRIMME (operator path).
+    2. If user specifies an algorithm explicitly, use it.
+    3. If matrix exceeds 32-bit indexing limits (>2^31-1 elements), force PRIMME.
+    4. For sparse matrices:
+       - Large & very sparse (>70% sparse, >1B elements): PRIMME
        - Otherwise: IRLB
-    3. For dense matrices: Halko (fastest)
+    5. For dense matrices: Halko (fastest).
     """
-    # If algorithm is explicitly specified, use it
-    if svd_algorithm is not None:
-        if svd_algorithm not in [0, 1, 2, 3]:
-            raise ValueError(f"Invalid svd_algorithm {svd_algorithm}. Must be 0 (IRLB), 1 (Halko), 2 (Feng), or 3 (PRIMME).")
-        return svd_algorithm
-
-    # Backed sparse inputs should always use PRIMME in v1.
+    # If algorithm is explicitly specified, use it.
+    # Guard backed sparse inputs first — they must go through the operator path.
     if _is_backed_sparse_matrix(S):
         if svd_algorithm is not None and svd_algorithm != 3:
             raise ValueError("Backed sparse matrices currently support only PRIMME (svd_algorithm=3)")
         if verbose:
             print("Detected backed sparse matrix: selecting PRIMME operator path")
         return 3
+
+    if svd_algorithm is not None:
+        if svd_algorithm not in [0, 1, 2, 3]:
+            raise ValueError(f"Invalid svd_algorithm {svd_algorithm}. Must be 0 (IRLB), 1 (Halko), 2 (Feng), or 3 (PRIMME).")
+        return svd_algorithm
 
     # Calculate matrix properties
     total_elements = np.prod(S.shape)
@@ -192,6 +251,14 @@ def reduce_kernel(
         Random seed for reproducibility.
     verbose : bool, optional (default: True)
         Whether to print progress messages.
+    precomputed_svd : dict or None, optional (default: None)
+        If provided, skip SVD computation and use this precomputed result.
+        Expected keys: ``"u"`` (features × k), ``"d"`` (k,), ``"v"`` (cells × k).
+        Obtain via :func:`run_svd`.
+    backed_chunk_size : int, optional (default: 4096)
+        Number of cell-rows per chunk when streaming backed sparse data.
+        Ignored for in-memory matrices.  See :class:`_TransposeMatrixOperator`
+        for tuning guidance.
     inplace : bool, optional (default: True)
         If True, modifies the AnnData object in place. If False, returns a new AnnData object with the results.
 
@@ -206,8 +273,8 @@ def reduce_kernel(
         Reduced representation (cells × n_components).
     adata.obsm[f"{key_added}_B"] : np.ndarray
         B matrix from decomposition (cells × n_components).
-    adata.varm[f"{key_added}_V"] : np.ndarray
-        V matrix from decomposition (features × n_components).
+    adata.varm[f"{key_added}_U"] : np.ndarray
+        Left singular vectors (features × n_components).
     adata.varm[f"{key_added}_A"] : np.ndarray
         A matrix from decomposition (features × n_components).
     adata.uns[f"{key_added}_params"] : dict
@@ -242,18 +309,22 @@ def reduce_kernel(
             else:
                 result = _core.reduce_kernel_dense(S, n_components, svd_algorithm, max_iter, seed, verbose)
         else:
-            op = _TransposeMatrixOperator(X, chunk_size=backed_chunk_size)
-            result = _core.reduce_kernel_from_svd_operator(
-                op,
-                precomputed_svd["u"],
-                precomputed_svd["d"],
-                precomputed_svd["v"],
-                verbose,
-            )
+            # Use the efficient in-memory path that computes perturbation terms
+            # directly via Armadillo instead of the chunked operator path.
+            if sp.issparse(S):
+                result = _core.reduce_kernel_from_svd_sparse(
+                    S, precomputed_svd["u"], precomputed_svd["d"],
+                    precomputed_svd["v"], verbose,
+                )
+            else:
+                result = _core.reduce_kernel_from_svd_dense(
+                    S, precomputed_svd["u"], precomputed_svd["d"],
+                    precomputed_svd["v"], verbose,
+                )
 
     # Store results
     adata.obsm[key_added] = result["S_r"].T  # Transpose to cells x components
-    adata.varm[f"{key_added}_V"] = result["V"]
+    adata.varm[f"{key_added}_U"] = result["U"]
     adata.varm[f"{key_added}_A"] = result["A"]
     adata.obsm[f"{key_added}_B"] = result["B"]
 
@@ -283,13 +354,35 @@ def reduce_kernel_from_svd(
     backed_chunk_size: int = 4096,
     inplace: bool = True,
 ) -> Optional[AnnData]:
-    """Compute reduced kernel using a precomputed SVD result."""
+    """Compute reduced kernel using a precomputed SVD result.
+
+    Convenience wrapper around :func:`reduce_kernel` that infers ``n_components``
+    from the SVD result and passes it as ``precomputed_svd``.
+
+    Parameters
+    ----------
+    adata : AnnData
+        Annotated data matrix (cells × features).
+    svd_result : dict
+        Precomputed SVD with keys ``"u"``, ``"d"``, ``"v"`` (as returned by
+        :func:`run_svd`).
+    layer : str or None
+        Layer to use (None uses .X).
+    key_added : str
+        Key under which to store results.
+    verbose : bool
+        Print progress messages.
+    backed_chunk_size : int
+        Chunk size for backed sparse streaming.
+    inplace : bool
+        Modify adata in place or return a copy.
+    """
     return reduce_kernel(
         adata=adata,
         n_components=int(np.asarray(svd_result["d"]).size),
         layer=layer,
         key_added=key_added,
-        svd_algorithm=3,
+        svd_algorithm=None,
         max_iter=0,
         seed=0,
         verbose=verbose,
@@ -822,30 +915,36 @@ def run_svd(
 ) -> dict:
     """
     Compute truncated SVD decomposition.
-    
+
+    Transposes X internally (to features × cells) before decomposing, so the
+    caller should pass the matrix in its natural obs × vars orientation.
+
     Parameters
     ----------
-    X
-        Matrix to decompose (obs × vars).
-    n_components
-        Number of components.
-    layer
-        Layer to use (None uses .X).
-    algorithm
-        SVD algorithm (0=irlb, 1=halko, 2=feng).
-    seed
-        Random seed.
-    key_added
-        Key to store results.
-    verbose
-        Whether to print progress messages.
+    X : numpy.ndarray, scipy.sparse matrix, or backed sparse dataset
+        Matrix to decompose (obs × vars, e.g. cells × genes).
+    n_components : int
+        Number of singular components to compute.
+    algorithm : int or None
+        SVD algorithm code (0=IRLB, 1=Halko, 2=Feng, 3=PRIMME).
+        None enables automatic selection.
+    max_iter : int
+        Maximum iterations (0 = auto).
+    seed : int
+        Random seed for reproducibility.
+    verbose : bool
+        Print progress messages.
+    return_operator_compatible : bool
+        If True (default), normalise output keys to ``{"u", "d", "v"}`` so the
+        result can be passed directly as ``precomputed_svd`` to :func:`reduce_kernel`.
+    backed_chunk_size : int
+        Chunk size for the operator path when X is a backed sparse dataset.
 
     Returns
     -------
-    AnnData
-        Returns the input AnnData object with added fields:
-        - adata.obsm[key_added]: Right singular vectors (cells × n_components)
-        - adata.uns[f"{key_added}_params"]: SVD parameters including left singular vectors (u), singular values (d), and n_components
+    dict
+        ``{"u": ndarray, "d": ndarray, "v": ndarray}`` — left singular vectors
+        (features × k), singular values (k,), and right singular vectors (cells × k).
     """
 
     if _is_backed_sparse_matrix(X):

@@ -50,6 +50,7 @@ imputeFeatures <- function(
 
 
     if (algorithm == "pca") {
+        # TODO: Compute PCA/SVD if reduceKernel() was not run. e.g.g will fail after fastMNN
         pc_smooth <- smoothKernel(
             ace = ace,
             norm_method = norm_method,

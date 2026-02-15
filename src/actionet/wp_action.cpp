@@ -138,17 +138,29 @@ py::dict merge_archetypes(py::array_t<double> S_r, py::array_t<double> C_stacked
 
 // reduce_kernel =======================================================================================================
 
+// Helper to unpack KernelReductionResult to Python dict.
+// The output keys use "U" for the left singular vectors (consistent with SVD convention).
+static py::dict kernel_result_to_dict(const actionet::KernelReductionResult& res) {
+    py::dict out;
+    out["S_r"]   = arma_mat_to_numpy(res.S_r);
+    out["sigma"] = arma_vec_to_numpy(res.sigma);
+    out["U"]     = arma_mat_to_numpy(res.U);
+    out["A"]     = arma_mat_to_numpy(res.A);
+    out["B"]     = arma_mat_to_numpy(res.B);
+    return out;
+}
+
 py::dict reduce_kernel_sparse(py::object S, int k = 50, int svd_alg = 0,
                                int max_it = 0, int seed = 0, bool verbose = true) {
     arma::sp_mat S_sp = scipy_to_arma_sparse(S);
     arma::field<arma::mat> res = actionet::reduceKernel(S_sp, k, svd_alg, max_it, seed, verbose);
 
     py::dict out;
-    out["S_r"] = arma_mat_to_numpy(res(0));
+    out["S_r"]   = arma_mat_to_numpy(res(0));
     out["sigma"] = arma_mat_to_numpy(res(1));
-    out["V"] = arma_mat_to_numpy(res(2));
-    out["A"] = arma_mat_to_numpy(res(3));
-    out["B"] = arma_mat_to_numpy(res(4));
+    out["U"]     = arma_mat_to_numpy(res(2));
+    out["A"]     = arma_mat_to_numpy(res(3));
+    out["B"]     = arma_mat_to_numpy(res(4));
     return out;
 }
 
@@ -158,11 +170,11 @@ py::dict reduce_kernel_dense(py::array_t<double> S, int k = 50, int svd_alg = 0,
     arma::field<arma::mat> res = actionet::reduceKernel(S_mat, k, svd_alg, max_it, seed, verbose);
 
     py::dict out;
-    out["S_r"] = arma_mat_to_numpy(res(0));
+    out["S_r"]   = arma_mat_to_numpy(res(0));
     out["sigma"] = arma_mat_to_numpy(res(1));
-    out["V"] = arma_mat_to_numpy(res(2));
-    out["A"] = arma_mat_to_numpy(res(3));
-    out["B"] = arma_mat_to_numpy(res(4));
+    out["U"]     = arma_mat_to_numpy(res(2));
+    out["A"]     = arma_mat_to_numpy(res(3));
+    out["B"]     = arma_mat_to_numpy(res(4));
     return out;
 }
 
@@ -170,14 +182,21 @@ py::dict reduce_kernel_operator(py::object op, int k = 50, int max_it = 0,
                                 int seed = 0, bool verbose = true) {
     PythonMatrixOperator mat_op(std::move(op));
     actionet::KernelReductionResult res = actionet::reduceKernel_Operator(mat_op, k, max_it, seed, verbose);
+    return kernel_result_to_dict(res);
+}
 
-    py::dict out;
-    out["S_r"] = arma_mat_to_numpy(res.S_r);
-    out["sigma"] = arma_vec_to_numpy(res.sigma);
-    out["V"] = arma_mat_to_numpy(res.V);
-    out["A"] = arma_mat_to_numpy(res.A);
-    out["B"] = arma_mat_to_numpy(res.B);
-    return out;
+// Helper to parse a flexible singular-value argument (1D, Nx1, or 1xN) into arma::vec.
+static arma::vec parse_sigma(py::object d) {
+    py::array_t<double, py::array::forcecast> d_arr = d.cast<py::array_t<double, py::array::forcecast>>();
+    py::buffer_info d_buf = d_arr.request();
+    auto* ptr = static_cast<double*>(d_buf.ptr);
+    if (d_buf.ndim == 1) {
+        return arma::vec(ptr, static_cast<arma::uword>(d_buf.shape[0]), true, true);
+    }
+    if (d_buf.ndim == 2 && (d_buf.shape[0] == 1 || d_buf.shape[1] == 1)) {
+        return arma::vec(ptr, static_cast<arma::uword>(d_buf.shape[0] * d_buf.shape[1]), true, true);
+    }
+    throw std::runtime_error("Expected singular values `d` to be a 1D vector or Nx1/1xN array");
 }
 
 py::dict reduce_kernel_from_svd_operator(py::object op, py::array_t<double> u, py::object d,
@@ -185,31 +204,38 @@ py::dict reduce_kernel_from_svd_operator(py::object op, py::array_t<double> u, p
     PythonMatrixOperator mat_op(std::move(op));
 
     actionet::SVDResult svd;
-    svd.U = numpy_to_arma_mat(u);
-    svd.V = numpy_to_arma_mat(v);
-    py::array_t<double, py::array::forcecast> d_arr = d.cast<py::array_t<double, py::array::forcecast>>();
-    py::buffer_info d_buf = d_arr.request();
-    if (d_buf.ndim == 1) {
-        auto* ptr = static_cast<double*>(d_buf.ptr);
-        svd.sigma = arma::vec(ptr, static_cast<arma::uword>(d_buf.shape[0]), true, true);
-    }
-    else if (d_buf.ndim == 2 && (d_buf.shape[0] == 1 || d_buf.shape[1] == 1)) {
-        auto* ptr = static_cast<double*>(d_buf.ptr);
-        svd.sigma = arma::vec(ptr, static_cast<arma::uword>(d_buf.shape[0] * d_buf.shape[1]), true, true);
-    }
-    else {
-        throw std::runtime_error("Expected singular values `d` to be a 1D vector or Nx1/1xN array");
-    }
+    svd.U     = numpy_to_arma_mat(u);
+    svd.V     = numpy_to_arma_mat(v);
+    svd.sigma = parse_sigma(d);
 
     actionet::KernelReductionResult res = actionet::reduceKernelFromSVD_Operator(mat_op, svd, verbose);
+    return kernel_result_to_dict(res);
+}
 
-    py::dict out;
-    out["S_r"] = arma_mat_to_numpy(res.S_r);
-    out["sigma"] = arma_vec_to_numpy(res.sigma);
-    out["V"] = arma_mat_to_numpy(res.V);
-    out["A"] = arma_mat_to_numpy(res.A);
-    out["B"] = arma_mat_to_numpy(res.B);
-    return out;
+py::dict reduce_kernel_from_svd_sparse(py::object S, py::array_t<double> u, py::object d,
+                                       py::array_t<double> v, bool verbose = true) {
+    arma::sp_mat S_sp = scipy_to_arma_sparse(S);
+
+    actionet::SVDResult svd;
+    svd.U     = numpy_to_arma_mat(u);
+    svd.V     = numpy_to_arma_mat(v);
+    svd.sigma = parse_sigma(d);
+
+    actionet::KernelReductionResult res = actionet::reduceKernelFromSVD_InMemory(S_sp, svd, verbose);
+    return kernel_result_to_dict(res);
+}
+
+py::dict reduce_kernel_from_svd_dense(py::array_t<double> S, py::array_t<double> u, py::object d,
+                                      py::array_t<double> v, bool verbose = true) {
+    arma::mat S_mat = numpy_to_arma_mat(S);
+
+    actionet::SVDResult svd;
+    svd.U     = numpy_to_arma_mat(u);
+    svd.V     = numpy_to_arma_mat(v);
+    svd.sigma = parse_sigma(d);
+
+    actionet::KernelReductionResult res = actionet::reduceKernelFromSVD_InMemory(S_mat, svd, verbose);
+    return kernel_result_to_dict(res);
 }
 
 // simplex_regression ==================================================================================================
@@ -285,6 +311,14 @@ void init_action(py::module_ &m) {
     m.def("reduce_kernel_from_svd_operator", &reduce_kernel_from_svd_operator,
           "Reduce kernel from precomputed SVD (operator)",
           py::arg("op"), py::arg("u"), py::arg("d"), py::arg("v"), py::arg("verbose") = true);
+
+    m.def("reduce_kernel_from_svd_sparse", &reduce_kernel_from_svd_sparse,
+          "Reduce kernel from precomputed SVD (in-memory sparse)",
+          py::arg("S"), py::arg("u"), py::arg("d"), py::arg("v"), py::arg("verbose") = true);
+
+    m.def("reduce_kernel_from_svd_dense", &reduce_kernel_from_svd_dense,
+          "Reduce kernel from precomputed SVD (in-memory dense)",
+          py::arg("S"), py::arg("u"), py::arg("d"), py::arg("v"), py::arg("verbose") = true);
 
     // simplex_regression
     m.def("run_simplex_regression", &run_simplex_regression, "Simplex-constrained regression",

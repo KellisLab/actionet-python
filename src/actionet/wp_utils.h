@@ -32,7 +32,19 @@ arma::vec numpy_to_arma_vec(py::array_t<double, py::array::c_style | py::array::
 // Convert Armadillo vector to NumPy array
 py::array_t<double> arma_vec_to_numpy(const arma::vec& vec);
 
-// MatrixOperator wrapper around a Python object exposing shape/matvec/rmatvec.
+/// @brief MatrixOperator wrapper around a Python object exposing shape/matvec/rmatvec.
+///
+/// The Python object must provide:
+///   - .shape  : tuple (m, n)
+///   - .matvec(x: ndarray) -> ndarray  (compute y = A * x,   len(x)=n, len(y)=m)
+///   - .rmatvec(x: ndarray) -> ndarray (compute y = A' * x,  len(x)=m, len(y)=n)
+///
+/// Threading / GIL:
+///   Each call to matvec/rmatvec acquires the Python GIL.  This means the
+///   operator path is inherently single-threaded from C++.  PRIMME is configured
+///   in single-threaded mode for the operator path to avoid deadlock.  If multi-
+///   threaded PRIMME were needed, the Python callback would have to release the
+///   GIL internally (e.g. via nogil in Cython or py::gil_scoped_release).
 class PythonMatrixOperator final : public actionet::MatrixOperator {
 public:
     explicit PythonMatrixOperator(py::object op);

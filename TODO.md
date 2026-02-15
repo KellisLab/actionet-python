@@ -1,6 +1,7 @@
 ## Primary
-* Implement plotFeatures
-* Test Polt umap interactive
+* Fix R/Python result parity
+* obs label as legend title
+* Test plot umap interactive
 * Document everything
 * Add run_lpa/propagate_labels
 * Decouple compute_network_diffusion from anndata
@@ -14,3 +15,5 @@
 * Parallel specificity bug (fixed???)
 * Standardize key args
 * Test impute features
+* Implement plotFeatures
+* test backed SVD

@@ -2,6 +2,7 @@
 // Conversion functions between Python and C++ data structures
 
 #include "wp_utils.h"
+#include <cstring>
 #include <limits>
 #include <stdexcept>
 #include <string>
@@ -135,10 +136,8 @@ arma::vec numpy_to_arma_vec(py::array_t<double, py::array::c_style | py::array::
     }
 
     auto ptr = static_cast<double*>(buf.ptr);
-    arma::vec vec(buf.shape[0]);
-    for (size_t i = 0; i < buf.shape[0]; ++i) {
-        vec(i) = ptr[i];
-    }
+    arma::vec vec(static_cast<arma::uword>(buf.shape[0]));
+    std::memcpy(vec.memptr(), ptr, static_cast<size_t>(buf.shape[0]) * sizeof(double));
     return vec;
 }
 
@@ -147,10 +146,7 @@ py::array_t<double> arma_vec_to_numpy(const arma::vec& vec) {
     py::array_t<double> arr(vec.n_elem);
     auto buf = arr.request();
     double* ptr = static_cast<double*>(buf.ptr);
-
-    for (size_t i = 0; i < vec.n_elem; ++i) {
-        ptr[i] = vec(i);
-    }
+    std::memcpy(ptr, vec.memptr(), vec.n_elem * sizeof(double));
     return arr;
 }
 
@@ -167,7 +163,16 @@ PythonMatrixOperator::PythonMatrixOperator(py::object op) : op_(std::move(op)), 
 
 void PythonMatrixOperator::matvec(const arma::vec& x, arma::vec& y) const {
     py::gil_scoped_acquire gil;
-    py::object out_obj = op_.attr("matvec")(arma_vec_to_numpy(x));
+
+    // Create a zero-copy NumPy view over the Armadillo input vector.
+    // The Armadillo vector is const and its data is contiguous, so this is safe
+    // as long as the Python callback does not store the array beyond the call.
+    py::array_t<double> x_arr({static_cast<py::ssize_t>(x.n_elem)},
+                               {static_cast<py::ssize_t>(sizeof(double))},
+                               const_cast<double*>(x.memptr()),
+                               py::none());
+
+    py::object out_obj = op_.attr("matvec")(x_arr);
     py::array_t<double, py::array::forcecast> out_arr = out_obj.cast<py::array_t<double, py::array::forcecast>>();
     py::buffer_info buf = out_arr.request();
 
@@ -176,15 +181,19 @@ void PythonMatrixOperator::matvec(const arma::vec& x, arma::vec& y) const {
     }
 
     y.set_size(rows_);
-    auto* ptr = static_cast<double*>(buf.ptr);
-    for (arma::uword i = 0; i < rows_; i++) {
-        y(i) = ptr[i];
-    }
+    std::memcpy(y.memptr(), static_cast<double*>(buf.ptr), rows_ * sizeof(double));
 }
 
 void PythonMatrixOperator::rmatvec(const arma::vec& x, arma::vec& y) const {
     py::gil_scoped_acquire gil;
-    py::object out_obj = op_.attr("rmatvec")(arma_vec_to_numpy(x));
+
+    // Zero-copy NumPy view (see matvec above).
+    py::array_t<double> x_arr({static_cast<py::ssize_t>(x.n_elem)},
+                               {static_cast<py::ssize_t>(sizeof(double))},
+                               const_cast<double*>(x.memptr()),
+                               py::none());
+
+    py::object out_obj = op_.attr("rmatvec")(x_arr);
     py::array_t<double, py::array::forcecast> out_arr = out_obj.cast<py::array_t<double, py::array::forcecast>>();
     py::buffer_info buf = out_arr.request();
 
@@ -193,8 +202,5 @@ void PythonMatrixOperator::rmatvec(const arma::vec& x, arma::vec& y) const {
     }
 
     y.set_size(cols_);
-    auto* ptr = static_cast<double*>(buf.ptr);
-    for (arma::uword i = 0; i < cols_; i++) {
-        y(i) = ptr[i];
-    }
+    std::memcpy(y.memptr(), static_cast<double*>(buf.ptr), cols_ * sizeof(double));
 }

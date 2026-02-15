@@ -5,6 +5,7 @@
 COMPONENTS=30
 RUNS=3
 DETAILED_MEMORY=""
+INCLUDE_BACKED=""
 
 # Help message
 show_help() {
@@ -17,11 +18,13 @@ OPTIONS:
     -c, --components NUM    Number of components to compute (default: 30)
     -r, --runs NUM          Number of benchmark runs per test (default: 3)
     -m, --detailed-memory   Enable detailed memory profiling (requires memory_profiler)
+    -b, --include-backed    Include PRIMME backed (operator) mode benchmark
     -h, --help              Show this help message
 
 EXAMPLES:
     $(basename "$0")                          # Run with defaults
     $(basename "$0") -c 50 -r 5               # 50 components, 5 runs
+    $(basename "$0") --include-backed         # Include PRIMME backed mode
     $(basename "$0") --detailed-memory        # Enable detailed memory profiling
 
 OUTPUT:
@@ -45,6 +48,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         -m|--detailed-memory)
             DETAILED_MEMORY="--detailed-memory"
+            shift
+            ;;
+        -b|--include-backed)
+            INCLUDE_BACKED="--include-backed"
             shift
             ;;
         -h|--help)
@@ -75,7 +82,8 @@ echo ""
 python benchmark_svd_algorithms.py \
     --components "$COMPONENTS" \
     --runs "$RUNS" \
-    $DETAILED_MEMORY
+    $DETAILED_MEMORY \
+    $INCLUDE_BACKED
 
 # Check exit status
 if [ $? -eq 0 ]; then

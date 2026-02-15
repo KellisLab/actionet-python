@@ -3,17 +3,21 @@ Test script to validate all supported SVD methods in ACTIONet.
 
 This script tests:
 1. reduce_kernel with different SVD algorithms (IRLB, Halko, Feng, PRIMME)
-2. Validates basic statistics and dimensions
-3. Compares results across methods using correlation analysis
-4. Visualizes the first 2 components in side-by-side facets
+2. PRIMME in operator/backed mode (simulating out-of-memory datasets)
+3. Validates basic statistics, dimensions, and output key naming conventions
+4. Compares results across methods using correlation analysis
+5. Visualizes the first 2 components in side-by-side facets
 """
 
 import sys
+import os
+import tempfile
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.gridspec import GridSpec
 import anndata
 import scanpy as sc
+import scipy.sparse as sp
 
 # Add parent directory to path if needed
 sys.path.insert(0, '../src')
@@ -57,6 +61,46 @@ def load_and_prepare_data():
     return adata
 
 
+def validate_reduction_keys(adata, key, n_components, label=""):
+    """Validate that all expected output keys exist with correct naming (_U, not _V)."""
+    prefix = f"[{label}] " if label else ""
+    errors = []
+
+    # obsm keys
+    for slot in [key, f"{key}_B"]:
+        if slot not in adata.obsm:
+            errors.append(f"{prefix}Missing adata.obsm['{slot}']")
+
+    # varm keys — must use _U (not _V)
+    for slot in [f"{key}_U", f"{key}_A"]:
+        if slot not in adata.varm:
+            errors.append(f"{prefix}Missing adata.varm['{slot}']")
+
+    # Verify OLD naming convention (_V) is NOT present
+    if f"{key}_V" in adata.varm:
+        errors.append(f"{prefix}STALE KEY: adata.varm['{key}_V'] should be '{key}_U'")
+
+    # uns params
+    params_key = f"{key}_params"
+    if params_key not in adata.uns:
+        errors.append(f"{prefix}Missing adata.uns['{params_key}']")
+
+    # Shape checks
+    if key in adata.obsm:
+        S_r = adata.obsm[key]
+        if S_r.shape != (adata.n_obs, n_components):
+            errors.append(f"{prefix}obsm['{key}'] shape {S_r.shape} != ({adata.n_obs}, {n_components})")
+
+    if f"{key}_U" in adata.varm:
+        U = adata.varm[f"{key}_U"]
+        if U.shape[0] != adata.n_vars:
+            errors.append(f"{prefix}varm['{key}_U'] rows {U.shape[0]} != n_vars {adata.n_vars}")
+        if U.shape[1] != n_components:
+            errors.append(f"{prefix}varm['{key}_U'] cols {U.shape[1]} != {n_components}")
+
+    return errors
+
+
 def test_svd_method(adata, method_code, method_name, n_components=30):
     """Test a single SVD method and return results."""
     print(f"\n{'='*60}")
@@ -81,12 +125,21 @@ def test_svd_method(adata, method_code, method_name, n_components=30):
         )
 
         # Extract results
-        reduction = adata_test.obsm[f'action_{method_name.lower()}']
-        sigma = adata_test.uns[f'action_{method_name.lower()}_params']['sigma']
+        key = f'action_{method_name.lower()}'
+        reduction = adata_test.obsm[key]
+        sigma = adata_test.uns[f'{key}_params']['sigma']
 
         # Validate dimensions
         assert reduction.shape == (adata_test.n_obs, n_components), \
             f"Unexpected shape: {reduction.shape}"
+
+        # Validate output key naming
+        key_errors = validate_reduction_keys(adata_test, key, n_components, method_name)
+        if key_errors:
+            for err in key_errors:
+                print(f"  ⚠ {err}")
+        else:
+            print(f"  ✓ All output keys valid (using _U convention)")
 
         # Print statistics
         print(f"\nResults for {method_name}:")
@@ -229,6 +282,89 @@ def plot_singular_values(results, method_names):
     plt.show()
 
 
+def test_primme_backed_mode(adata, n_components=30):
+    """Test PRIMME in backed (operator) mode using an on-disk h5ad file."""
+    print(f"\n{'='*60}")
+    print(f"Testing: PRIMME BACKED MODE (operator path)")
+    print(f"{'='*60}")
+
+    try:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            backed_path = os.path.join(tmpdir, "backed_test.h5ad")
+
+            # Write sparse data to disk
+            adata_write = adata.copy()
+            logcounts = adata_write.layers['logcounts']
+            if not sp.issparse(logcounts):
+                logcounts = sp.csr_matrix(logcounts)
+            # Store logcounts as .X for backed access
+            adata_write.X = sp.csr_matrix(logcounts)
+            adata_write.write_h5ad(backed_path)
+            del adata_write
+
+            # Open in backed mode
+            adata_backed = anndata.read_h5ad(backed_path, backed='r')
+            print(f"  Backed data type: {type(adata_backed.X)}")
+            print(f"  Shape: {adata_backed.shape}")
+
+            # Run reduce_kernel — uses .X which is backed
+            actionet.reduce_kernel(
+                adata_backed,
+                n_components=n_components,
+                layer=None,
+                key_added='action_backed',
+                svd_algorithm=3,
+                max_iter=0,
+                seed=42,
+                verbose=True,
+                inplace=True,
+                backed_chunk_size=2048,
+            )
+
+            # Validate output keys
+            key_errors = validate_reduction_keys(adata_backed, 'action_backed', n_components, "PRIMME BACKED")
+            if key_errors:
+                for err in key_errors:
+                    print(f"  ⚠ {err}")
+            else:
+                print(f"  ✓ All output keys valid (using _U convention)")
+
+            reduction = adata_backed.obsm['action_backed']
+            sigma = adata_backed.uns['action_backed_params']['sigma']
+
+            print(f"\n  Reduction shape: {reduction.shape}")
+            print(f"  First 5 singular values: {sigma[:5]}")
+
+            # Check for NaN or Inf
+            assert not np.any(np.isnan(reduction)), "BACKED: Found NaN in reduction"
+            assert not np.any(np.isinf(reduction)), "BACKED: Found Inf in reduction"
+
+            # Validate operator_mode is recorded
+            params = adata_backed.uns['action_backed_params']
+            if params.get('operator_mode', False):
+                print(f"  ✓ Operator mode correctly recorded in params")
+
+            print(f"✓ PRIMME BACKED mode completed successfully!")
+
+            return {
+                'reduction': reduction,
+                'sigma': sigma,
+                'success': True,
+                'error': None,
+            }
+
+    except Exception as e:
+        print(f"✗ Error with PRIMME BACKED: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return {
+            'reduction': None,
+            'sigma': None,
+            'success': False,
+            'error': str(e),
+        }
+
+
 def main():
     """Main test function."""
     print("="*60)
@@ -261,6 +397,35 @@ def main():
     # Compare methods
     method_names = list(SVD_METHODS.values())
     compare_methods(results, method_names)
+
+    # Test PRIMME backed mode
+    print("\n" + "="*60)
+    print("Testing PRIMME backed (operator) mode...")
+    print("="*60)
+
+    backed_result = test_primme_backed_mode(adata, n_components)
+    results['PRIMME_BACKED'] = backed_result
+
+    # Print backed-mode summary
+    if backed_result['success']:
+        print(f"\nPRIMME BACKED: ✓ PASSED")
+
+        # Compare backed vs in-memory PRIMME if both succeeded
+        if results.get('PRIMME', {}).get('success', False):
+            mem_red = results['PRIMME']['reduction']
+            bck_red = backed_result['reduction']
+
+            component_corrs = []
+            for i in range(min(mem_red.shape[1], bck_red.shape[1])):
+                c = np.abs(np.corrcoef(mem_red[:, i], bck_red[:, i])[0, 1])
+                component_corrs.append(c)
+
+            mean_corr = np.mean(component_corrs)
+            print(f"  Backed vs In-Memory mean component correlation: {mean_corr:.6f}")
+    else:
+        print(f"\nPRIMME BACKED: ✗ FAILED")
+        if backed_result['error']:
+            print(f"  Error: {backed_result['error']}")
 
     # Visualize results
     print("\nGenerating visualizations...")

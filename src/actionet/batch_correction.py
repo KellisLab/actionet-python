@@ -69,7 +69,7 @@ def correct_batch_effect(
     
     params = adata.uns[params_key]
     old_S_r = np.asarray(adata.obsm[reduction_key], dtype=float, order="C")  # Cells x components
-    old_V = np.asarray(adata.varm[f"{reduction_key}_V"], dtype=float, order="C")
+    old_U = np.asarray(adata.varm[f"{reduction_key}_U"], dtype=float, order="C")
     old_A = np.asarray(adata.varm[f"{reduction_key}_A"], dtype=float, order="C")
     old_B = np.asarray(adata.obsm[f"{reduction_key}_B"], dtype=float, order="C")
     old_sigma = np.asarray(params["sigma"], dtype=float).reshape(-1)
@@ -102,17 +102,17 @@ def correct_batch_effect(
     # Run orthogonalization
     if sp.issparse(S):
         result = _core.orthogonalize_batch_effect_sparse(
-            S, old_S_r, old_V, old_A, old_B, old_sigma, design
+            S, old_S_r, old_U, old_A, old_B, old_sigma, design
         )
     else:
         S = np.asarray(S, dtype=float, order="C")
         result = _core.orthogonalize_batch_effect_dense(
-            S, old_S_r, old_V, old_A, old_B, old_sigma, design
+            S, old_S_r, old_U, old_A, old_B, old_sigma, design
         )
     
     # Store corrected reduction
     adata.obsm[corrected_key] = result["S_r"].T  # Transpose to cells x components
-    adata.varm[f"{corrected_key}_V"] = result["V"]
+    adata.varm[f"{corrected_key}_U"] = result["U"]
     adata.varm[f"{corrected_key}_A"] = result["A"]
     adata.obsm[f"{corrected_key}_B"] = result["B"]
     adata.uns[f"{corrected_key}_params"] = {
@@ -173,7 +173,7 @@ def correct_basal_expression(
 
     params = adata.uns[params_key]
     old_S_r = np.asarray(adata.obsm[reduction_key], dtype=float, order="C")
-    old_V = np.asarray(adata.varm[f"{reduction_key}_V"], dtype=float, order="C")
+    old_U = np.asarray(adata.varm[f"{reduction_key}_U"], dtype=float, order="C")
     old_A = np.asarray(adata.varm[f"{reduction_key}_A"], dtype=float, order="C")
     old_B = np.asarray(adata.obsm[f"{reduction_key}_B"], dtype=float, order="C")
     old_sigma = np.asarray(params["sigma"], dtype=float).reshape(-1)
@@ -194,17 +194,17 @@ def correct_basal_expression(
     # Run orthogonalization
     if sp.issparse(S):
         result = _core.orthogonalize_basal_sparse(
-            S, old_S_r, old_V, old_A, old_B, old_sigma, basal
+            S, old_S_r, old_U, old_A, old_B, old_sigma, basal
         )
     else:
         S = np.asarray(S, dtype=float, order="C")
         result = _core.orthogonalize_basal_dense(
-            S, old_S_r, old_V, old_A, old_B, old_sigma, basal
+            S, old_S_r, old_U, old_A, old_B, old_sigma, basal
         )
 
     # Store corrected reduction
     adata.obsm[corrected_key] = result["S_r"].T
-    adata.varm[f"{corrected_key}_V"] = result["V"]
+    adata.varm[f"{corrected_key}_U"] = result["U"]
     adata.varm[f"{corrected_key}_A"] = result["A"]
     adata.obsm[f"{corrected_key}_B"] = result["B"]
     adata.uns[f"{corrected_key}_params"] = {
