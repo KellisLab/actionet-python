@@ -192,6 +192,41 @@ py::dict perturbed_svd(py::array_t<double> u, py::array_t<double> d, py::array_t
     return out;
 }
 
+py::dict perturbed_svd_with_prior(py::array_t<double> u, py::array_t<double> d, py::array_t<double> v,
+                                  py::array_t<double> old_A, py::array_t<double> old_B,
+                                  py::array_t<double> A_new, py::array_t<double> B_new) {
+    arma::mat u_mat = numpy_to_arma_mat(u);
+    arma::vec d_vec = numpy_to_arma_vec(d);
+    arma::mat v_mat = numpy_to_arma_mat(v);
+    arma::mat old_A_mat = numpy_to_arma_mat(old_A);
+    arma::mat old_B_mat = numpy_to_arma_mat(old_B);
+    arma::mat A_new_mat = numpy_to_arma_mat(A_new);
+    arma::mat B_new_mat = numpy_to_arma_mat(B_new);
+
+    actionet::SVDResult svd;
+    svd.U = u_mat;
+    svd.sigma = d_vec;
+    svd.V = v_mat;
+
+    actionet::PerturbedSVDResult prior;
+    const actionet::PerturbedSVDResult* prior_ptr = nullptr;
+    if (old_A_mat.n_elem > 0 && old_B_mat.n_elem > 0) {
+        prior.A = old_A_mat;
+        prior.B = old_B_mat;
+        prior_ptr = &prior;
+    }
+
+    actionet::PerturbedSVDResult perturbed = actionet::perturbedSVD(svd, A_new_mat, B_new_mat, prior_ptr);
+
+    py::dict out;
+    out["u"] = arma_mat_to_numpy(perturbed.U);
+    out["d"] = arma_vec_to_numpy(perturbed.sigma);
+    out["v"] = arma_mat_to_numpy(perturbed.V);
+    out["A"] = arma_mat_to_numpy(perturbed.A);
+    out["B"] = arma_mat_to_numpy(perturbed.B);
+    return out;
+}
+
 // svd_main ============================================================================================================
 
 py::dict run_svd_sparse(py::object A, int k = 30, int max_it = 0, int seed = 0,
@@ -257,6 +292,12 @@ void init_decomposition(py::module_ &m) {
     // svd_main
     m.def("perturbed_svd", &perturbed_svd, "Compute perturbed SVD",
           py::arg("u"), py::arg("d"), py::arg("v"), py::arg("A"), py::arg("B"));
+
+    m.def("perturbed_svd_with_prior", &perturbed_svd_with_prior,
+          "Compute perturbed SVD with prior perturbation terms",
+          py::arg("u"), py::arg("d"), py::arg("v"),
+          py::arg("old_A"), py::arg("old_B"),
+          py::arg("A_new"), py::arg("B_new"));
 
     m.def("run_svd_sparse", &run_svd_sparse, "Run SVD (sparse)",
           py::arg("A"), py::arg("k") = 30, py::arg("max_it") = 0, py::arg("seed") = 0,

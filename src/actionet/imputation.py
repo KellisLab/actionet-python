@@ -9,6 +9,8 @@ import warnings
 
 from . import _core
 from .anndata_utils import anndata_to_matrix
+from ._matrix_source import MatrixSource
+from ._backed_persist import persist_updates
 
 
 def impute_features(
@@ -23,6 +25,7 @@ def impute_features(
     max_iter: int = 5,
     norm_method: Union[int, Literal["pagerank", "pagerank_sym"]] = "pagerank_sym",
     n_threads: int = 0,
+    backed_chunk_size: int = 4096,
 ) -> pd.DataFrame:
     """
     Impute gene expression using network diffusion.
@@ -54,6 +57,9 @@ def impute_features(
         Normalization method for network (0=none, 1=symmetric, 2=random walk, "pagerank", "pagerank_sym").
     n_threads
         Number of threads.
+    backed_chunk_size : int, optional (default: 4096)
+        Number of rows per chunk when streaming backed AnnData.
+        Ignored for in-memory objects.
 
     Returns
     -------
@@ -88,11 +94,19 @@ def impute_features(
 
     feature_indices = np.array([feature_to_idx[feat] for feat in matched_features], dtype=int)
 
-    S = anndata_to_matrix(adata, layer=layer, transpose=True)
-    X0 = S[feature_indices, :]
-
-    if sp.issparse(X0):
-        X0 = X0.toarray()
+    source = MatrixSource(adata, layer=layer)
+    if source.is_backed:
+        X0_cells = source.feature_subset(
+            feature_indices,
+            chunk_size=backed_chunk_size,
+            prefer_sparse=False,
+        )
+        X0 = np.asarray(X0_cells, dtype=np.float64).T  # features x cells
+    else:
+        S = anndata_to_matrix(adata, layer=layer, transpose=True)
+        X0 = S[feature_indices, :]
+        if sp.issparse(X0):
+            X0 = X0.toarray()
 
     G = adata.obsp[network_key]
 
@@ -267,11 +281,11 @@ def smooth_kernel(
 
     if return_raw:
         return {
-            "U": U,
+            "U": U_left,
             "SVD_out": svd_out,
             "V_smooth": V_smooth,
             "H": H,
         }
 
-    adata.obsm[key_added] = H
+    persist_updates(adata, obsm={key_added: H})
     return adata

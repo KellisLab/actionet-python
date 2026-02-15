@@ -39,6 +39,7 @@ def run_actionet(
     n_threads: int = 0,
     seed: int = 0,
     inplace: bool = True,
+    backed_chunk_size: int = 4096,
 ) -> Optional[AnnData]:
     """
     Run the complete ACTIONet pipeline.
@@ -107,6 +108,10 @@ def run_actionet(
         Random seed for reproducibility.
     inplace : bool, optional (default: True)
         If True, modifies adata in place. If False, returns modified copy.
+    backed_chunk_size : int, optional (default: 4096)
+        Number of rows per chunk when streaming backed AnnData.
+        Forwarded to feature specificity and any other backed-aware stage.
+        Ignored for in-memory objects.
 
     Returns
     -------
@@ -268,6 +273,7 @@ def run_actionet(
         layer=layer,
         key_added="archetype",
         n_threads=1 if not compute_specificity_parallel else n_threads,
+        backed_chunk_size=backed_chunk_size,
         inplace=True,
     )
 

@@ -66,6 +66,8 @@ from .pipeline import (
 from .preprocessing import (
     import_anndata_generic,
     filter_anndata,
+    normalize_ace,
+    log1p_ace,
 )
 
 from .tools import (
@@ -120,4 +122,8 @@ __all__ = [
     "add_network_to_anndata",
     "aggregate_anndata",
     "aggregate_matrix",
+    "import_anndata_generic",
+    "filter_anndata",
+    "normalize_ace",
+    "log1p_ace",
 ]

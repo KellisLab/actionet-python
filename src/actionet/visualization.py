@@ -6,6 +6,7 @@ from anndata import AnnData
 from scipy import sparse as sp
 
 from . import _core
+from ._backed_persist import persist_updates
 
 
 def compute_node_colors(
@@ -89,7 +90,7 @@ def compute_node_colors(
         if key_added is None:
             key_added = f"colors_{embedding_key}"
 
-        obj.obsm[key_added] = colors
+        persist_updates(obj, obsm={key_added: colors})
         return obj
 
     return colors

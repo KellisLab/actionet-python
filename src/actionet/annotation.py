@@ -7,8 +7,9 @@ from anndata import AnnData
 from scipy.stats import rankdata
 from scipy.sparse import issparse, csr_matrix
 
-from .core import compute_feature_specificity
+from .core import compute_feature_specificity, _compute_specificity_streamed, _labels_to_membership
 from . import _core
+from ._matrix_source import MatrixSource
 
 
 def find_markers(
@@ -22,6 +23,7 @@ def find_markers(
     n_threads: int = 0,
     result: Literal["table", "ranks", "scores"] = "table",
     return_type: Literal["dataframe", "dict", ""] = "dataframe",
+    backed_chunk_size: int = 4096,
 ) -> Union[pd.DataFrame, Dict[str, np.ndarray]]:
     """
     Find marker genes for each cluster/group.
@@ -61,6 +63,9 @@ def find_markers(
         Return format:
         - "dataframe": pandas DataFrame
         - "dict": Dictionary with cluster names as keys
+    backed_chunk_size : int, optional (default: 4096)
+        Number of rows per chunk when streaming backed AnnData.
+        Ignored for in-memory objects.
 
     Returns
     -------
@@ -92,8 +97,8 @@ def find_markers(
     # Filter labels if labels_use is provided
     if labels_use is not None:
         mask = np.isin(labels_arr, labels_use)
-        # Create a temporary AnnData with filtered cells
-        adata_filtered = adata[mask, :].copy()
+        # Use a view to avoid backed-incompatible eager copies.
+        adata_filtered = adata[mask, :]
         labels_arr_filtered = labels_arr[mask]
     else:
         adata_filtered = adata
@@ -110,18 +115,35 @@ def find_markers(
             raise ValueError(f"Column '{features_use}' not found in adata.var")
         feature_labels = adata_filtered.var[features_use].values
 
-    # Compute feature specificity on all data
-    result_adata = compute_feature_specificity(
-        adata_filtered,
-        labels_arr_filtered,
-        layer=layer,
-        n_threads=n_threads,
-        key_added="_temp_specificity",
-        inplace=False,
-    )
+    if getattr(adata_filtered, "isbacked", False):
+        from pandas import Categorical
+        from pandas.api.types import is_integer_dtype
 
-    upper_sig = result_adata.varm["_temp_specificity_upper"]
-    lower_sig = result_adata.varm["_temp_specificity_lower"]
+        if not is_integer_dtype(labels_arr_filtered):
+            cat = Categorical(labels_arr_filtered)
+            labels_int = cat.codes.astype(np.int32)
+        else:
+            labels_int = labels_arr_filtered.astype(np.int32)
+
+        labels_int = labels_int + 1
+        source = MatrixSource(adata_filtered, layer=layer)
+        H = _labels_to_membership(labels_int, source.n_obs)
+        streamed = _compute_specificity_streamed(source, H, chunk_size=backed_chunk_size)
+        upper_sig = streamed["upper_significance"]
+        lower_sig = streamed["lower_significance"]
+    else:
+        temp_key = "_temp_specificity"
+        result_adata = compute_feature_specificity(
+            adata_filtered,
+            labels_arr_filtered,
+            layer=layer,
+            n_threads=n_threads,
+            key_added=temp_key,
+            backed_chunk_size=backed_chunk_size,
+            inplace=False,
+        )
+        upper_sig = result_adata.varm[f"{temp_key}_upper"]
+        lower_sig = result_adata.varm[f"{temp_key}_lower"]
 
     # Compute feature specificity scores
     feat_spec = upper_sig - lower_sig
@@ -224,6 +246,7 @@ def annotate_cells(
     use_enrichment: bool = True,
     use_lpa: bool = False,
     n_threads: int = 0,
+    backed_chunk_size: int = 4096,
 ) -> Dict[str, np.ndarray]:
     """
     Infer cell annotations from imputed gene expression for all cells.
@@ -266,6 +289,9 @@ def annotate_cells(
         Apply label propagation algorithm to correct labels.
     n_threads : int, optional (default: 0)
         Number of threads (0 = auto).
+    backed_chunk_size : int, optional (default: 4096)
+        Number of rows per chunk when streaming backed AnnData.
+        Ignored for in-memory objects.
 
     Returns
     -------
@@ -306,17 +332,30 @@ def annotate_cells(
     # Encode markers into binary/weighted matrix
     X_markers, celltype_names = _encode_markers(markers, feature_set)
 
-    # Get expression matrix
-    if layer is None:
-        S = adata.X
+    source = MatrixSource(adata, layer=layer)
+    if source.is_backed:
+        if issparse(X_markers):
+            required_idx = np.where(np.asarray(X_markers.getnnz(axis=1)).ravel() > 0)[0]
+        else:
+            required_idx = np.where(np.any(np.asarray(X_markers) != 0, axis=1))[0]
+
+        if required_idx.size == 0:
+            raise ValueError("Marker set does not overlap features in AnnData.")
+
+        X_markers = X_markers[required_idx, :]
+        S_cells = source.feature_subset(
+            required_idx,
+            chunk_size=backed_chunk_size,
+            prefer_sparse=True,
+        )
+        if not issparse(S_cells):
+            S_cells = csr_matrix(np.asarray(S_cells))
+        S = S_cells.T.tocsr()
     else:
-        S = adata.layers[layer]
-
-    if not issparse(S):
-        S = csr_matrix(S)
-
-    # Transpose S to features × cells for C++ function
-    S = S.T
+        S = source.matrix
+        if not issparse(S):
+            S = csr_matrix(S)
+        S = S.T
 
     # Get network graph
     if network_key not in adata.obsp:

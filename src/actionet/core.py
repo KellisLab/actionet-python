@@ -1,52 +1,29 @@
 """High-level Python API wrapping C++ bindings with AnnData integration."""
 
-from typing import Any, Optional, Union, Tuple, Literal
+from typing import Any, Optional, Union, Literal
 import numpy as np
 import scipy.sparse as sp
 from anndata import AnnData
 
 from . import _core
-from .anndata_utils import anndata_to_matrix, add_action_results, add_network_to_anndata
+from .anndata_utils import anndata_to_matrix
+from ._backed_persist import persist_updates
+from ._matrix_source import MatrixSource
 from . import tools
 
-
-def _get_adata_matrix(adata: AnnData, layer: Optional[str] = None):
-    """Return an AnnData matrix-like object without forcing materialization."""
-    if layer is None:
-        return adata.X
-    return adata.layers[layer]
-
-
-def _is_backed_sparse_matrix(X: Any) -> bool:
-    """Detect whether X is a backed (on-disk) sparse dataset from AnnData.
-
-    Uses AnnData's native ``isbacked`` property when available (AnnData >= 0.7).
-    Falls back to duck-type detection for older versions or non-AnnData objects.
-
-    Parameters
-    ----------
-    X
-        A matrix-like object, typically ``adata.X`` or ``adata.layers[layer]``.
-
-    Returns
-    -------
-    bool
-        True if X is backed (not fully materialised in memory).
-    """
-    # Already a regular in-memory sparse matrix — not backed.
-    if sp.issparse(X):
+def _is_backed_matrix(X: Any) -> bool:
+    """Detect whether ``X`` is backed/on-disk rather than fully in memory."""
+    if sp.issparse(X) or isinstance(X, np.ndarray):
         return False
 
-    # AnnData backed sparse datasets expose an ``isbacked`` property (or the
-    # internal SparseDataset / backed-mode sparse wrapper does).  Check for it.
     if hasattr(X, "isbacked"):
         return bool(X.isbacked)
 
-    # Fallback: AnnData ≥ 0.10 uses SparseDataset (anndata.experimental) for
-    # backed sparse .X.  These lack ``isbacked`` but can be detected by class
-    # hierarchy or the presence of a backing group attribute.
     if hasattr(X, "group"):
-        # h5py / zarr backed SparseDataset
+        return True
+
+    mod = type(X).__module__
+    if mod and mod.startswith("h5py"):
         return True
 
     return False
@@ -140,7 +117,7 @@ def _select_svd_algorithm(
 
     Parameters
     ----------
-    S : scipy.sparse matrix, numpy.ndarray, or backed sparse dataset
+    S : scipy.sparse matrix, numpy.ndarray, or backed dataset
         Input matrix (features × cells).
     svd_algorithm : int or None
         User-specified algorithm (if None, automatic selection is performed).
@@ -154,7 +131,7 @@ def _select_svd_algorithm(
 
     Selection Logic
     ---------------
-    1. Backed sparse inputs always use PRIMME (operator path).
+    1. Backed inputs always use PRIMME (operator path).
     2. If user specifies an algorithm explicitly, use it.
     3. If matrix exceeds 32-bit indexing limits (>2^31-1 elements), force PRIMME.
     4. For sparse matrices:
@@ -163,12 +140,12 @@ def _select_svd_algorithm(
     5. For dense matrices: Halko (fastest).
     """
     # If algorithm is explicitly specified, use it.
-    # Guard backed sparse inputs first — they must go through the operator path.
-    if _is_backed_sparse_matrix(S):
+    # Guard backed inputs first — they must go through the operator path.
+    if _is_backed_matrix(S):
         if svd_algorithm is not None and svd_algorithm != 3:
-            raise ValueError("Backed sparse matrices currently support only PRIMME (svd_algorithm=3)")
+            raise ValueError("Backed matrices currently support only PRIMME (svd_algorithm=3)")
         if verbose:
-            print("Detected backed sparse matrix: selecting PRIMME operator path")
+            print("Detected backed matrix: selecting PRIMME operator path")
         return 3
 
     if svd_algorithm is not None:
@@ -283,8 +260,9 @@ def reduce_kernel(
     if not inplace:
         adata = adata.copy()
 
-    X = _get_adata_matrix(adata, layer=layer)  # cells x genes
-    use_operator = _is_backed_sparse_matrix(X)
+    source = MatrixSource(adata, layer=layer)
+    X = source.matrix  # cells x genes
+    use_operator = source.is_backed
 
     if use_operator:
         svd_algorithm = 3  # OOM v1 supports PRIMME only.
@@ -322,16 +300,10 @@ def reduce_kernel(
                     precomputed_svd["v"], verbose,
                 )
 
-    # Store results
-    adata.obsm[key_added] = result["S_r"].T  # Transpose to cells x components
-    adata.varm[f"{key_added}_U"] = result["U"]
-    adata.varm[f"{key_added}_A"] = result["A"]
-    adata.obsm[f"{key_added}_B"] = result["B"]
-
     # Map algorithm code to name for better user understanding
     algorithm_names = {0: 'IRLB', 1: 'Halko', 2: 'Feng', 3: 'PRIMME'}
 
-    adata.uns[f"{key_added}_params"] = {
+    params = {
         "sigma": result["sigma"],
         "n_components": n_components,
         "svd_algorithm": svd_algorithm,
@@ -339,6 +311,18 @@ def reduce_kernel(
         "used_precomputed_svd": precomputed_svd is not None,
         "operator_mode": use_operator,
     }
+    persist_updates(
+        adata,
+        obsm={
+            key_added: result["S_r"].T,  # cells x components
+            f"{key_added}_B": result["B"],
+        },
+        varm={
+            f"{key_added}_U": result["U"],
+            f"{key_added}_A": result["A"],
+        },
+        uns={f"{key_added}_params": params},
+    )
 
     if not inplace:
         return adata
@@ -463,7 +447,16 @@ def run_action(
         specificity_threshold, min_observations, n_threads
     )
 
-    add_action_results(adata, result)
+    persist_updates(
+        adata,
+        obsm={
+            "H_stacked": result["H_stacked"].T,
+            "H_merged": result["H_merged"].T,
+            "C_stacked": result["C_stacked"],
+            "C_merged": result["C_merged"],
+        },
+        obs={"assigned_archetype": result["assigned_archetypes"]},
+    )
     if not inplace:
         return adata
     return None
@@ -535,7 +528,7 @@ def build_network(
         M, ef_construction, ef, mutual_edges_only, k
     )
 
-    add_network_to_anndata(adata, G, key_added)
+    persist_updates(adata, obsp={key_added: G})
     if not inplace:
         return adata
     return None
@@ -617,10 +610,160 @@ def compute_network_diffusion(
         tol = tol
     )
 
-    adata.obsm[key_added] = X_diffused
+    persist_updates(adata, obsm={key_added: X_diffused})
     if not inplace:
         return adata
     return None
+
+
+def _labels_to_membership(labels_int: np.ndarray, n_obs: int) -> np.ndarray:
+    labels_int = np.asarray(labels_int, dtype=np.int64).reshape(-1)
+    if labels_int.shape[0] != n_obs:
+        raise ValueError(
+            f"labels length ({labels_int.shape[0]}) does not match number of observations ({n_obs})"
+        )
+
+    max_label = int(labels_int.max()) if labels_int.size > 0 else 0
+    if max_label <= 0:
+        raise ValueError("No valid labels after conversion; ensure labels contain at least one non-missing category.")
+
+    H = np.zeros((n_obs, max_label), dtype=np.float64)
+    valid = labels_int > 0
+    H[np.arange(n_obs)[valid], labels_int[valid] - 1] = 1.0
+    return H
+
+
+def _compute_specificity_streamed(
+    source: MatrixSource,
+    H_cells: np.ndarray,
+    chunk_size: int = 4096,
+) -> dict[str, np.ndarray]:
+    """Streamed equivalent of ``libactionet::computeFeatureSpecificity()``.
+
+    Implements Bernstein-style tail-probability scoring to identify
+    features (genes) whose expression is specifically enriched or depleted
+    in each group defined by *H_cells*.
+
+    **Algorithm overview** (mirrors ``specificity.cpp``):
+
+    1. Shift the matrix so all values are non-negative (subtract global
+       minimum).
+    2. Normalise the membership matrix *H* column-wise by dividing each
+       column by its mean.
+    3. Accumulate, in a single streaming pass over row-chunks:
+       - ``row_count``  -- nnz count per feature (column)
+       - ``col_count``  -- nnz count per observation (row)
+       - ``row_factor_sum`` -- column sums of the shifted matrix
+       - ``obs``        -- ``X_shifted.T @ H_norm`` (observed feature--group
+         co-occurrence)
+    4. Derive per-feature and per-observation density estimates
+       ``row_p``, ``col_p`` and a relative-density weight ``beta``.
+    5. Compute *expected* co-occurrence ``exp`` and its variance proxy
+       ``nu`` under a null model, then evaluate one-sided Bernstein-type
+       tail bounds, yielding ``log10``-scaled upper (enrichment) and lower
+       (depletion) significance matrices.
+
+    Parameters
+    ----------
+    source : MatrixSource
+        Expression matrix accessor (cells x features).
+    H_cells : ndarray, shape ``(n_obs, k)``
+        Group-membership or archetype-footprint matrix.
+    chunk_size : int
+        Rows per streaming chunk.
+
+    Returns
+    -------
+    dict with keys ``"average_profile"``, ``"upper_significance"``,
+    ``"lower_significance"`` -- all ``(n_vars, k)`` arrays.
+    """
+    H_cells = np.asarray(H_cells, dtype=np.float64, order="C")
+    if H_cells.ndim != 2 or H_cells.shape[0] != source.n_obs:
+        raise ValueError(
+            f"H_cells must have shape (n_obs, k) where n_obs={source.n_obs}, got {H_cells.shape}"
+        )
+    if H_cells.shape[1] == 0:
+        raise ValueError("H_cells must contain at least one archetype/label column.")
+
+    col_mean = H_cells.mean(axis=0)
+    col_mean[col_mean == 0] = 1.0
+    Ht = H_cells / col_mean[np.newaxis, :]
+
+    min_val = source.global_min(chunk_size=chunk_size)
+
+    row_count = np.zeros(source.n_vars, dtype=np.float64)
+    row_factor_sum = np.zeros(source.n_vars, dtype=np.float64)
+    col_count = np.zeros(source.n_obs, dtype=np.float64)
+    obs = np.zeros((source.n_vars, Ht.shape[1]), dtype=np.float64)
+
+    for chunk in source.iter_row_chunks(chunk_size=chunk_size):
+        block = chunk.block
+        h_block = Ht[chunk.start:chunk.end, :]
+
+        if sp.issparse(block):
+            block_csr = block.tocsr(copy=False)
+
+            # Count nnz on the *original* block -- this matches the C++ sparse
+            # iterator which visits all stored elements before and after the
+            # min-shift.  Using nnz rather than positivity-after-shift ensures
+            # numerical parity with the in-memory C++ path.
+            row_count += np.asarray(block_csr.getnnz(axis=0)).ravel()
+            col_count[chunk.start:chunk.end] = np.asarray(block_csr.getnnz(axis=1)).ravel()
+
+            if min_val != 0.0:
+                block_csr = block_csr.copy()
+                block_csr.data = block_csr.data - min_val
+
+            row_factor_sum += np.asarray(block_csr.sum(axis=0)).ravel()
+            obs += np.asarray(block_csr.T.dot(h_block))
+        else:
+            arr = np.asarray(block, dtype=np.float64)
+            if min_val != 0.0:
+                arr = arr - min_val
+
+            pos = arr > 0
+            row_count += pos.sum(axis=0)
+            col_count[chunk.start:chunk.end] = pos.sum(axis=1)
+            row_factor_sum += arr.sum(axis=0)
+            obs += arr.T @ h_block
+
+    row_factor = np.divide(
+        row_factor_sum,
+        row_count,
+        out=np.zeros_like(row_factor_sum),
+        where=row_count > 0,
+    )
+
+    row_p = row_count / float(source.n_obs if source.n_obs > 0 else 1)
+    col_p = col_count / float(source.n_vars if source.n_vars > 0 else 1)
+
+    rho = float(col_p.mean()) if col_p.size > 0 else 0.0
+    beta = np.zeros_like(col_p) if rho == 0.0 else (col_p / rho)
+
+    gamma = Ht * beta[:, np.newaxis]
+    a = gamma.max(axis=0) if gamma.size > 0 else np.zeros(Ht.shape[1], dtype=np.float64)
+
+    exp = np.outer(row_p * row_factor, gamma.sum(axis=0))
+    nu = np.outer(row_p * np.square(row_factor), np.square(gamma).sum(axis=0))
+    A = np.outer(row_factor, a)
+    lamb = obs - exp
+
+    with np.errstate(divide="ignore", invalid="ignore"):
+        log_lower = np.square(lamb) / (2.0 * nu)
+        log_upper = np.square(lamb) / (2.0 * (nu + (lamb * A / 3.0)))
+
+    log_lower[lamb >= 0] = 0.0
+    log_upper[lamb <= 0] = 0.0
+
+    scale = np.log(10.0)
+    log_lower = np.nan_to_num(log_lower, nan=0.0, posinf=0.0, neginf=0.0) / scale
+    log_upper = np.nan_to_num(log_upper, nan=0.0, posinf=0.0, neginf=0.0) / scale
+
+    return {
+        "average_profile": obs / float(source.n_obs if source.n_obs > 0 else 1),
+        "upper_significance": log_upper,
+        "lower_significance": log_lower,
+    }
 
 
 def compute_feature_specificity(
@@ -630,6 +773,7 @@ def compute_feature_specificity(
     n_threads: int = 0,
     key_added: str = "specificity",
     inplace: bool = True,
+    backed_chunk_size: int = 4096,
 ) -> Optional[AnnData]:
     """
     Compute feature specificity scores for clusters/archetypes.
@@ -648,6 +792,9 @@ def compute_feature_specificity(
         Key prefix for storing results in adata.varm.
     inplace
         If True, modifies the AnnData object in place. If False, returns a new AnnData object with the results.
+    backed_chunk_size : int, optional (default: 4096)
+        Number of rows per chunk for streamed specificity computation on
+        backed AnnData.  Ignored for in-memory objects.
 
     Returns
     -------
@@ -665,7 +812,8 @@ def compute_feature_specificity(
     """
     if not inplace:
         adata = adata.copy()
-    S = anndata_to_matrix(adata, layer=layer, transpose=True)
+
+    source = MatrixSource(adata, layer=layer)
 
     if isinstance(labels, str):
         if labels not in adata.obs:
@@ -685,14 +833,24 @@ def compute_feature_specificity(
     # Function expects 1-based labels, so add 1
     labels_int = labels_int + 1
 
-    if sp.issparse(S):
-        result = _core.compute_feature_specificity_sparse(S, labels_int, n_threads)
+    if source.is_backed:
+        H = _labels_to_membership(labels_int, source.n_obs)
+        result = _compute_specificity_streamed(source, H, chunk_size=backed_chunk_size)
     else:
-        result = _core.compute_feature_specificity_dense(S, labels_int, n_threads)
+        S = anndata_to_matrix(adata, layer=layer, transpose=True)
+        if sp.issparse(S):
+            result = _core.compute_feature_specificity_sparse(S, labels_int, n_threads)
+        else:
+            result = _core.compute_feature_specificity_dense(S, labels_int, n_threads)
 
-    adata.varm[f"{key_added}_profile"] = result["average_profile"]
-    adata.varm[f"{key_added}_upper"] = result["upper_significance"]
-    adata.varm[f"{key_added}_lower"] = result["lower_significance"]
+    persist_updates(
+        adata,
+        varm={
+            f"{key_added}_profile": result["average_profile"],
+            f"{key_added}_upper": result["upper_significance"],
+            f"{key_added}_lower": result["lower_significance"],
+        },
+    )
     if not inplace:
         return adata
     return None
@@ -705,6 +863,7 @@ def compute_archetype_feature_specificity(
     n_threads: int = 0,
     key_added: str = "archetype",
     inplace: bool = True,
+    backed_chunk_size: int = 4096,
 ) -> Optional[AnnData]:
     """
     Compute feature specificity scores for archetypes using archetype matrix.
@@ -728,6 +887,9 @@ def compute_archetype_feature_specificity(
         Prefix for storing results in adata.varm.
     inplace
         If True, modifies the AnnData object in place. If False, returns a new AnnData object with the results.
+    backed_chunk_size : int, optional (default: 4096)
+        Number of rows per chunk for streamed specificity computation on
+        backed AnnData.  Ignored for in-memory objects.
 
     Returns
     -------
@@ -747,7 +909,7 @@ def compute_archetype_feature_specificity(
     if not inplace:
         adata = adata.copy()
 
-    S = anndata_to_matrix(adata, layer=layer, transpose=True)
+    source = MatrixSource(adata, layer=layer)
 
     if isinstance(archetype_key, str):
         if archetype_key not in adata.obsm:
@@ -756,17 +918,31 @@ def compute_archetype_feature_specificity(
     else:
         H = np.asarray(archetype_key)
 
-    H = H.T
     H = np.ascontiguousarray(H, dtype=np.float64)
 
-    if sp.issparse(S):
-        result = _core.archetype_feature_specificity_sparse(S, H, n_threads)
+    if source.is_backed:
+        result_stream = _compute_specificity_streamed(source, H, chunk_size=backed_chunk_size)
+        result = {
+            "archetypes": result_stream["average_profile"],
+            "upper_significance": result_stream["upper_significance"],
+            "lower_significance": result_stream["lower_significance"],
+        }
     else:
-        result = _core.archetype_feature_specificity_dense(S, H, n_threads)
+        S = anndata_to_matrix(adata, layer=layer, transpose=True)
+        H_t = np.ascontiguousarray(H.T, dtype=np.float64)
+        if sp.issparse(S):
+            result = _core.archetype_feature_specificity_sparse(S, H_t, n_threads)
+        else:
+            result = _core.archetype_feature_specificity_dense(S, H_t, n_threads)
 
-    adata.varm[f"{key_added}_feat_profile"] = result["archetypes"]
-    adata.varm[f"{key_added}_feat_specificity_upper"] = result["upper_significance"]
-    adata.varm[f"{key_added}_feat_specificity_lower"] = result["lower_significance"]
+    persist_updates(
+        adata,
+        varm={
+            f"{key_added}_feat_profile": result["archetypes"],
+            f"{key_added}_feat_specificity_upper": result["upper_significance"],
+            f"{key_added}_feat_specificity_lower": result["lower_significance"],
+        },
+    )
 
     if not inplace:
         return adata
@@ -851,7 +1027,7 @@ def layout_network(
             else:
                 print("Computing initial coordinates from adata.X via SVD")
 
-        X = _get_adata_matrix(adata, layer=layer)
+        X = MatrixSource(adata, layer=layer).matrix
         k = max(3, n_components)
         svd_result = run_svd(
             X,
@@ -897,7 +1073,7 @@ def layout_network(
         spread, min_dist, n_epochs, seed, n_threads, verbose
     )
 
-    adata.obsm[key_added] = coords
+    persist_updates(adata, obsm={key_added: coords})
     if not inplace:
         return adata
     return None
@@ -947,7 +1123,7 @@ def run_svd(
         (features × k), singular values (k,), and right singular vectors (cells × k).
     """
 
-    if _is_backed_sparse_matrix(X):
+    if _is_backed_matrix(X):
         algorithm = 3
         op = _TransposeMatrixOperator(X, chunk_size=backed_chunk_size)
         result = _core.run_svd_operator(op, n_components, max_iter, seed, verbose)
