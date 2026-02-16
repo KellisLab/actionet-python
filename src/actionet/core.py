@@ -304,7 +304,7 @@ def reduce_kernel(
     algorithm_names = {0: 'IRLB', 1: 'Halko', 2: 'Feng', 3: 'PRIMME'}
 
     params = {
-        "sigma": result["sigma"],
+        "sigma": np.asarray(result["sigma"]).ravel(),
         "n_components": n_components,
         "svd_algorithm": svd_algorithm,
         "svd_algorithm_name": algorithm_names.get(svd_algorithm, f'Unknown({svd_algorithm})'),
@@ -821,6 +821,13 @@ def compute_feature_specificity(
         labels_arr = adata.obs[labels].values
     else:
         labels_arr = np.asarray(labels)
+
+    # Normalise pandas Categorical to a plain object array so that the
+    # subsequent Categorical() call always produces a deterministic
+    # (lexicographic) category ordering, independent of any pre-existing
+    # category order stored in the h5ad file.
+    if hasattr(labels_arr, 'categories'):
+        labels_arr = np.asarray(labels_arr)
 
     # Convert to integer labels
     from pandas import Categorical

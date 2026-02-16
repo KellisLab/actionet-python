@@ -94,6 +94,12 @@ def find_markers(
     else:
         labels_arr = np.asarray(labels)
 
+    # Normalize to a plain object array so that every downstream Categorical()
+    # call produces the same (lexicographic) category order, regardless of
+    # whether the original column was a pandas Categorical with a custom order.
+    if hasattr(labels_arr, 'categories'):
+        labels_arr = np.asarray(labels_arr)
+
     # Filter labels if labels_use is provided
     if labels_use is not None:
         mask = np.isin(labels_arr, labels_use)
@@ -122,8 +128,10 @@ def find_markers(
         if not is_integer_dtype(labels_arr_filtered):
             cat = Categorical(labels_arr_filtered)
             labels_int = cat.codes.astype(np.int32)
+            cluster_names = np.asarray(cat.categories)
         else:
             labels_int = labels_arr_filtered.astype(np.int32)
+            cluster_names = np.unique(labels_arr_filtered)
 
         labels_int = labels_int + 1
         source = MatrixSource(adata_filtered, layer=layer)
@@ -132,6 +140,21 @@ def find_markers(
         upper_sig = streamed["upper_significance"]
         lower_sig = streamed["lower_significance"]
     else:
+        # compute_feature_specificity internally does np.asarray → Categorical
+        # to map labels to integer codes.  Because we already normalised
+        # labels_arr to a plain array above, the Categorical constructed here
+        # will have the same lexicographic category order as the one inside
+        # compute_feature_specificity, so cluster_names and the output
+        # columns are guaranteed to align.
+        from pandas import Categorical
+        from pandas.api.types import is_integer_dtype
+
+        if not is_integer_dtype(labels_arr_filtered):
+            cat = Categorical(labels_arr_filtered)
+            cluster_names = np.asarray(cat.categories)
+        else:
+            cluster_names = np.unique(labels_arr_filtered)
+
         temp_key = "_temp_specificity"
         result_adata = compute_feature_specificity(
             adata_filtered,
@@ -149,9 +172,8 @@ def find_markers(
     feat_spec = upper_sig - lower_sig
     feat_spec[feat_spec < 0] = 0
 
-    # Get cluster names from the filtered labels
-    # Use unique() to get only the categories that actually appear in filtered data
-    cluster_names = np.unique(labels_arr_filtered)
+    # cluster_names was set above during label conversion to match
+    # the column ordering of the specificity matrix.
 
     # Handle features_keep parameter (whitelist filtering)
     # Can be: None (no filtering), list/array of names, boolean mask, or adata.var column name

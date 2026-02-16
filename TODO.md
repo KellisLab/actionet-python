@@ -1,4 +1,5 @@
 ## Primary
+* Normalize with C++ API
 * Fix R/Python result parity
 * obs label as legend title
 * Test plot umap interactive

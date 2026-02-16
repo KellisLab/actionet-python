@@ -36,8 +36,7 @@ def _run_backed_workflow(
     adata: ad.AnnData, layer: str | None = None
 ) -> tuple[pd.DataFrame, dict, pd.DataFrame]:
     """Run the standard backed E2E workflow and return (markers, annot, imp)."""
-    an.normalize_ace(adata, target_sum=1e4, layer=layer, backed_chunk_size=32, inplace=True)
-    an.log1p_ace(adata, layer=layer, base=2, backed_chunk_size=32, inplace=True)
+    an.normalize_anndata(adata, target_sum=1e4, layer=layer, backed_chunk_size=32, inplace=True)
 
     an.reduce_kernel(
         adata,
@@ -272,7 +271,7 @@ def test_backed_chunked_write_preserves_layers(tmp_path):
 
 
 def test_backed_preprocessing_csr_and_csc(tmp_path):
-    """normalize_ace + log1p_ace produce correct row sums for CSR and CSC.
+    """normalize_anndata produces correct row sums for CSR and CSC.
 
     Note: CSC-backed X triggers h5py 'increasing order' errors on row-slice
     read, so we test CSC via a layer rather than .X directly.
@@ -284,13 +283,15 @@ def test_backed_preprocessing_csr_and_csc(tmp_path):
         adata = open_backed(tmp_path / fmt, adata_mem)
 
         target_layer = "logcounts" if fmt == "csc" else None
-        an.normalize_ace(adata, target_sum=1e4, layer=target_layer, backed_chunk_size=24, inplace=True)
+        an.normalize_anndata(adata, target_sum=1e4, log_transform=False, layer=target_layer, backed_chunk_size=24, inplace=True)
         src = MatrixSource(adata, layer=target_layer)
         row_sums = src.row_sums(chunk_size=24)
         nonzero_rows = row_sums > 0
         assert np.allclose(row_sums[nonzero_rows], 1e4, rtol=1e-2, atol=1e-2)
 
-        an.log1p_ace(adata, layer=target_layer, base=2, backed_chunk_size=24, inplace=True)
+        # Now apply log_transform via a second call with scaling disabled
+        # (already normalised, just test the combined path works)
+        an.normalize_anndata(adata, target_sum=1e4, log_transform=True, log_base=2, layer=target_layer, backed_chunk_size=24, inplace=True)
 
 
 # ---------------------------------------------------------------------------
@@ -304,8 +305,7 @@ def test_backed_parity_markers_and_imputation(tmp_path):
     adata_backed = open_backed(tmp_path, adata_mem)
 
     for obj in (adata_mem, adata_backed):
-        an.normalize_ace(obj, target_sum=1e4, layer="logcounts", backed_chunk_size=24, inplace=True)
-        an.log1p_ace(obj, layer="logcounts", base=2, backed_chunk_size=24, inplace=True)
+        an.normalize_anndata(obj, target_sum=1e4, layer="logcounts", backed_chunk_size=24, inplace=True)
 
     an.reduce_kernel(adata_mem, n_components=14, layer="logcounts", key_added="action", seed=2, inplace=True)
     an.correct_batch_effect(adata_mem, batch_key="batch", reduction_key="action", layer="logcounts", backed_chunk_size=24, inplace=True)
@@ -353,8 +353,7 @@ def test_backed_correct_basal_expression(tmp_path):
     """Basal-expression correction runs on backed data without error."""
     adata = open_backed(tmp_path, make_test_adata(sparse_fmt="csr", seed=42))
 
-    an.normalize_ace(adata, target_sum=1e4, backed_chunk_size=32, inplace=True)
-    an.log1p_ace(adata, base=2, backed_chunk_size=32, inplace=True)
+    an.normalize_anndata(adata, target_sum=1e4, backed_chunk_size=32, inplace=True)
     an.reduce_kernel(adata, n_components=12, key_added="action", backed_chunk_size=32, inplace=True)
 
     basal_genes = list(adata.var_names[:4])

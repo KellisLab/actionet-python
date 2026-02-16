@@ -13,8 +13,7 @@ def test_backed_reduce_kernel_smoke(tmp_path):
     """reduce_kernel runs on a backed AnnData without error."""
     adata = open_backed(tmp_path, make_test_adata(sparse_fmt="csr", seed=99))
 
-    an.normalize_ace(adata, target_sum=1e4, backed_chunk_size=32, inplace=True)
-    an.log1p_ace(adata, base=2, backed_chunk_size=32, inplace=True)
+    an.normalize_anndata(adata, target_sum=1e4, backed_chunk_size=32, inplace=True)
 
     an.reduce_kernel(
         adata,

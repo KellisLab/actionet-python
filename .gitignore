@@ -41,6 +41,8 @@ venv_*/
 htmlcov/
 .tox/
 data/
+*.log
+tests/**/*.json
 
 # CMake
 CMakeCache.txt

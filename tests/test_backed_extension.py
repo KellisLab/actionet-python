@@ -43,8 +43,7 @@ def _open_backed(tmp_path, adata: ad.AnnData) -> ad.AnnData:
 
 
 def _run_backed_workflow(adata: ad.AnnData, layer: str | None = None) -> tuple[pd.DataFrame, dict, pd.DataFrame]:
-    an.normalize_ace(adata, target_sum=1e4, layer=layer, backed_chunk_size=32, inplace=True)
-    an.log1p_ace(adata, layer=layer, base=2, backed_chunk_size=32, inplace=True)
+    an.normalize_anndata(adata, target_sum=1e4, layer=layer, backed_chunk_size=32, inplace=True)
 
     an.reduce_kernel(
         adata,
@@ -163,12 +162,10 @@ def test_backed_preprocessing_csr_and_csc(tmp_path):
     for fmt in ("csr", "csc"):
         adata = _open_backed(tmp_path / fmt, _make_adata(sparse_fmt=fmt, seed=17 if fmt == "csr" else 23))
 
-        an.normalize_ace(adata, target_sum=1e4, layer=None, backed_chunk_size=24, inplace=True)
+        an.normalize_anndata(adata, target_sum=1e4, layer=None, backed_chunk_size=24, inplace=True)
         row_sums = np.asarray(MatrixLike(adata.X).sum(axis=1)).ravel()
         nonzero_rows = row_sums > 0
         assert np.allclose(row_sums[nonzero_rows], 1e4, rtol=1e-2, atol=1e-2)
-
-        an.log1p_ace(adata, layer=None, base=2, backed_chunk_size=24, inplace=True)
 
 
 
@@ -178,8 +175,7 @@ def test_backed_parity_markers_and_imputation(tmp_path):
 
     # Shared preprocessing
     for obj in (adata_mem, adata_backed):
-        an.normalize_ace(obj, target_sum=1e4, layer="logcounts", backed_chunk_size=24, inplace=True)
-        an.log1p_ace(obj, layer="logcounts", base=2, backed_chunk_size=24, inplace=True)
+        an.normalize_anndata(obj, target_sum=1e4, layer="logcounts", backed_chunk_size=24, inplace=True)
 
     an.reduce_kernel(adata_mem, n_components=14, layer="logcounts", key_added="action", seed=2, inplace=True)
     an.correct_batch_effect(adata_mem, batch_key="batch", reduction_key="action", layer="logcounts", backed_chunk_size=24, inplace=True)

@@ -214,6 +214,10 @@ class MatrixSource:
         entirely.  If the on-disk dtype differs from *values* (e.g. int64
         counts vs. float64 after normalisation), the ``data`` dataset is
         re-cast in constant-memory chunks before writing.
+
+        For in-memory sparse matrices, the matrix is promoted to float64
+        when the incoming values have a wider dtype (e.g. int64 -> float64)
+        to avoid silent truncation by scipy's ``__setitem__``.
         """
         if not (0 <= start <= end <= self.n_obs):
             raise IndexError(f"Invalid row bounds [{start}, {end}) for n_obs={self.n_obs}")
@@ -223,6 +227,23 @@ class MatrixSource:
             return
 
         target = self.matrix
+
+        # Promote in-memory sparse matrix dtype if needed to avoid
+        # silent truncation (e.g. float64 values -> int64 matrix).
+        new_dtype = values.dtype if hasattr(values, "dtype") else None
+        if (
+            not self.is_backed
+            and sp.issparse(target)
+            and new_dtype is not None
+            and not np.can_cast(new_dtype, target.dtype, casting="same_kind")
+        ):
+            promoted = target.astype(new_dtype, copy=False)
+            if self.layer is None:
+                self.adata.X = promoted
+            else:
+                self.adata.layers[self.layer] = promoted
+            target = promoted
+
         target[start:end, :] = values
 
     # ------------------------------------------------------------------

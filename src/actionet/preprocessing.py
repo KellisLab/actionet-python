@@ -65,35 +65,57 @@ def import_anndata_generic(
     return adata
 
 
-def normalize_ace(
+def normalize_anndata(
     adata: AnnData,
     target_sum: float = 1e4,
+    log_transform: bool = True,
+    log_base: Optional[float] = None,
     layer: str | None = None,
     backed_chunk_size: int = 4096,
     inplace: bool = True,
 ) -> Optional[AnnData]:
-    """Chunked, backed-safe total-count normalization for ``.X`` or a layer.
+    """Total-count normalization with optional log1p transform.
+
+    Mimics the R ``normalize.ace`` function: each cell's counts are scaled
+    to *target_sum*, then (by default) a ``log1p`` transform is applied.
+    Both steps are chunked and backed-safe, so this function works
+    identically on in-memory and HDF5-backed AnnData objects.
 
     Parameters
     ----------
     adata : AnnData
         Annotated data matrix.
-    target_sum : float
-        Target total count per cell after normalization.
+    target_sum : float, optional (default: 1e4)
+        Target total count per cell after scaling.
+    log_transform : bool, optional (default: True)
+        If ``True``, apply ``log1p`` (optionally with a custom base) after
+        scaling.  Set to ``False`` for scaling only.
+    log_base : float or None, optional (default: None)
+        Logarithm base for the log1p step.  ``None`` uses the natural
+        logarithm.  Ignored when *log_transform* is ``False``.
     layer : str or None, optional (default: None)
         Layer to normalize.  ``None`` uses ``adata.X``.
     backed_chunk_size : int, optional (default: 4096)
         Number of rows per chunk when operating on backed AnnData.
         Ignored for in-memory objects.
     inplace : bool, optional (default: True)
-        If True, normalize in place; otherwise return a modified copy.
+        If ``True``, normalize in place and return ``None``; otherwise
+        return a modified copy.
+
+    Returns
+    -------
+    AnnData or None
+        Modified copy if ``inplace=False``, otherwise ``None``.
     """
     if target_sum <= 0:
         raise ValueError("target_sum must be positive.")
+    if log_base is not None and log_base <= 0:
+        raise ValueError("log_base must be positive.")
 
     if not inplace:
         adata = adata.copy()
 
+    # --- Step 1: total-count scaling ---
     source = MatrixSource(adata, layer=layer)
     row_sums = source.row_sums(chunk_size=backed_chunk_size)
     scaling = np.divide(
@@ -103,24 +125,83 @@ def normalize_ace(
         where=row_sums > 0,
     )
 
-    def _scale_block(block, start: int, end: int):
-        scale = scaling[start:end]
-        if issparse(block):
-            block = block.tocsr(copy=True)
-            block = block.astype(np.float64, copy=False)
-            if block.nnz > 0:
-                row_nnz = np.diff(block.indptr)
-                block.data *= np.repeat(scale, row_nnz)
-            return block
-        arr = np.asarray(block, dtype=np.float64)
-        arr *= scale[:, np.newaxis]
-        return arr
+    if log_transform:
+        log_scale = 1.0 if log_base is None else 1.0 / np.log(log_base)
 
-    source.apply_rowwise(_scale_block, chunk_size=backed_chunk_size)
+        if source.is_sparse:
+            global_min = source.global_min(chunk_size=backed_chunk_size)
+            if global_min < 0:
+                import warnings
+                warnings.warn(
+                    f"Matrix contains negative values (min={global_min:.4g}). "
+                    "log1p is only meaningful for non-negative data; "
+                    "results may contain NaN.",
+                    stacklevel=2,
+                )
+
+        def _normalize_block(block, start: int, end: int):
+            scale = scaling[start:end]
+            if issparse(block):
+                block = block.tocsr(copy=True)
+                block = block.astype(np.float64, copy=False)
+                if block.nnz > 0:
+                    row_nnz = np.diff(block.indptr)
+                    block.data *= np.repeat(scale, row_nnz)
+                    np.log1p(block.data, out=block.data)
+                    if log_scale != 1.0:
+                        block.data *= log_scale
+                return block
+            arr = np.asarray(block, dtype=np.float64)
+            arr *= scale[:, np.newaxis]
+            np.log1p(arr, out=arr)
+            if log_scale != 1.0:
+                arr *= log_scale
+            return arr
+    else:
+        def _normalize_block(block, start: int, end: int):
+            scale = scaling[start:end]
+            if issparse(block):
+                block = block.tocsr(copy=True)
+                block = block.astype(np.float64, copy=False)
+                if block.nnz > 0:
+                    row_nnz = np.diff(block.indptr)
+                    block.data *= np.repeat(scale, row_nnz)
+                return block
+            arr = np.asarray(block, dtype=np.float64)
+            arr *= scale[:, np.newaxis]
+            return arr
+
+    source.apply_rowwise(_normalize_block, chunk_size=backed_chunk_size)
 
     if inplace:
         return None
     return adata
+
+
+# ---- Backward-compatible aliases ----------------------------------------
+
+def normalize_ace(
+    adata: AnnData,
+    target_sum: float = 1e4,
+    layer: str | None = None,
+    backed_chunk_size: int = 4096,
+    inplace: bool = True,
+) -> Optional[AnnData]:
+    """Deprecated alias for :func:`normalize_anndata` with ``log_transform=False``."""
+    import warnings
+    warnings.warn(
+        "normalize_ace is deprecated; use normalize_anndata instead.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
+    return normalize_anndata(
+        adata,
+        target_sum=target_sum,
+        log_transform=False,
+        layer=layer,
+        backed_chunk_size=backed_chunk_size,
+        inplace=inplace,
+    )
 
 
 def log1p_ace(
@@ -130,22 +211,13 @@ def log1p_ace(
     backed_chunk_size: int = 4096,
     inplace: bool = True,
 ) -> Optional[AnnData]:
-    """Chunked, backed-safe ``log1p`` transform for .X or a layer.
-
-    Parameters
-    ----------
-    adata : AnnData
-        Annotated data matrix.
-    layer : str or None, optional (default: None)
-        Layer to transform.  ``None`` uses ``adata.X``.
-    base : float or None, optional (default: None)
-        Logarithm base.  ``None`` uses natural log.
-    backed_chunk_size : int, optional (default: 4096)
-        Number of rows per chunk when operating on backed AnnData.
-        Ignored for in-memory objects.
-    inplace : bool, optional (default: True)
-        If True, transform in place; otherwise return a modified copy.
-    """
+    """Deprecated alias — use :func:`normalize_anndata` with ``log_transform=True``."""
+    import warnings
+    warnings.warn(
+        "log1p_ace is deprecated; use normalize_anndata with log_transform=True instead.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
     if base is not None and base <= 0:
         raise ValueError("base must be positive.")
 
@@ -159,11 +231,9 @@ def log1p_ace(
 
     source = MatrixSource(adata, layer=layer)
 
-    # Guard: log1p on negative values yields NaN/complex; warn early.
     if source.is_sparse:
         global_min = source.global_min(chunk_size=backed_chunk_size)
         if global_min < 0:
-            import warnings
             warnings.warn(
                 f"Matrix contains negative values (min={global_min:.4g}). "
                 "log1p is only meaningful for non-negative data; "
@@ -174,6 +244,7 @@ def log1p_ace(
     def _log_block(block, _start: int, _end: int):
         if issparse(block):
             block = block.copy()
+            block = block.astype(np.float64, copy=False)
             block.data = np.log1p(block.data)
             if scale != 1.0:
                 block.data *= scale
