@@ -9,12 +9,12 @@ import lets_plot as lp
 lp.LetsPlot.setup_html()
 
 # %%
-adata = anndata.read_h5ad("../data/test_adata.h5ad", backed="r")
+adata = anndata.read_h5ad("../data/test_adata.h5ad")
 # %%
-# an.filter_anndata(adata, min_cells_per_feat=0.01)
+an.filter_anndata(adata, min_cells_per_feat=0.01)
 an.normalize_anndata(adata, target_sum=1e4, log_transform=True, log_base=2, inplace=True)
-# sc.pp.normalize_total(adata, target_sum=1e4, inplace=True)
-# sc.pp.log1p(adata, base=2, copy=False)
+sc.pp.normalize_total(adata, target_sum=1e4, inplace=True)
+sc.pp.log1p(adata, base=2, copy=False)
 
 # %%
 an.reduce_kernel(adata, n_components=30, layer=None, key_added="action")

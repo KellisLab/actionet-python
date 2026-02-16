@@ -113,11 +113,113 @@ def normalize_anndata(
         raise ValueError("log_base must be positive.")
 
     if not inplace:
-        adata = adata.copy()
+        if getattr(adata, "isbacked", False):
+            adata = adata.to_memory()
+        else:
+            adata = adata.copy()
 
-    # --- Step 1: total-count scaling ---
     source = MatrixSource(adata, layer=layer)
-    row_sums = source.row_sums(chunk_size=backed_chunk_size)
+
+    if not source.is_backed:
+        _normalize_in_memory(adata, source, target_sum, log_transform, log_base, layer)
+    else:
+        _normalize_backed(source, target_sum, log_transform, log_base, backed_chunk_size)
+
+    if inplace:
+        return None
+    return adata
+
+
+# ---------------------------------------------------------------------------
+# In-memory fast path (no chunking)
+# ---------------------------------------------------------------------------
+
+def _normalize_in_memory(
+    adata: AnnData,
+    source: MatrixSource,
+    target_sum: float,
+    log_transform: bool,
+    log_base: Optional[float],
+    layer: str | None,
+) -> None:
+    """Normalize an in-memory AnnData matrix without chunked iteration.
+
+    Operates directly on the underlying sparse or dense arrays, avoiding
+    the per-chunk slicing, copying, and write-back overhead that the
+    backed path requires.
+    """
+    X = source.matrix
+
+    if issparse(X):
+        X = X.tocsr()
+        X = X.astype(np.float64, copy=False)
+        # Ensure the converted matrix is stored back
+        if layer is None:
+            adata.X = X
+        else:
+            adata.layers[layer] = X
+
+        # Row sums via scipy (single sparse mat-vec, no chunking)
+        row_sums = np.asarray(X.sum(axis=1), dtype=np.float64).ravel()
+        scaling = np.divide(
+            target_sum,
+            row_sums,
+            out=np.zeros_like(row_sums, dtype=np.float64),
+            where=row_sums > 0,
+        )
+
+        if X.nnz > 0:
+            row_nnz = np.diff(X.indptr)
+            X.data *= np.repeat(scaling, row_nnz)
+
+            if log_transform:
+                if X.data.min() < 0:
+                    import warnings
+                    warnings.warn(
+                        f"Matrix contains negative values (min={X.data.min():.4g}). "
+                        "log1p is only meaningful for non-negative data; "
+                        "results may contain NaN.",
+                        stacklevel=2,
+                    )
+                np.log1p(X.data, out=X.data)
+                if log_base is not None:
+                    X.data /= np.log(log_base)
+    else:
+        arr = np.asarray(X, dtype=np.float64)
+        row_sums = arr.sum(axis=1)
+        scaling = np.divide(
+            target_sum,
+            row_sums,
+            out=np.zeros_like(row_sums, dtype=np.float64),
+            where=row_sums > 0,
+        )
+
+        arr *= scaling[:, np.newaxis]
+
+        if log_transform:
+            np.log1p(arr, out=arr)
+            if log_base is not None:
+                arr /= np.log(log_base)
+
+        if layer is None:
+            adata.X = arr
+        else:
+            adata.layers[layer] = arr
+
+
+# ---------------------------------------------------------------------------
+# Backed (disk-backed) chunked path
+# ---------------------------------------------------------------------------
+
+def _normalize_backed(
+    source: MatrixSource,
+    target_sum: float,
+    log_transform: bool,
+    log_base: Optional[float],
+    chunk_size: int,
+) -> None:
+    """Normalize a backed AnnData matrix using chunked streaming I/O."""
+    row_sums = source.row_sums(chunk_size=chunk_size)
     scaling = np.divide(
         target_sum,
         row_sums,
@@ -129,7 +231,7 @@ def normalize_anndata(
         log_scale = 1.0 if log_base is None else 1.0 / np.log(log_base)
 
         if source.is_sparse:
-            global_min = source.global_min(chunk_size=backed_chunk_size)
+            global_min = source.global_min(chunk_size=chunk_size)
             if global_min < 0:
                 import warnings
                 warnings.warn(
@@ -171,95 +273,7 @@ def normalize_anndata(
             arr *= scale[:, np.newaxis]
             return arr
 
-    source.apply_rowwise(_normalize_block, chunk_size=backed_chunk_size)
-
-    if inplace:
-        return None
-    return adata
-
-
-# ---- Backward-compatible aliases ----------------------------------------
-
-def normalize_ace(
-    adata: AnnData,
-    target_sum: float = 1e4,
-    layer: str | None = None,
-    backed_chunk_size: int = 4096,
-    inplace: bool = True,
-) -> Optional[AnnData]:
-    """Deprecated alias for :func:`normalize_anndata` with ``log_transform=False``."""
-    import warnings
-    warnings.warn(
-        "normalize_ace is deprecated; use normalize_anndata instead.",
-        DeprecationWarning,
-        stacklevel=2,
-    )
-    return normalize_anndata(
-        adata,
-        target_sum=target_sum,
-        log_transform=False,
-        layer=layer,
-        backed_chunk_size=backed_chunk_size,
-        inplace=inplace,
-    )
-
-
-def log1p_ace(
-    adata: AnnData,
-    layer: str | None = None,
-    base: Optional[float] = None,
-    backed_chunk_size: int = 4096,
-    inplace: bool = True,
-) -> Optional[AnnData]:
-    """Deprecated alias — use :func:`normalize_anndata` with ``log_transform=True``."""
-    import warnings
-    warnings.warn(
-        "log1p_ace is deprecated; use normalize_anndata with log_transform=True instead.",
-        DeprecationWarning,
-        stacklevel=2,
-    )
-    if base is not None and base <= 0:
-        raise ValueError("base must be positive.")
-
-    if not inplace:
-        adata = adata.copy()
-
-    if base is None:
-        scale = 1.0
-    else:
-        scale = 1.0 / np.log(base)
-
-    source = MatrixSource(adata, layer=layer)
-
-    if source.is_sparse:
-        global_min = source.global_min(chunk_size=backed_chunk_size)
-        if global_min < 0:
-            warnings.warn(
-                f"Matrix contains negative values (min={global_min:.4g}). "
-                "log1p is only meaningful for non-negative data; "
-                "results may contain NaN.",
-                stacklevel=2,
-            )
-
-    def _log_block(block, _start: int, _end: int):
-        if issparse(block):
-            block = block.copy()
-            block = block.astype(np.float64, copy=False)
-            block.data = np.log1p(block.data)
-            if scale != 1.0:
-                block.data *= scale
-            return block
-        arr = np.asarray(block, dtype=np.float64)
-        np.log1p(arr, out=arr)
-        if scale != 1.0:
-            arr *= scale
-        return arr
-
-    source.apply_rowwise(_log_block, chunk_size=backed_chunk_size)
-
-    if inplace:
-        return None
-    return adata
+    source.apply_rowwise(_normalize_block, chunk_size=chunk_size)
 
 
 def _compute_filter_stats(
