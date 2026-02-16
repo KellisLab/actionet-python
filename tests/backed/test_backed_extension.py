@@ -190,6 +190,87 @@ def test_backed_filter_anndata_not_inplace(tmp_path):
     assert result.n_vars <= adata.n_vars
 
 
+def test_compute_filter_masks_pure(tmp_path):
+    """compute_filter_masks returns boolean arrays without mutating adata."""
+    adata = open_backed(tmp_path, make_test_adata(sparse_fmt="csr", seed=60))
+    orig_shape = adata.shape
+
+    obs_m, var_m = an.compute_filter_masks(
+        adata, min_cells_per_feat=3, backed_chunk_size=32,
+    )
+    # adata unchanged
+    assert adata.shape == orig_shape
+    assert obs_m.dtype == bool and obs_m.shape == (orig_shape[0],)
+    assert var_m.dtype == bool and var_m.shape == (orig_shape[1],)
+    # at least some genes removed
+    assert var_m.sum() <= orig_shape[1]
+
+
+def test_apply_filter_backed_output_file(tmp_path):
+    """apply_filter with output_file writes to a new path, original untouched."""
+    adata = open_backed(tmp_path, make_test_adata(sparse_fmt="csr", seed=61))
+    obs_m, var_m = an.compute_filter_masks(
+        adata, min_cells_per_feat=3, backed_chunk_size=32,
+    )
+    out_path = str(tmp_path / "filtered.h5ad")
+    result = an.apply_filter(
+        adata, obs_m, var_m,
+        inplace=False, output_file=out_path, backed_chunk_size=32,
+    )
+    assert result is not None
+    assert result.n_obs == int(obs_m.sum())
+    assert result.n_vars == int(var_m.sum())
+    # Original still has original shape
+    assert adata.shape[0] >= result.n_obs
+
+
+def test_apply_filter_inmemory_inplace():
+    """apply_filter inplace on in-memory adata uses single copy."""
+    adata = make_test_adata(n_cells=96, n_genes=72, sparse_fmt="csr", seed=62)
+    obs_m, var_m = an.compute_filter_masks(adata, min_cells_per_feat=3)
+    n_obs_expected = int(obs_m.sum())
+    n_var_expected = int(var_m.sum())
+
+    an.apply_filter(adata, obs_m, var_m, inplace=True)
+    assert adata.n_obs == n_obs_expected
+    assert adata.n_vars == n_var_expected
+
+
+def test_apply_filter_inmemory_copy():
+    """apply_filter inplace=False on in-memory adata returns a copy."""
+    adata = make_test_adata(n_cells=96, n_genes=72, sparse_fmt="csr", seed=63)
+    obs_m, var_m = an.compute_filter_masks(adata, min_cells_per_feat=3)
+    result = an.apply_filter(adata, obs_m, var_m, inplace=False)
+    assert result is not None
+    assert result.n_obs == int(obs_m.sum())
+    # Original unchanged
+    assert adata.n_obs == 96
+
+
+def test_filter_anndata_masks_only():
+    """filter_anndata with filter_adata=False returns mask dict."""
+    adata = make_test_adata(n_cells=96, n_genes=72, sparse_fmt="csr", seed=64)
+    result = an.filter_anndata(adata, min_cells_per_feat=3, filter_adata=False)
+    assert isinstance(result, dict)
+    assert "fil_obs" in result and "fil_vars" in result
+    assert "mask" in result["fil_obs"].columns
+
+
+def test_backed_chunked_write_preserves_layers(tmp_path):
+    """Chunked h5py write preserves layers and obs/var columns."""
+    adata_mem = make_test_adata(n_cells=96, n_genes=72, sparse_fmt="csr", seed=65)
+    adata = open_backed(tmp_path, adata_mem)
+    assert "logcounts" in adata.layers
+
+    an.filter_anndata(adata, min_cells_per_feat=3, inplace=True, backed_chunk_size=16)
+
+    assert getattr(adata, "isbacked", False)
+    assert "logcounts" in adata.layers
+    assert "CellLabel" in adata.obs.columns
+    assert "batch" in adata.obs.columns
+    assert "Gene" in adata.var.columns
+
+
 def test_backed_preprocessing_csr_and_csc(tmp_path):
     """normalize_ace + log1p_ace produce correct row sums for CSR and CSC.
 

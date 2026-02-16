@@ -66,6 +66,8 @@ from .pipeline import (
 from .preprocessing import (
     import_anndata_generic,
     filter_anndata,
+    compute_filter_masks,
+    apply_filter,
     normalize_ace,
     log1p_ace,
 )
@@ -124,6 +126,8 @@ __all__ = [
     "aggregate_matrix",
     "import_anndata_generic",
     "filter_anndata",
+    "compute_filter_masks",
+    "apply_filter",
     "normalize_ace",
     "log1p_ace",
 ]

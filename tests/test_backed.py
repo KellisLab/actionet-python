@@ -12,9 +12,13 @@ lp.LetsPlot.setup_html()
 adata_ref = anndata.read_h5ad("../data/test_adata.h5ad")
 adata_ref.write_h5ad("../data/test_adata_backed.h5ad")
 adata = anndata.read_h5ad("../data/test_adata_backed.h5ad", backed="r+")
+adata
 # %%
 an.filter_anndata(adata, min_cells_per_feat=0.01)
+adata
+# %%
 an.normalize_ace(adata, target_sum=1e4, inplace=True)
+# %%
 an.log1p_ace(adata, base=2, inplace=True)
 # %%
 an.reduce_kernel(adata, n_components=30, layer=None, key_added="action")

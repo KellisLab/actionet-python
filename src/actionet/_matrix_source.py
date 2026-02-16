@@ -209,44 +209,105 @@ class MatrixSource:
     def set_rows(self, start: int, end: int, values) -> None:
         """Write a contiguous row block back to the source matrix.
 
-        Falls back to a full-layer rewrite for backed layers when direct
-        slice assignment is unsupported by the AnnData / HDF5 backend.
-
-        .. warning::
-
-           The fallback reads the entire layer into memory and rewrites it,
-           which defeats memory savings of backed mode.  This occurs for
-           certain HDF5 / AnnData version combinations.
+        For backed sparse matrices this writes directly to the underlying
+        h5py ``data`` array, bypassing anndata's deprecated ``__setitem__``
+        entirely.  If the on-disk dtype differs from *values* (e.g. int64
+        counts vs. float64 after normalisation), the ``data`` dataset is
+        re-cast in constant-memory chunks before writing.
         """
         if not (0 <= start <= end <= self.n_obs):
             raise IndexError(f"Invalid row bounds [{start}, {end}) for n_obs={self.n_obs}")
 
-        target = self.matrix
-        try:
-            target[start:end, :] = values
+        if self.is_backed and self.is_sparse:
+            self._h5py_set_sparse_rows(start, end, values)
             return
-        except Exception:
-            if not (self.is_backed and self.layer is not None):
-                raise
 
-        import warnings
-        warnings.warn(
-            f"Direct slice assignment failed for backed layer '{self.layer}'; "
-            "falling back to full-layer rewrite (will materialise entire layer "
-            "into memory).",
-            stacklevel=2,
+        target = self.matrix
+        target[start:end, :] = values
+
+    # ------------------------------------------------------------------
+    # Direct h5py write helpers (backed sparse)
+    # ------------------------------------------------------------------
+
+    def _resolve_h5_group(self):
+        """Return the raw h5py ``Group`` that stores the sparse matrix on disk.
+
+        For ``.X`` this is ``file["X"]``; for a layer it is
+        ``file["layers/<name>"]``.  Accesses the underlying ``h5py.File``
+        directly, bypassing anndata's dataset wrappers.
+        """
+        h5file = self.adata.file._file
+        if self.layer is None:
+            return h5file["X"]
+        return h5file["layers"][self.layer]
+
+    @staticmethod
+    def _h5py_cast_data_dataset(
+        grp,
+        target_dtype: np.dtype,
+        copy_chunk: int = 10_000_000,
+    ) -> None:
+        """Re-cast the ``data`` dataset inside *grp* to *target_dtype*.
+
+        Operates in constant memory by copying in chunks of *copy_chunk*
+        elements to a temporary dataset, then swapping.  Peak RAM is
+        ``copy_chunk * itemsize`` (80 MB at the default 10 M elements for
+        float64).
+        """
+        old_ds = grp["data"]
+        total = old_ds.shape[0]
+        compression = old_ds.compression
+        compression_opts = old_ds.compression_opts
+
+        tmp_name = "__data_cast_tmp"
+        if tmp_name in grp:
+            del grp[tmp_name]
+        new_ds = grp.create_dataset(
+            tmp_name,
+            shape=(total,),
+            dtype=target_dtype,
+            compression=compression,
+            compression_opts=compression_opts,
         )
 
-        full = self.to_memory()
-        if sp.issparse(full):
-            if not sp.issparse(values):
-                values = sp.csr_matrix(np.asarray(values))
-            full = full.tocsr(copy=False)
-        else:
-            values = np.asarray(values)
+        for pos in range(0, total, copy_chunk):
+            end = min(pos + copy_chunk, total)
+            new_ds[pos:end] = old_ds[pos:end].astype(target_dtype)
 
-        full[start:end, :] = values
-        persist_layer(self.adata, self.layer, full, validate=False, verbose=False)
+        del grp["data"]
+        grp.move(tmp_name, "data")
+
+    def _h5py_set_sparse_rows(self, start: int, end: int, values) -> None:
+        """Write rows ``[start, end)`` directly to the h5py sparse group.
+
+        Validates that the incoming block preserves the sparsity structure
+        (same nnz per row) and handles dtype promotion when needed.
+        """
+        values_csr = sp.csr_matrix(values) if not sp.issparse(values) else values.tocsr()
+
+        grp = self._resolve_h5_group()
+        indptr_ds = grp["indptr"]
+        data_ds = grp["data"]
+
+        ip_start = int(indptr_ds[start])
+        ip_end = int(indptr_ds[end])
+        expected_nnz = ip_end - ip_start
+
+        actual_nnz = values_csr.nnz
+        if actual_nnz != expected_nnz:
+            raise ValueError(
+                f"Sparsity structure changed: on-disk rows [{start}, {end}) "
+                f"have {expected_nnz} stored elements but the new block has "
+                f"{actual_nnz}.  In-place backed writes require identical "
+                f"sparsity patterns."
+            )
+
+        on_disk_dtype = data_ds.dtype
+        new_dtype = values_csr.data.dtype
+        if on_disk_dtype != new_dtype:
+            self._h5py_cast_data_dataset(grp, new_dtype)
+
+        grp["data"][ip_start:ip_end] = values_csr.data
 
     # ------------------------------------------------------------------
     # Aggregations
