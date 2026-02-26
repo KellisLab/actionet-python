@@ -15,6 +15,7 @@ import pandas as pd
 import scipy.sparse as sp
 import anndata as ad
 import pytest
+import warnings
 
 import actionet as an
 from actionet import _core
@@ -99,6 +100,29 @@ def _run_backed_workflow(
         backed_chunk_size=32,
     )
     return markers, annot, imp
+
+
+def _open_backed_with_compression(
+    tmp_path,
+    adata: ad.AnnData,
+    *,
+    compression: str | None,
+) -> ad.AnnData:
+    """Write adata with requested compression and reopen as backed r+."""
+    path = tmp_path / "compressed_backed.h5ad"
+    adata.write_h5ad(path, compression=compression)
+    return ad.read_h5ad(path, backed="r+")
+
+
+def _sparse_codecs(adata: ad.AnnData, *, layer: str | None = None) -> dict[str, str | None]:
+    """Return sparse codec metadata for `.X` or one backed layer."""
+    h5file = adata.file._file
+    grp = h5file["X"] if layer is None else h5file["layers"][layer]
+    return {
+        "data": grp["data"].compression,
+        "indices": grp["indices"].compression,
+        "indptr": grp["indptr"].compression,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -292,6 +316,162 @@ def test_backed_preprocessing_csr_and_csc(tmp_path):
         # Now apply log_transform via a second call with scaling disabled
         # (already normalised, just test the combined path works)
         an.normalize_anndata(adata, target_sum=1e4, log_transform=True, log_base=2, layer=target_layer, backed_chunk_size=24, inplace=True)
+
+
+def test_reduce_kernel_warns_on_compressed_backed_matrix(tmp_path):
+    """Backed reduce_kernel warns when storage is compressed."""
+    adata = _open_backed_with_compression(
+        tmp_path,
+        make_test_adata(n_cells=64, n_genes=48, sparse_fmt="csr", seed=70),
+        compression="gzip",
+    )
+
+    an.normalize_anndata(
+        adata,
+        target_sum=1e4,
+        log_transform=False,
+        backed_chunk_size=24,
+        inplace=True,
+    )
+
+    with pytest.warns(UserWarning, match="decompress_backed_storage"):
+        an.reduce_kernel(
+            adata,
+            n_components=6,
+            key_added="action",
+            svd_algorithm=3,
+            backed_chunk_size=24,
+            verbose=False,
+            inplace=True,
+        )
+
+
+def test_reduce_kernel_no_warning_on_uncompressed_backed_matrix(tmp_path):
+    """Backed reduce_kernel does not emit compression warning when uncompressed."""
+    adata = open_backed(
+        tmp_path,
+        make_test_adata(n_cells=64, n_genes=48, sparse_fmt="csr", seed=71),
+    )
+
+    an.normalize_anndata(
+        adata,
+        target_sum=1e4,
+        log_transform=False,
+        backed_chunk_size=24,
+        inplace=True,
+    )
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        an.reduce_kernel(
+            adata,
+            n_components=6,
+            key_added="action",
+            svd_algorithm=3,
+            backed_chunk_size=24,
+            verbose=False,
+            inplace=True,
+        )
+
+    assert not any("decompress_backed_storage" in str(w.message) for w in caught)
+
+
+def test_decompress_matrix_scope_only_affects_target_matrix(tmp_path):
+    """Matrix-scope decompression only changes the selected matrix."""
+    adata = _open_backed_with_compression(
+        tmp_path,
+        make_test_adata(n_cells=64, n_genes=48, sparse_fmt="csr", seed=72),
+        compression="gzip",
+    )
+
+    before_x = _sparse_codecs(adata, layer=None)
+    before_layer = _sparse_codecs(adata, layer="logcounts")
+    assert all(codec == "gzip" for codec in before_x.values())
+    assert all(codec == "gzip" for codec in before_layer.values())
+
+    an.decompress_backed_storage(
+        adata,
+        layer="logcounts",
+        scope="matrix",
+        chunk_size=32,
+        verbose=False,
+    )
+
+    after_x = _sparse_codecs(adata, layer=None)
+    after_layer = _sparse_codecs(adata, layer="logcounts")
+    assert all(codec == "gzip" for codec in after_x.values())
+    assert all(codec is None for codec in after_layer.values())
+
+
+def test_decompress_file_scope_decompresses_x_and_layers(tmp_path):
+    """File-scope decompression removes compression from `.X` and layers."""
+    adata = _open_backed_with_compression(
+        tmp_path,
+        make_test_adata(n_cells=64, n_genes=48, sparse_fmt="csr", seed=73),
+        compression="gzip",
+    )
+
+    assert all(codec == "gzip" for codec in _sparse_codecs(adata, layer=None).values())
+    assert all(codec == "gzip" for codec in _sparse_codecs(adata, layer="logcounts").values())
+
+    an.decompress_backed_storage(
+        adata,
+        scope="file",
+        chunk_size=32,
+        verbose=False,
+    )
+
+    assert all(codec is None for codec in _sparse_codecs(adata, layer=None).values())
+    assert all(codec is None for codec in _sparse_codecs(adata, layer="logcounts").values())
+
+
+def test_filter_preserves_uncompressed_storage(tmp_path):
+    """Backed filtering preserves uncompressed sparse storage."""
+    adata = open_backed(
+        tmp_path,
+        make_test_adata(n_cells=96, n_genes=72, sparse_fmt="csr", seed=74),
+    )
+    before_x = _sparse_codecs(adata, layer=None)
+    before_layer = _sparse_codecs(adata, layer="logcounts")
+    assert all(codec is None for codec in before_x.values())
+    assert all(codec is None for codec in before_layer.values())
+
+    an.filter_anndata(
+        adata,
+        min_cells_per_feat=3,
+        inplace=True,
+        backed_chunk_size=24,
+    )
+
+    after_x = _sparse_codecs(adata, layer=None)
+    after_layer = _sparse_codecs(adata, layer="logcounts")
+    assert all(codec is None for codec in after_x.values())
+    assert all(codec is None for codec in after_layer.values())
+
+
+def test_filter_preserves_gzip_storage(tmp_path):
+    """Backed filtering preserves gzip sparse storage."""
+    adata = _open_backed_with_compression(
+        tmp_path,
+        make_test_adata(n_cells=96, n_genes=72, sparse_fmt="csr", seed=75),
+        compression="gzip",
+    )
+    before_x = _sparse_codecs(adata, layer=None)
+    before_layer = _sparse_codecs(adata, layer="logcounts")
+    assert all(codec == "gzip" for codec in before_x.values())
+    assert all(codec == "gzip" for codec in before_layer.values())
+
+    an.filter_anndata(
+        adata,
+        min_cells_per_feat=3,
+        inplace=True,
+        backed_chunk_size=24,
+    )
+
+    after_x = _sparse_codecs(adata, layer=None)
+    after_layer = _sparse_codecs(adata, layer="logcounts")
+    assert all(codec == "gzip" for codec in after_x.values())
+    assert all(codec == "gzip" for codec in after_layer.values())
 
 
 # ---------------------------------------------------------------------------

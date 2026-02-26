@@ -68,7 +68,8 @@ from .preprocessing import (
     filter_anndata,
     compute_filter_masks,
     apply_filter,
-    normalize_anndata
+    normalize_anndata,
+    decompress_backed_storage,
 )
 
 from .tools import (
@@ -128,4 +129,5 @@ __all__ = [
     "compute_filter_masks",
     "apply_filter",
     "normalize_anndata",
+    "decompress_backed_storage",
 ]

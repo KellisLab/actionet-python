@@ -14,6 +14,7 @@ from anndata import AnnData
 from scipy.io import mmread
 from scipy.sparse import csr_matrix, issparse
 
+from ._backed_compression import get_matrix_compression_policy
 from ._matrix_source import MatrixSource
 
 
@@ -398,6 +399,43 @@ def compute_filter_masks(
 # Chunked h5py write for backed subsetting
 # ---------------------------------------------------------------------------
 
+
+def _dataset_create_kwargs_from_spec(spec: dict | None) -> dict:
+    """Translate compression metadata into h5py create_dataset kwargs."""
+    if not spec:
+        return {}
+
+    kwargs: dict = {}
+    codec = spec.get("compression")
+    if codec is not None:
+        kwargs["compression"] = codec
+        if spec.get("compression_opts") is not None:
+            kwargs["compression_opts"] = spec["compression_opts"]
+    return kwargs
+
+
+def _dense_compression_kwargs(compression_policy: dict | None) -> dict:
+    """Return compression kwargs for dense datasets."""
+    if not compression_policy:
+        return {}
+    datasets = compression_policy.get("datasets", {})
+    if not datasets:
+        return {}
+    first_spec = next(iter(datasets.values()))
+    return _dataset_create_kwargs_from_spec(first_spec)
+
+
+def _sparse_dataset_compression_kwargs(
+    compression_policy: dict | None,
+    dataset_name: str,
+) -> dict:
+    """Return compression kwargs for one sparse component dataset."""
+    if not compression_policy:
+        return {}
+    spec = (compression_policy.get("datasets", {}) or {}).get(dataset_name)
+    return _dataset_create_kwargs_from_spec(spec)
+
+
 def _write_sparse_subsetted(
     f,
     h5_key: str,
@@ -406,6 +444,7 @@ def _write_sparse_subsetted(
     var_idx: np.ndarray | None,
     chunk_size: int,
     encoding: str = "csr_matrix",
+    compression_policy: dict | None = None,
 ):
     """Write a row/col-subsetted sparse matrix to *f[h5_key]* in chunks.
 
@@ -439,9 +478,21 @@ def _write_sparse_subsetted(
     indptr = np.array(indptr, dtype=np.int64)
 
     grp = f.create_group(h5_key)
-    grp.create_dataset("data", data=data, compression="gzip")
-    grp.create_dataset("indices", data=indices, compression="gzip")
-    grp.create_dataset("indptr", data=indptr, compression="gzip")
+    grp.create_dataset(
+        "data",
+        data=data,
+        **_sparse_dataset_compression_kwargs(compression_policy, "data"),
+    )
+    grp.create_dataset(
+        "indices",
+        data=indices,
+        **_sparse_dataset_compression_kwargs(compression_policy, "indices"),
+    )
+    grp.create_dataset(
+        "indptr",
+        data=indptr,
+        **_sparse_dataset_compression_kwargs(compression_policy, "indptr"),
+    )
     grp.attrs["shape"] = np.array([n_out, n_vars_out])
     grp.attrs["encoding-type"] = encoding
     grp.attrs["encoding-version"] = "0.1.0"
@@ -454,6 +505,7 @@ def _write_dense_subsetted(
     obs_idx: np.ndarray,
     var_idx: np.ndarray | None,
     chunk_size: int,
+    compression_policy: dict | None = None,
 ):
     """Write a row/col-subsetted dense matrix to *f[h5_key]* in chunks."""
     n_out = obs_idx.size
@@ -463,7 +515,7 @@ def _write_dense_subsetted(
         h5_key,
         shape=(n_out, n_vars_out),
         dtype=np.float64,
-        compression="gzip",
+        **_dense_compression_kwargs(compression_policy),
     )
     ds.attrs["encoding-type"] = "array"
     ds.attrs["encoding-version"] = "0.2.0"
@@ -486,14 +538,33 @@ def _write_subsetted_matrix(
     obs_idx: np.ndarray,
     var_idx: np.ndarray | None,
     chunk_size: int,
+    compression_policy: dict | None = None,
 ):
     """Dispatch to sparse or dense chunked writer."""
     from ._matrix_source import _is_sparse_matrix_like
 
+    policy = compression_policy if compression_policy is not None else get_matrix_compression_policy(matrix)
+
     if _is_sparse_matrix_like(matrix):
-        _write_sparse_subsetted(f, h5_key, matrix, obs_idx, var_idx, chunk_size)
+        _write_sparse_subsetted(
+            f,
+            h5_key,
+            matrix,
+            obs_idx,
+            var_idx,
+            chunk_size,
+            compression_policy=policy,
+        )
     else:
-        _write_dense_subsetted(f, h5_key, matrix, obs_idx, var_idx, chunk_size)
+        _write_dense_subsetted(
+            f,
+            h5_key,
+            matrix,
+            obs_idx,
+            var_idx,
+            chunk_size,
+            compression_policy=policy,
+        )
 
 
 def _write_filtered_backed(
@@ -514,10 +585,20 @@ def _write_filtered_backed(
 
     obs_sub = adata.obs.iloc[obs_idx].copy()
     var_sub = adata.var.iloc[var_idx].copy()
+    h5file = adata.file._file if bool(getattr(adata, "isbacked", False) and getattr(adata, "filename", None)) else None
 
     with h5py.File(dest_path, "w") as f:
         # -- X -----------------------------------------------------------
-        _write_subsetted_matrix(f, "X", adata.X, obs_idx, var_idx, chunk_size)
+        x_policy = get_matrix_compression_policy(h5file["X"]) if h5file is not None and "X" in h5file else None
+        _write_subsetted_matrix(
+            f,
+            "X",
+            adata.X,
+            obs_idx,
+            var_idx,
+            chunk_size,
+            compression_policy=x_policy,
+        )
 
         # -- obs / var (small DataFrames) --------------------------------
         _write_dataframe_to_h5(f, "obs", obs_sub)
@@ -530,9 +611,17 @@ def _write_filtered_backed(
             lg.attrs["encoding-type"] = "dict"
             lg.attrs["encoding-version"] = "0.1.0"
             for lk in layer_keys:
+                layer_policy = None
+                if h5file is not None and "layers" in h5file and lk in h5file["layers"]:
+                    layer_policy = get_matrix_compression_policy(h5file["layers"][lk])
                 _write_subsetted_matrix(
-                    f, f"layers/{lk}", adata.layers[lk],
-                    obs_idx, var_idx, chunk_size,
+                    f,
+                    f"layers/{lk}",
+                    adata.layers[lk],
+                    obs_idx,
+                    var_idx,
+                    chunk_size,
+                    compression_policy=layer_policy,
                 )
 
         # -- obsm / varm (typically small dense arrays) ------------------
@@ -597,6 +686,262 @@ def _write_filtered_backed(
             uns_grp.attrs["encoding-version"] = "0.1.0"
             for k, v in adata.uns.items():
                 _write_dict_value(uns_grp, k, v)
+
+
+# ---------------------------------------------------------------------------
+# Backed decompression helpers + public utility
+# ---------------------------------------------------------------------------
+
+
+def _copy_h5_attrs(src, dst) -> None:
+    """Copy all attributes from one h5py object to another."""
+    for key, value in src.attrs.items():
+        dst.attrs[key] = value
+
+
+def _copy_dataset_chunked(src_ds, dst_ds, chunk_size: int) -> None:
+    """Copy dataset contents in chunks along axis-0."""
+    if src_ds.shape == ():
+        dst_ds[()] = src_ds[()]
+        return
+
+    if src_ds.ndim == 0:
+        dst_ds[()] = src_ds[()]
+        return
+
+    n_rows = src_ds.shape[0]
+    if n_rows == 0:
+        return
+
+    step = int(max(1, chunk_size))
+    for start in range(0, n_rows, step):
+        end = min(start + step, n_rows)
+        dst_ds[start:end, ...] = src_ds[start:end, ...]
+
+
+def _dataset_create_kwargs_uncompressed(src_ds) -> dict:
+    """Build create_dataset kwargs that preserve shape/chunking but drop compression."""
+    kwargs = {
+        "shape": src_ds.shape,
+        "dtype": src_ds.dtype,
+    }
+    if src_ds.chunks is not None:
+        kwargs["chunks"] = src_ds.chunks
+    if src_ds.maxshape is not None:
+        kwargs["maxshape"] = src_ds.maxshape
+    return kwargs
+
+
+def _replace_dataset_with_uncompressed(parent, name: str, chunk_size: int) -> bool:
+    """Replace one dataset with an uncompressed copy in-place."""
+    src_ds = parent[name]
+    if getattr(src_ds, "compression", None) is None:
+        return False
+
+    tmp_name = f"__tmp_uncompressed_{name}"
+    if tmp_name in parent:
+        del parent[tmp_name]
+
+    dst_ds = parent.create_dataset(tmp_name, **_dataset_create_kwargs_uncompressed(src_ds))
+    _copy_dataset_chunked(src_ds, dst_ds, chunk_size=chunk_size)
+    _copy_h5_attrs(src_ds, dst_ds)
+
+    del parent[name]
+    parent.move(tmp_name, name)
+    return True
+
+
+def _decompress_sparse_group_inplace(group, chunk_size: int) -> bool:
+    """Decompress sparse `data/indices/indptr` datasets in-place."""
+    changed = False
+    for dataset_name in ("data", "indices", "indptr"):
+        if dataset_name in group:
+            changed = _replace_dataset_with_uncompressed(
+                group,
+                dataset_name,
+                chunk_size=chunk_size,
+            ) or changed
+    return changed
+
+
+def _resolve_backed_matrix_node(adata: AnnData, layer: str | None):
+    """Resolve the HDF5 node backing `.X` or one layer."""
+    h5file = adata.file._file
+    if layer is None:
+        return h5file["X"], "X"
+
+    if "layers" not in h5file or layer not in h5file["layers"]:
+        raise KeyError(f"Layer '{layer}' not found in backed file")
+    return h5file["layers"][layer], f"layers/{layer}"
+
+
+def _decompress_matrix_in_adata(
+    adata: AnnData,
+    *,
+    layer: str | None,
+    chunk_size: int,
+) -> tuple[bool, str]:
+    """Decompress one backed matrix target (`.X` or one layer)."""
+    node, matrix_key = _resolve_backed_matrix_node(adata, layer)
+    if hasattr(node, "keys") and {"data", "indices", "indptr"}.issubset(set(node.keys())):
+        changed = _decompress_sparse_group_inplace(node, chunk_size=chunk_size)
+        return changed, matrix_key
+
+    # Dense backed matrix (h5py Dataset).
+    parent = node.parent
+    ds_name = node.name.rsplit("/", 1)[-1]
+    changed = _replace_dataset_with_uncompressed(parent, ds_name, chunk_size=chunk_size)
+    return changed, matrix_key
+
+
+def _copy_h5_group_uncompressed(src_group, dst_group, chunk_size: int) -> None:
+    """Recursively copy an HDF5 group without compression."""
+    import h5py
+
+    _copy_h5_attrs(src_group, dst_group)
+    for name, obj in src_group.items():
+        if isinstance(obj, h5py.Group):
+            child = dst_group.create_group(name)
+            _copy_h5_group_uncompressed(obj, child, chunk_size=chunk_size)
+        elif isinstance(obj, h5py.Dataset):
+            dst_ds = dst_group.create_dataset(
+                name,
+                **_dataset_create_kwargs_uncompressed(obj),
+            )
+            _copy_dataset_chunked(obj, dst_ds, chunk_size=chunk_size)
+            _copy_h5_attrs(obj, dst_ds)
+        else:
+            raise TypeError(f"Unsupported HDF5 object type for key '{name}': {type(obj)}")
+
+
+def _rewrite_h5ad_uncompressed(src_path: str, dest_path: str, chunk_size: int) -> None:
+    """Rewrite a full .h5ad file with all datasets uncompressed."""
+    import h5py
+
+    with h5py.File(src_path, "r") as src_f, h5py.File(dest_path, "w") as dst_f:
+        _copy_h5_group_uncompressed(src_f, dst_f, chunk_size=chunk_size)
+
+
+def _is_writable_backed(adata: AnnData) -> bool:
+    """Return True when backed file is opened in writable mode."""
+    if not bool(getattr(adata, "isbacked", False) and getattr(adata, "filename", None)):
+        return False
+    mode = getattr(getattr(adata, "file", None), "_file", None)
+    if mode is None:
+        return False
+    return "+" in getattr(mode, "mode", "")
+
+
+def _refresh_backed_handle(adata: AnnData, path: str, mode: str = "r+") -> None:
+    """Close and re-open a backed AnnData handle in-place."""
+    if hasattr(adata, "file") and adata.file is not None:
+        adata.file.close()
+    reopened = ad.read_h5ad(path, backed=mode)
+    adata._init_as_actual(reopened)
+    adata.file = reopened.file
+
+
+def decompress_backed_storage(
+    adata: AnnData,
+    *,
+    layer: str | None = None,
+    scope: str = "matrix",
+    output_file: str | None = None,
+    chunk_size: int = 4096,
+    verbose: bool = True,
+) -> AnnData | None:
+    """Decompress backed AnnData storage in-place or into a copy.
+
+    Parameters
+    ----------
+    adata : AnnData
+        Backed AnnData object.
+    layer : str or None, optional (default: None)
+        Layer to target when ``scope='matrix'``. ``None`` targets ``.X``.
+    scope : {'matrix', 'file'}, optional (default: 'matrix')
+        - ``'matrix'``: decompress only ``.X`` or one layer.
+        - ``'file'``: rewrite the entire ``.h5ad`` uncompressed.
+    output_file : str or None, optional
+        If provided, write decompressed output to this path and return a new
+        backed AnnData opened in ``r+`` mode. If ``None``, mutate in-place.
+    chunk_size : int, optional (default: 4096)
+        Chunk size used while copying dataset payloads.
+    verbose : bool, optional (default: True)
+        Print a brief status line when work is done.
+
+    Returns
+    -------
+    AnnData or None
+        ``None`` for in-place updates; backed AnnData for copy mode.
+    """
+    if scope not in {"matrix", "file"}:
+        raise ValueError("scope must be either 'matrix' or 'file'")
+
+    if not bool(getattr(adata, "isbacked", False) and getattr(adata, "filename", None)):
+        raise ValueError("decompress_backed_storage requires a backed AnnData object")
+
+    src_path = str(adata.filename)
+    inplace = output_file is None or os.path.abspath(output_file) == os.path.abspath(src_path)
+    dest_path = src_path if inplace else str(output_file)
+    chunk_size = int(max(1, chunk_size))
+
+    if inplace and not _is_writable_backed(adata):
+        raise ValueError(
+            "In-place decompression requires backed mode 'r+'. "
+            "Re-open with `ad.read_h5ad(path, backed=\"r+\")` or pass `output_file`."
+        )
+
+    if scope == "matrix":
+        if not inplace:
+            shutil.copy2(src_path, dest_path)
+            target = ad.read_h5ad(dest_path, backed="r+")
+            changed, matrix_key = _decompress_matrix_in_adata(
+                target,
+                layer=layer,
+                chunk_size=chunk_size,
+            )
+            if verbose:
+                status = "decompressed" if changed else "already uncompressed"
+                print(f"[decompress_backed_storage] {status}: {matrix_key} -> {dest_path}")
+            return target
+
+        changed, matrix_key = _decompress_matrix_in_adata(
+            adata,
+            layer=layer,
+            chunk_size=chunk_size,
+        )
+        # Dense-backed wrappers and sparse dataset handles are safest to refresh.
+        _refresh_backed_handle(adata, src_path, mode="r+")
+        if verbose:
+            status = "decompressed" if changed else "already uncompressed"
+            print(f"[decompress_backed_storage] {status}: {matrix_key}")
+        return None
+
+    # scope == "file"
+    if inplace:
+        tmp_fd, tmp_path = tempfile.mkstemp(
+            dir=str(pathlib.Path(src_path).parent),
+            suffix=".h5ad",
+        )
+        os.close(tmp_fd)
+        try:
+            if hasattr(adata, "file") and adata.file is not None:
+                adata.file.close()
+            _rewrite_h5ad_uncompressed(src_path, tmp_path, chunk_size=chunk_size)
+            shutil.move(tmp_path, src_path)
+            _refresh_backed_handle(adata, src_path, mode="r+")
+        except Exception:
+            if os.path.exists(tmp_path):
+                os.unlink(tmp_path)
+            raise
+        if verbose:
+            print(f"[decompress_backed_storage] decompressed full file in place: {src_path}")
+        return None
+
+    _rewrite_h5ad_uncompressed(src_path, dest_path, chunk_size=chunk_size)
+    if verbose:
+        print(f"[decompress_backed_storage] decompressed full file copy: {dest_path}")
+    return ad.read_h5ad(dest_path, backed="r+")
 
 
 # ---------------------------------------------------------------------------

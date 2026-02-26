@@ -8,7 +8,7 @@ Task: Please generate and execute a series of tests comparing the performance of
 
 Use two datasets for testing:
 
-1. `data/test_adata.h5ad` contains aa small singular sample.
+1. `data/test_adata.h5ad` contains a small singular sample.
 2. `data/adata_agg_Hm_STR_MSN_1000plus_only_processed.h5ad` contains a larger dataset with multiple samples. This one requires using batch correction. Use .obs['UID] as the batch labels.
 
 ## Implementation
@@ -24,6 +24,8 @@ Use the following workflow for testing:
 7. Annotate the cells using the cell type annotation. Use the vision method with the default parameters. Use .var['Gene'] as features.
 8. Impute 10 arbitrary features for each dataset. Use .var['Gene'] as features.
 
+**CRITICAL**: Fully decompress backed objects for testing (`decompress_backed_storage(scope = "file")`)
+
 ## Evaluation
 
 Use the following metrics for testing:
@@ -34,7 +36,7 @@ Use the following metrics for testing:
 
 With these results and knowledge of the computational complexity of the workflow, estimate the runtime and memory usage for datasets with:
 
-1. 100k, 1M, and 10M cells expressing an average of 10,000 genes.
+1. 100k, 500k, 1M, 5M, and 10M cells expressing an average of 10,000 genes.
 2. 1, 5, 25, 50, and 100 batches.
 
 ## Output

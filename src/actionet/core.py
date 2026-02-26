@@ -1,5 +1,6 @@
 """High-level Python API wrapping C++ bindings with AnnData integration."""
 
+import warnings
 from typing import Any, Optional, Union, Literal
 import numpy as np
 import scipy.sparse as sp
@@ -8,8 +9,18 @@ from anndata import AnnData
 from . import _core
 from .anndata_utils import anndata_to_matrix
 from ._backed_persist import persist_updates
+from ._backed_compression import (
+    format_compression_summary,
+    get_storage_metadata_from_adata,
+    get_storage_metadata_from_matrix,
+    is_compressed_storage,
+)
 from ._matrix_source import MatrixSource
 from . import tools
+
+
+_WARNED_COMPRESSED_BACKED_SVD: set[tuple[str, str, str]] = set()
+
 
 def _is_backed_matrix(X: Any) -> bool:
     """Detect whether ``X`` is backed/on-disk rather than fully in memory."""
@@ -27,6 +38,36 @@ def _is_backed_matrix(X: Any) -> bool:
         return True
 
     return False
+
+
+def _warn_if_compressed_backed_svd(
+    metadata: Optional[dict],
+    *,
+    context: str,
+    recommendation: str,
+) -> None:
+    """Warn once per (file, matrix key, context) for compressed backed SVD."""
+    if not is_compressed_storage(metadata):
+        return
+
+    filename = str((metadata or {}).get("filename") or "<unknown>")
+    matrix_key = str((metadata or {}).get("matrix_key") or "<unknown>")
+    dedupe_key = (filename, matrix_key, context)
+    if dedupe_key in _WARNED_COMPRESSED_BACKED_SVD:
+        return
+    _WARNED_COMPRESSED_BACKED_SVD.add(dedupe_key)
+
+    codecs = format_compression_summary(metadata)
+    warnings.warn(
+        (
+            f"Backed operator SVD in `{context}` is reading compressed storage "
+            f"for `{matrix_key}` ({codecs}). This can cause major runtime "
+            f"slowdowns due to repeated decompression during matvec passes. "
+            f"Recommended: `{recommendation}`."
+        ),
+        UserWarning,
+        stacklevel=3,
+    )
 
 
 class _TransposeMatrixOperator:
@@ -265,6 +306,16 @@ def reduce_kernel(
     use_operator = source.is_backed
 
     if use_operator:
+        if precomputed_svd is None:
+            matrix_metadata = get_storage_metadata_from_adata(adata, layer=layer)
+            _warn_if_compressed_backed_svd(
+                matrix_metadata,
+                context="reduce_kernel",
+                recommendation=(
+                    f'actionet.decompress_backed_storage(adata, layer={repr(layer)}, scope="matrix")'
+                ),
+            )
+
         svd_algorithm = 3  # OOM v1 supports PRIMME only.
         op = _TransposeMatrixOperator(X, chunk_size=backed_chunk_size)
         if precomputed_svd is None:
@@ -1131,6 +1182,11 @@ def run_svd(
     """
 
     if _is_backed_matrix(X):
+        _warn_if_compressed_backed_svd(
+            get_storage_metadata_from_matrix(X),
+            context="run_svd",
+            recommendation='actionet.decompress_backed_storage(adata, layer=None, scope="matrix")',
+        )
         algorithm = 3
         op = _TransposeMatrixOperator(X, chunk_size=backed_chunk_size)
         result = _core.run_svd_operator(op, n_components, max_iter, seed, verbose)

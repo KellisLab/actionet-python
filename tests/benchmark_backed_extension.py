@@ -1,56 +1,93 @@
 #!/usr/bin/env python3
-"""Benchmark: In-memory vs Backed mode for ACTIONet workflows.
+"""Benchmark in-memory vs backed ACTIONet workflows.
 
-Compares runtime, peak memory, and result parity across two datasets.
-Run with: python -u tests/benchmark_backed_extension.py
+This script implements the benchmark workflow specified in
+tests/AGENT_BENCHMARK_BACKED_EXTENSION.md.
 """
-import os, sys, time, gc, shutil, json, traceback
-os.environ["MPLCONFIGDIR"] = "/tmp/matplotlib_cache"
 
+import gc
+import json
+import os
+import shutil
+import threading
+import time
+import traceback
+from pathlib import Path
+
+import anndata as ad
 import numpy as np
 import pandas as pd
-import scipy.sparse as sp
-import anndata as ad
 import psutil
-
-import matplotlib
-matplotlib.use("Agg")
-import matplotlib.pyplot as plt
 from tabulate import tabulate
 
 import actionet as an
-from pathlib import Path
+
+os.environ.setdefault("MPLCONFIGDIR", "/tmp/matplotlib_cache")
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
 
 DATA_DIR = Path(__file__).resolve().parent.parent / "data"
 OUT_DIR = Path(__file__).resolve().parent / "benchmark_results"
 OUT_DIR.mkdir(exist_ok=True)
 
-N_TRIALS = 3
+N_TRIALS = int(os.environ.get("ACTIONET_BENCH_TRIALS", "3"))
 SVD_ALGORITHM = 3  # PRIMME
+BACKED_CHUNK_SIZE = int(os.environ.get("ACTIONET_BENCH_CHUNK_SIZE", "4096"))
+SELECTED_DATASETS = {
+    x.strip() for x in os.environ.get("ACTIONET_BENCH_DATASETS", "small,large").split(",") if x.strip()
+}
 
 
 class Profiler:
-    """Wall-time + RSS delta tracker."""
-    def __init__(self, label):
+    """Wall-time and peak RSS delta tracker."""
+
+    def __init__(self, label: str, sample_interval: float = 0.02):
         self.label = label
+        self.sample_interval = sample_interval
         self.elapsed = 0.0
         self.peak_rss_mb = 0.0
+        self.peak_abs_mb = 0.0
+
+    def _sample_peak(self):
+        while not self._stop_event.is_set():
+            try:
+                rss_mb = self._proc.memory_info().rss / 1e6
+                self.peak_abs_mb = max(self.peak_abs_mb, rss_mb)
+            except Exception:
+                pass
+            time.sleep(self.sample_interval)
+
     def __enter__(self):
         gc.collect()
-        self._rss0 = psutil.Process().memory_info().rss / 1e6
+        self._proc = psutil.Process()
+        self._rss0_mb = self._proc.memory_info().rss / 1e6
+        self.peak_abs_mb = self._rss0_mb
+        self._stop_event = threading.Event()
+        self._thread = threading.Thread(target=self._sample_peak, daemon=True)
+        self._thread.start()
         self._t0 = time.perf_counter()
         return self
+
     def __exit__(self, *exc):
         self.elapsed = time.perf_counter() - self._t0
-        self.peak_rss_mb = max(0, psutil.Process().memory_info().rss / 1e6 - self._rss0)
+        self._stop_event.set()
+        self._thread.join(timeout=1.0)
+        try:
+            self.peak_abs_mb = max(self.peak_abs_mb, self._proc.memory_info().rss / 1e6)
+        except Exception:
+            pass
+        self.peak_rss_mb = max(0.0, self.peak_abs_mb - self._rss0_mb)
         return False
 
 
 def run_workflow(adata, ds_cfg, mode_label, backed_chunk_size=4096):
-    """Run the full benchmark workflow. Returns (metrics_dict, result_artifacts)."""
+    """Run benchmark workflow and return (metrics, result_artifacts)."""
     metrics = {}
     results = {}
-    is_backed = getattr(adata, "isbacked", False)
+    step_peak_abs = []
+
+    is_backed = bool(getattr(adata, "isbacked", False))
     bcs = backed_chunk_size if is_backed else 4096
 
     label_col = ds_cfg["label_col"]
@@ -61,118 +98,189 @@ def run_workflow(adata, ds_cfg, mode_label, backed_chunk_size=4096):
     reduction_key = "action"
     effective_reduction = "action_corrected" if use_batch else "action"
 
-    # 1) Filter
-    with Profiler("filter") as p:
-        an.filter_anndata(adata, min_cells_per_feat=0.01, backed_chunk_size=bcs)
-    metrics["filter"] = (p.elapsed, p.peak_rss_mb)
-    print(f"  [{mode_label}] filter: {p.elapsed:.2f}s, shape={adata.shape}", flush=True)
+    workflow_start_rss_mb = psutil.Process().memory_info().rss / 1e6
 
-    # 2) Normalize + log2
-    with Profiler("normalize") as p:
-        an.normalize_anndata(adata, target_sum=1e4, log_transform=True,
-                             log_base=2, backed_chunk_size=bcs, inplace=True)
-    metrics["normalize"] = (p.elapsed, p.peak_rss_mb)
-    print(f"  [{mode_label}] normalize: {p.elapsed:.2f}s", flush=True)
+    def run_step(step_name, fn):
+        with Profiler(step_name) as p:
+            out = fn()
+        metrics[step_name] = (p.elapsed, p.peak_rss_mb)
+        step_peak_abs.append(p.peak_abs_mb)
+        return out
 
-    # 3) Reduce kernel (PRIMME)
-    with Profiler("reduce_kernel") as p:
-        an.reduce_kernel(adata, n_components=n_comp, key_added=reduction_key,
-                         svd_algorithm=SVD_ALGORITHM, backed_chunk_size=bcs,
-                         verbose=False, inplace=True)
-    metrics["reduce_kernel"] = (p.elapsed, p.peak_rss_mb)
-    print(f"  [{mode_label}] reduce_kernel: {p.elapsed:.2f}s", flush=True)
+    run_step(
+        "filter",
+        lambda: an.filter_anndata(
+            adata,
+            min_cells_per_feat=0.01,
+            backed_chunk_size=bcs,
+            inplace=True,
+        ),
+    )
+    print(f"  [{mode_label}] filter: {metrics['filter'][0]:.2f}s, shape={adata.shape}", flush=True)
 
-    # 4) Batch correction (if applicable)
+    run_step(
+        "normalize",
+        lambda: an.normalize_anndata(
+            adata,
+            target_sum=1e4,
+            log_transform=True,
+            log_base=2,
+            backed_chunk_size=bcs,
+            inplace=True,
+        ),
+    )
+    print(f"  [{mode_label}] normalize: {metrics['normalize'][0]:.2f}s", flush=True)
+
+    run_step(
+        "reduce_kernel",
+        lambda: an.reduce_kernel(
+            adata,
+            n_components=n_comp,
+            key_added=reduction_key,
+            svd_algorithm=SVD_ALGORITHM,
+            backed_chunk_size=bcs,
+            verbose=False,
+            inplace=True,
+        ),
+    )
+    print(f"  [{mode_label}] reduce_kernel: {metrics['reduce_kernel'][0]:.2f}s", flush=True)
+
     if use_batch:
-        with Profiler("batch_correction") as p:
-            an.correct_batch_effect(adata, batch_key=batch_key,
-                                    reduction_key=reduction_key,
-                                    backed_chunk_size=bcs, inplace=True)
-        metrics["batch_correction"] = (p.elapsed, p.peak_rss_mb)
-        print(f"  [{mode_label}] batch_correction: {p.elapsed:.2f}s", flush=True)
+        run_step(
+            "batch_correction",
+            lambda: an.correct_batch_effect(
+                adata,
+                batch_key=batch_key,
+                reduction_key=reduction_key,
+                backed_chunk_size=bcs,
+                inplace=True,
+            ),
+        )
+        print(f"  [{mode_label}] batch_correction: {metrics['batch_correction'][0]:.2f}s", flush=True)
 
-    # 5a) ACTION decomposition
-    with Profiler("run_action") as p:
-        an.run_action(adata, k_min=2, k_max=k_max,
-                      reduction_key=effective_reduction, inplace=True)
-    metrics["run_action"] = (p.elapsed, p.peak_rss_mb)
-    print(f"  [{mode_label}] run_action: {p.elapsed:.2f}s", flush=True)
+    run_step(
+        "action_decomposition",
+        lambda: an.run_action(
+            adata,
+            k_min=2,
+            k_max=k_max,
+            reduction_key=effective_reduction,
+            inplace=True,
+        ),
+    )
+    print(f"  [{mode_label}] action_decomposition: {metrics['action_decomposition'][0]:.2f}s", flush=True)
 
-    # 5b) Build network
-    with Profiler("build_network") as p:
-        an.build_network(adata, obsm_key="H_stacked", inplace=True)
-    metrics["build_network"] = (p.elapsed, p.peak_rss_mb)
-    print(f"  [{mode_label}] build_network: {p.elapsed:.2f}s", flush=True)
+    run_step(
+        "network_construction",
+        lambda: an.build_network(
+            adata,
+            obsm_key="H_stacked",
+            inplace=True,
+        ),
+    )
+    print(f"  [{mode_label}] network_construction: {metrics['network_construction'][0]:.2f}s", flush=True)
 
-    # 5c) Archetype diffusion
-    with Profiler("diffusion") as p:
-        an.compute_network_diffusion(adata, scores="H_merged",
-                                     key_added="archetype_footprint", inplace=True)
-    metrics["diffusion"] = (p.elapsed, p.peak_rss_mb)
-    print(f"  [{mode_label}] diffusion: {p.elapsed:.2f}s", flush=True)
+    run_step(
+        "archetype_diffusion",
+        lambda: an.compute_network_diffusion(
+            adata,
+            scores="H_merged",
+            key_added="archetype_footprint",
+            inplace=True,
+        ),
+    )
+    print(f"  [{mode_label}] archetype_diffusion: {metrics['archetype_diffusion'][0]:.2f}s", flush=True)
 
-    # 5d) UMAP 2D
-    with Profiler("layout_2d") as p:
-        an.layout_network(adata, n_components=2, key_added="umap_2d_actionet",
-                          inplace=True)
-    metrics["layout_2d"] = (p.elapsed, p.peak_rss_mb)
-    print(f"  [{mode_label}] layout_2d: {p.elapsed:.2f}s", flush=True)
+    run_step(
+        "umap_2d",
+        lambda: an.layout_network(
+            adata,
+            n_components=2,
+            key_added="umap_2d_actionet",
+            inplace=True,
+        ),
+    )
+    print(f"  [{mode_label}] umap_2d: {metrics['umap_2d'][0]:.2f}s", flush=True)
 
-    # 5e) UMAP 3D + colors
-    with Profiler("layout_3d") as p:
-        an.layout_network(adata, n_components=3, key_added="umap_3d_actionet",
-                          inplace=True)
-    metrics["layout_3d"] = (p.elapsed, p.peak_rss_mb)
-    print(f"  [{mode_label}] layout_3d: {p.elapsed:.2f}s", flush=True)
+    run_step(
+        "umap_3d",
+        lambda: an.layout_network(
+            adata,
+            n_components=3,
+            key_added="umap_3d_actionet",
+            inplace=True,
+        ),
+    )
+    print(f"  [{mode_label}] umap_3d: {metrics['umap_3d'][0]:.2f}s", flush=True)
 
-    with Profiler("node_colors") as p:
-        an.compute_node_colors(adata, embedding_key="umap_3d_actionet",
-                               key_added="colors_actionet")
-    metrics["node_colors"] = (p.elapsed, p.peak_rss_mb)
-    print(f"  [{mode_label}] node_colors: {p.elapsed:.2f}s", flush=True)
+    run_step(
+        "color_computation",
+        lambda: an.compute_node_colors(
+            adata,
+            embedding_key="umap_3d_actionet",
+            key_added="colors_actionet",
+        ),
+    )
+    print(f"  [{mode_label}] color_computation: {metrics['color_computation'][0]:.2f}s", flush=True)
 
-    # 5f) Archetype feature specificity
-    with Profiler("arch_specificity") as p:
-        an.compute_archetype_feature_specificity(
-            adata, archetype_key="archetype_footprint",
-            key_added="archetype", backed_chunk_size=bcs, inplace=True)
-    metrics["arch_specificity"] = (p.elapsed, p.peak_rss_mb)
-    print(f"  [{mode_label}] arch_specificity: {p.elapsed:.2f}s", flush=True)
+    run_step(
+        "feature_specificity",
+        lambda: an.compute_archetype_feature_specificity(
+            adata,
+            archetype_key="archetype_footprint",
+            key_added="archetype",
+            backed_chunk_size=bcs,
+            inplace=True,
+        ),
+    )
+    print(f"  [{mode_label}] feature_specificity: {metrics['feature_specificity'][0]:.2f}s", flush=True)
 
-    # 6) Find markers (top 30)
-    with Profiler("find_markers") as p:
-        markers_df = an.find_markers(adata, labels=label_col, features_use="Gene",
-                                     top_genes=30, return_type="dataframe",
-                                     backed_chunk_size=bcs)
-    metrics["find_markers"] = (p.elapsed, p.peak_rss_mb)
+    markers_df = run_step(
+        "find_markers",
+        lambda: an.find_markers(
+            adata,
+            labels=label_col,
+            features_use="Gene",
+            top_genes=30,
+            return_type="dataframe",
+            backed_chunk_size=bcs,
+        ),
+    )
     results["markers"] = markers_df
-    print(f"  [{mode_label}] find_markers: {p.elapsed:.2f}s, shape={markers_df.shape}", flush=True)
+    print(f"  [{mode_label}] find_markers: {metrics['find_markers'][0]:.2f}s, shape={markers_df.shape}", flush=True)
 
-    # 7) Annotate cells (vision)
-    with Profiler("annotate_cells") as p:
-        annot = an.annotate_cells(adata, markers_df, method="vision",
-                                  features_use="Gene", backed_chunk_size=bcs)
-    metrics["annotate_cells"] = (p.elapsed, p.peak_rss_mb)
+    annot = run_step(
+        "annotate_cells",
+        lambda: an.annotate_cells(
+            adata,
+            markers_df,
+            method="vision",
+            features_use="Gene",
+            backed_chunk_size=bcs,
+        ),
+    )
     results["annotation"] = annot
-    print(f"  [{mode_label}] annotate_cells: {p.elapsed:.2f}s", flush=True)
+    print(f"  [{mode_label}] annotate_cells: {metrics['annotate_cells'][0]:.2f}s", flush=True)
 
-    # 8) Impute 10 features
-    all_genes = adata.var["Gene"].dropna().unique()
+    all_genes = adata.var["Gene"].dropna().astype(str).unique()
     rng = np.random.default_rng(42)
     impute_genes = list(rng.choice(all_genes, size=min(10, len(all_genes)), replace=False))
-    with Profiler("impute_features") as p:
-        imp_df = an.impute_features(adata, features=impute_genes,
-                                    features_use="Gene",
-                                    reduction_key=effective_reduction,
-                                    backed_chunk_size=bcs)
-    metrics["impute_features"] = (p.elapsed, p.peak_rss_mb)
+    imp_df = run_step(
+        "impute_features",
+        lambda: an.impute_features(
+            adata,
+            features=impute_genes,
+            features_use="Gene",
+            reduction_key=effective_reduction,
+            backed_chunk_size=bcs,
+        ),
+    )
     results["imputation"] = imp_df
     results["impute_genes"] = impute_genes
-    print(f"  [{mode_label}] impute_features: {p.elapsed:.2f}s, shape={imp_df.shape}", flush=True)
+    print(f"  [{mode_label}] impute_features: {metrics['impute_features'][0]:.2f}s, shape={imp_df.shape}", flush=True)
 
-    # Total
     total_time = sum(v[0] for v in metrics.values())
-    total_peak = max(v[1] for v in metrics.values())
+    total_peak = max(0.0, (max(step_peak_abs) - workflow_start_rss_mb) if step_peak_abs else 0.0)
     metrics["TOTAL"] = (total_time, total_peak)
     print(f"  [{mode_label}] TOTAL: {total_time:.2f}s, peak RSS delta: {total_peak:.1f} MB", flush=True)
 
@@ -183,8 +291,9 @@ def run_workflow(adata, ds_cfg, mode_label, backed_chunk_size=4096):
 
 
 def check_parity(res_mem, res_backed):
-    """Compare in-memory vs backed results."""
+    """Compare in-memory and backed outputs."""
     parity = {}
+
     if "reduction" in res_mem and "reduction" in res_backed:
         r_mem, r_bck = res_mem["reduction"], res_backed["reduction"]
         n = min(r_mem.shape[1], r_bck.shape[1])
@@ -207,8 +316,8 @@ def check_parity(res_mem, res_backed):
         parity["marker_overlap"] = float(np.mean(overlaps)) if overlaps else float("nan")
 
     if "annotation" in res_mem and "annotation" in res_backed:
-        l1 = np.array(res_mem["annotation"]["labels"])
-        l2 = np.array(res_backed["annotation"]["labels"])
+        l1 = np.asarray(res_mem["annotation"]["labels"])
+        l2 = np.asarray(res_backed["annotation"]["labels"])
         if len(l1) == len(l2):
             parity["annotation_agreement"] = float(np.mean(l1 == l2))
 
@@ -216,12 +325,13 @@ def check_parity(res_mem, res_backed):
         i1, i2 = res_mem["imputation"], res_backed["imputation"]
         shared = sorted(set(i1.columns) & set(i2.columns))
         corrs = []
-        for f in shared:
-            x = np.asarray(i1[f], dtype=float)
-            y = np.asarray(i2[f], dtype=float)
+        for feat in shared:
+            x = np.asarray(i1[feat], dtype=float)
+            y = np.asarray(i2[feat], dtype=float)
             if np.std(x) > 0 and np.std(y) > 0:
                 corrs.append(np.corrcoef(x, y)[0, 1])
         parity["imputation_mean_corr"] = float(np.mean(corrs)) if corrs else float("nan")
+
     return parity
 
 
@@ -229,11 +339,14 @@ def aggregate_metrics(all_metrics):
     valid = [m for m in all_metrics if m is not None]
     if not valid:
         return {}
+    keys = sorted({k for m in valid for k in m.keys()}, key=lambda x: (x == "TOTAL", x))
     agg = {}
-    for k in valid[0].keys():
-        times = [m[k][0] for m in valid]
-        mems = [m[k][1] for m in valid]
-        agg[k] = {
+    for key in keys:
+        times = [m[key][0] for m in valid if key in m]
+        mems = [m[key][1] for m in valid if key in m]
+        if not times:
+            continue
+        agg[key] = {
             "time_mean": float(np.mean(times)),
             "time_std": float(np.std(times)),
             "mem_mean": float(np.mean(mems)),
@@ -242,11 +355,11 @@ def aggregate_metrics(all_metrics):
     return agg
 
 
-def benchmark_dataset(ds_name, ds_cfg):
-    """Run N_TRIALS of in-memory and backed workflows for one dataset."""
-    print(f"\n{'='*70}", flush=True)
+def benchmark_dataset(ds_name, ds_cfg, trials, backed_chunk_size):
+    """Run multiple in-memory and backed trials for one dataset."""
+    print(f"\n{'=' * 70}", flush=True)
     print(f"  BENCHMARKING: {ds_name} ({ds_cfg['file']})", flush=True)
-    print(f"{'='*70}", flush=True)
+    print(f"{'=' * 70}", flush=True)
 
     src_path = DATA_DIR / ds_cfg["file"]
     all_mem_metrics = []
@@ -254,25 +367,23 @@ def benchmark_dataset(ds_name, ds_cfg):
     last_mem_res = None
     last_bck_res = None
 
-    for trial in range(1, N_TRIALS + 1):
-        print(f"\n--- {ds_name} Trial {trial}/{N_TRIALS} ---", flush=True)
+    for trial in range(1, trials + 1):
+        print(f"\n--- {ds_name} Trial {trial}/{trials} ---", flush=True)
 
-        # In-memory run
         print("  Loading in-memory...", flush=True)
         adata_mem = ad.read_h5ad(str(src_path))
         gc.collect()
         try:
-            m, r = run_workflow(adata_mem, ds_cfg, f"mem-t{trial}")
+            m, r = run_workflow(adata_mem, ds_cfg, f"mem-t{trial}", backed_chunk_size=backed_chunk_size)
             all_mem_metrics.append(m)
             last_mem_res = r
-        except Exception as e:
-            print(f"  ERROR (in-memory trial {trial}): {e}", flush=True)
+        except Exception as exc:
+            print(f"  ERROR (in-memory trial {trial}): {exc}", flush=True)
             traceback.print_exc()
             all_mem_metrics.append(None)
         del adata_mem
         gc.collect()
 
-        # Backed run
         backed_path = str(OUT_DIR / f"backed_{ds_name}_t{trial}.h5ad")
         print("  Preparing backed copy...", flush=True)
         shutil.copy2(str(src_path), backed_path)
@@ -280,11 +391,18 @@ def benchmark_dataset(ds_name, ds_cfg):
         adata_bck = ad.read_h5ad(backed_path, backed="r+")
         gc.collect()
         try:
-            m, r = run_workflow(adata_bck, ds_cfg, f"bck-t{trial}")
+            print("  Decompressing backed file (scope='file')...", flush=True)
+            an.decompress_backed_storage(
+                adata_bck,
+                scope="file",
+                chunk_size=backed_chunk_size,
+                verbose=False,
+            )
+            m, r = run_workflow(adata_bck, ds_cfg, f"bck-t{trial}", backed_chunk_size=backed_chunk_size)
             all_bck_metrics.append(m)
             last_bck_res = r
-        except Exception as e:
-            print(f"  ERROR (backed trial {trial}): {e}", flush=True)
+        except Exception as exc:
+            print(f"  ERROR (backed trial {trial}): {exc}", flush=True)
             traceback.print_exc()
             all_bck_metrics.append(None)
         if hasattr(adata_bck, "file") and adata_bck.file is not None:
@@ -307,47 +425,52 @@ def benchmark_dataset(ds_name, ds_cfg):
 
 
 def make_comparison_table(agg_mem, agg_bck):
-    all_steps = list(agg_mem.keys())
-    steps = [k for k in all_steps if k != "TOTAL"] + (["TOTAL"] if "TOTAL" in all_steps else [])
+    all_steps = sorted(set(agg_mem.keys()) | set(agg_bck.keys()), key=lambda x: (x == "TOTAL", x))
     rows = []
-    for step in steps:
+    for step in all_steps:
         m = agg_mem.get(step, {})
         b = agg_bck.get(step, {})
-        mt = m.get("time_mean", 0)
-        bt = b.get("time_mean", 0)
-        speedup = f"{mt / max(bt, 0.001):.2f}x" if mt and bt else "N/A"
-        rows.append({
-            "Step": step,
-            "Mem Time (s)": f"{mt:.2f} +/- {m.get('time_std', 0):.2f}",
-            "Bck Time (s)": f"{bt:.2f} +/- {b.get('time_std', 0):.2f}",
-            "Speedup": speedup,
-            "Mem RSS (MB)": f"{m.get('mem_mean', 0):.0f} +/- {m.get('mem_std', 0):.0f}",
-            "Bck RSS (MB)": f"{b.get('mem_mean', 0):.0f} +/- {b.get('mem_std', 0):.0f}",
-        })
+        mt = m.get("time_mean", 0.0)
+        bt = b.get("time_mean", 0.0)
+        speedup = f"{mt / max(bt, 1e-9):.2f}x" if mt > 0 and bt > 0 else "N/A"
+        rows.append(
+            {
+                "Step": step,
+                "Mem Time (s)": f"{mt:.2f} +/- {m.get('time_std', 0.0):.2f}",
+                "Bck Time (s)": f"{bt:.2f} +/- {b.get('time_std', 0.0):.2f}",
+                "Speedup (Mem/Bck)": speedup,
+                "Mem Peak RSS (MB)": f"{m.get('mem_mean', 0.0):.0f} +/- {m.get('mem_std', 0.0):.0f}",
+                "Bck Peak RSS (MB)": f"{b.get('mem_mean', 0.0):.0f} +/- {b.get('mem_std', 0.0):.0f}",
+            }
+        )
     return pd.DataFrame(rows)
 
 
 def plot_comparison(agg_mem, agg_bck, ds_name):
     steps = [k for k in agg_mem.keys() if k != "TOTAL"]
+    if not steps:
+        return None
+
     mem_times = [agg_mem[s]["time_mean"] for s in steps]
-    bck_times = [agg_bck.get(s, {}).get("time_mean", 0) for s in steps]
+    bck_times = [agg_bck.get(s, {}).get("time_mean", 0.0) for s in steps]
+    mem_mems = [agg_mem[s]["mem_mean"] for s in steps]
+    bck_mems = [agg_bck.get(s, {}).get("mem_mean", 0.0) for s in steps]
+
     x = np.arange(len(steps))
-    w = 0.35
+    width = 0.35
     fig, axes = plt.subplots(1, 2, figsize=(16, 6))
 
-    axes[0].bar(x - w / 2, mem_times, w, label="In-Memory", color="#4C72B0")
-    axes[0].bar(x + w / 2, bck_times, w, label="Backed", color="#DD8452")
+    axes[0].bar(x - width / 2, mem_times, width, label="In-Memory", color="#4C72B0")
+    axes[0].bar(x + width / 2, bck_times, width, label="Backed", color="#DD8452")
     axes[0].set_ylabel("Time (seconds)")
     axes[0].set_title(f"Runtime by Step - {ds_name}")
     axes[0].set_xticks(x)
     axes[0].set_xticklabels(steps, rotation=45, ha="right", fontsize=8)
     axes[0].legend()
 
-    mem_mems = [agg_mem[s]["mem_mean"] for s in steps]
-    bck_mems = [agg_bck.get(s, {}).get("mem_mean", 0) for s in steps]
-    axes[1].bar(x - w / 2, mem_mems, w, label="In-Memory", color="#4C72B0")
-    axes[1].bar(x + w / 2, bck_mems, w, label="Backed", color="#DD8452")
-    axes[1].set_ylabel("RSS Delta (MB)")
+    axes[1].bar(x - width / 2, mem_mems, width, label="In-Memory", color="#4C72B0")
+    axes[1].bar(x + width / 2, bck_mems, width, label="Backed", color="#DD8452")
+    axes[1].set_ylabel("Peak RSS Delta (MB)")
     axes[1].set_title(f"Peak Memory by Step - {ds_name}")
     axes[1].set_xticks(x)
     axes[1].set_xticklabels(steps, rotation=45, ha="right", fontsize=8)
@@ -362,61 +485,78 @@ def plot_comparison(agg_mem, agg_bck, ds_name):
 
 
 def make_scaling_projection(agg_mem, agg_bck, ds_shape):
+    """Estimate runtime/memory for target cell counts at 10k genes."""
     n_cells, n_genes = ds_shape
-    target_cells = [100_000, 1_000_000, 10_000_000]
+    n_cells = max(int(n_cells), 1)
+    n_genes = max(int(n_genes), 1)
+    target_cells = [100_000, 500_000, 1_000_000, 5_000_000, 10_000_000]
+    target_genes = 10_000
+    gene_ratio = target_genes / n_genes
+
     rows = []
     for mode, agg in [("in-memory", agg_mem), ("backed", agg_bck)]:
         if not agg:
             continue
-        base_total = agg.get("TOTAL", {}).get("time_mean", 0)
-        base_mem = agg.get("TOTAL", {}).get("mem_mean", 0)
-        base_kernel = agg.get("reduce_kernel", {}).get("time_mean", 0)
-        base_action = agg.get("run_action", {}).get("time_mean", 0)
-        base_net = agg.get("build_network", {}).get("time_mean", 0)
-        base_norm = agg.get("normalize", {}).get("time_mean", 0)
-        base_filter = agg.get("filter", {}).get("time_mean", 0)
 
+        base_total = agg.get("TOTAL", {}).get("time_mean", 0.0)
+        base_mem = agg.get("TOTAL", {}).get("mem_mean", 0.0)
+        base_network = agg.get("network_construction", {}).get("time_mean", 0.0)
+
+        base_linear = max(0.0, base_total - base_network)
         for nc in target_cells:
             cell_ratio = nc / n_cells
-            est_time = (
-                base_filter * cell_ratio
-                + base_norm * cell_ratio
-                + base_kernel * cell_ratio
-                + base_action * cell_ratio
-                + base_net * cell_ratio * np.log(nc) / max(np.log(n_cells), 1)
-                + (base_total - base_filter - base_norm - base_kernel - base_action - base_net)
-                * cell_ratio
+            network_term = base_network * cell_ratio * np.log1p(nc) / max(np.log1p(n_cells), 1.0)
+            est_time = base_linear * cell_ratio * gene_ratio + network_term
+            est_mem = base_mem * cell_ratio * gene_ratio
+            rows.append(
+                {
+                    "Mode": mode,
+                    "Cells": f"{nc:,}",
+                    "Genes": f"{target_genes:,}",
+                    "Est. Time (min)": f"{est_time / 60:.1f}",
+                    "Est. Peak RSS (GB)": f"{est_mem / 1000:.1f}",
+                }
             )
-            est_mem = base_mem * cell_ratio
-            rows.append({
-                "Mode": mode,
-                "Cells": f"{nc:,}",
-                "Genes": "10,000",
-                "Est. Time (min)": f"{est_time / 60:.1f}",
-                "Est. Peak RSS (GB)": f"{est_mem / 1000:.1f}",
-            })
     return pd.DataFrame(rows)
 
 
-def make_batch_scaling(agg_mem, agg_bck, ds_shape, ref_batches):
+def make_batch_scaling(agg_mem, agg_bck, ref_batches):
+    """Estimate batch-correction scaling with batch count."""
     rows = []
     target_batches = [1, 5, 25, 50, 100]
+    ref_batches = max(int(ref_batches), 1)
+
     for mode, agg in [("in-memory", agg_mem), ("backed", agg_bck)]:
         if not agg:
             continue
-        bc_time = agg.get("batch_correction", {}).get("time_mean", 0)
-        bc_mem = agg.get("batch_correction", {}).get("mem_mean", 0)
-        if bc_time == 0:
+        bc_time = agg.get("batch_correction", {}).get("time_mean", 0.0)
+        bc_mem = agg.get("batch_correction", {}).get("mem_mean", 0.0)
+        if bc_time <= 0:
             continue
         for nb in target_batches:
             ratio = nb / ref_batches
-            rows.append({
-                "Mode": mode,
-                "Batches": nb,
-                "Est. Batch Corr Time (s)": f"{bc_time * ratio:.1f}",
-                "Est. Batch Corr RSS (MB)": f"{bc_mem * ratio:.0f}",
-            })
+            rows.append(
+                {
+                    "Mode": mode,
+                    "Batches": nb,
+                    "Est. Batch Corr Time (s)": f"{bc_time * ratio:.1f}",
+                    "Est. Batch Corr Peak RSS (MB)": f"{bc_mem * ratio:.0f}",
+                }
+            )
     return pd.DataFrame(rows)
+
+
+def _resolve_dataset_metadata(path: Path, batch_key: str | None):
+    tmp = ad.read_h5ad(str(path), backed="r")
+    shape = tmp.shape
+    n_batches = 0
+    if batch_key is not None and batch_key in tmp.obs:
+        n_batches = int(pd.Series(tmp.obs[batch_key]).nunique())
+    if hasattr(tmp, "file") and tmp.file is not None:
+        tmp.file.close()
+    del tmp
+    gc.collect()
+    return shape, n_batches
 
 
 def main():
@@ -427,7 +567,6 @@ def main():
             "batch_key": None,
             "n_components": 30,
             "k_max": 30,
-            "ref_batches": 0,
         },
         "large": {
             "file": "adata_agg_Hm_STR_MSN_1000plus_only_processed.h5ad",
@@ -435,88 +574,100 @@ def main():
             "batch_key": "UID",
             "n_components": 30,
             "k_max": 30,
-            "ref_batches": 25,
         },
     }
 
     report = []
-    report.append("# ACTIONet Backed Extension Benchmark Report\n")
+    report.append("# ACTIONet Backed Extension Benchmark Report")
+    report.append("")
     report.append(f"Date: {time.strftime('%Y-%m-%d %H:%M:%S')}")
     report.append(f"Trials per mode: {N_TRIALS}")
-    report.append(f"SVD Algorithm: PRIMME (id={SVD_ALGORITHM})\n")
+    report.append(f"SVD algorithm: PRIMME (id={SVD_ALGORITHM})")
+    report.append(f"Backed chunk size: {BACKED_CHUNK_SIZE}")
+    report.append("Backed decompression: scope='file' before every backed trial")
+    report.append("")
 
     all_results = {}
 
     for ds_name, ds_cfg in datasets.items():
+        if SELECTED_DATASETS and ds_name not in SELECTED_DATASETS:
+            continue
+
         src = DATA_DIR / ds_cfg["file"]
         if not src.exists():
             print(f"SKIP {ds_name}: {src} not found", flush=True)
             continue
 
-        tmp = ad.read_h5ad(str(src), backed="r")
-        shape = tmp.shape
-        tmp.file.close()
-        del tmp
-        gc.collect()
+        shape, n_batches = _resolve_dataset_metadata(src, ds_cfg["batch_key"])
+        ds_cfg_run = dict(ds_cfg)
+        ds_cfg_run["ref_batches"] = n_batches
 
-        mem_metrics, bck_metrics, parity = benchmark_dataset(ds_name, ds_cfg)
+        mem_metrics, bck_metrics, parity = benchmark_dataset(
+            ds_name,
+            ds_cfg_run,
+            trials=N_TRIALS,
+            backed_chunk_size=BACKED_CHUNK_SIZE,
+        )
 
         agg_mem = aggregate_metrics(mem_metrics)
         agg_bck = aggregate_metrics(bck_metrics)
+        table = make_comparison_table(agg_mem, agg_bck)
 
-        tbl = make_comparison_table(agg_mem, agg_bck)
-
-        report.append(f"\n## Dataset: {ds_name} ({ds_cfg['file']})")
+        report.append(f"## Dataset: {ds_name} ({ds_cfg['file']})")
         report.append(f"Shape: {shape[0]:,} cells x {shape[1]:,} genes")
         if ds_cfg["batch_key"]:
-            report.append(f"Batch key: {ds_cfg['batch_key']} ({ds_cfg['ref_batches']} batches)")
-        report.append(f"Label column: {ds_cfg['label_col']}\n")
-
-        report.append("### Runtime & Memory Comparison\n")
-        report.append(tabulate(tbl, headers="keys", tablefmt="pipe", showindex=False))
+            report.append(f"Batch key: {ds_cfg['batch_key']} ({n_batches} batches)")
+        report.append(f"Label column: {ds_cfg['label_col']}")
         report.append("")
-
-        report.append("\n### Result Parity (In-Memory vs Backed)\n")
+        report.append("### Runtime & Peak Memory Comparison")
+        report.append("")
+        report.append(tabulate(table, headers="keys", tablefmt="pipe", showindex=False))
+        report.append("")
+        report.append("### Result Parity (In-Memory vs Backed)")
+        report.append("")
         if parity:
-            for k, v in parity.items():
-                report.append(f"- **{k}**: {v:.4f}")
+            for key, value in parity.items():
+                report.append(f"- **{key}**: {value:.4f}")
         else:
             report.append("- No parity data (one or both modes failed)")
         report.append("")
 
-        if agg_mem and agg_bck:
-            fig_path = plot_comparison(agg_mem, agg_bck, ds_name)
-            report.append(f"\n![Benchmark {ds_name}]({fig_path.name})\n")
+        fig_path = plot_comparison(agg_mem, agg_bck, ds_name)
+        if fig_path is not None:
+            report.append(f"![Benchmark {ds_name}]({fig_path.name})")
+            report.append("")
 
         proj = make_scaling_projection(agg_mem, agg_bck, shape)
         if not proj.empty:
-            report.append("\n### Scaling Projections (Cell Count)\n")
+            report.append("### Scaling Projections (Cell Count)")
+            report.append("")
             report.append(tabulate(proj, headers="keys", tablefmt="pipe", showindex=False))
             report.append("")
 
-        if ds_cfg["ref_batches"] > 0:
-            bproj = make_batch_scaling(agg_mem, agg_bck, shape, ds_cfg["ref_batches"])
-            if not bproj.empty:
-                report.append("\n### Scaling Projections (Batch Count)\n")
-                report.append(tabulate(bproj, headers="keys", tablefmt="pipe", showindex=False))
+        if n_batches > 0:
+            batch_proj = make_batch_scaling(agg_mem, agg_bck, n_batches)
+            if not batch_proj.empty:
+                report.append("### Scaling Projections (Batch Count)")
+                report.append("")
+                report.append(tabulate(batch_proj, headers="keys", tablefmt="pipe", showindex=False))
                 report.append("")
 
         all_results[ds_name] = {
             "shape": list(shape),
+            "n_batches": int(n_batches),
             "agg_mem": agg_mem,
             "agg_bck": agg_bck,
             "parity": parity,
         }
 
-    # Write report
     report_path = OUT_DIR / "BENCHMARK_REPORT.md"
-    with open(report_path, "w") as f:
-        f.write("\n".join(report))
+    with open(report_path, "w", encoding="utf-8") as handle:
+        handle.write("\n".join(report))
     print(f"\nReport written to: {report_path}", flush=True)
 
     json_path = OUT_DIR / "benchmark_raw.json"
-    with open(json_path, "w") as f:
-        json.dump(all_results, f, indent=2, default=str)
+    with open(json_path, "w", encoding="utf-8") as handle:
+        json.dump(all_results, handle, indent=2, default=str)
     print(f"Raw data: {json_path}", flush=True)
 
 
