@@ -195,7 +195,10 @@ def _select_svd_algorithm(
         return svd_algorithm
 
     # Calculate matrix properties
-    total_elements = np.prod(S.shape)
+    if sp.issparse(S):
+        total_elements = S.nnz
+    else:
+        total_elements = np.prod(S.shape)
 
     # Check for 32-bit overflow (2^31 - 1 = 2,147,483,647)
     # Many sparse matrix libraries use 32-bit integers for indexing
@@ -209,11 +212,10 @@ def _select_svd_algorithm(
 
     # Determine sparsity and select algorithm
     if sp.issparse(S):
-        nnz = S.nnz
-        sparsity = 1.0 - (nnz / total_elements)
+        sparsity = 1.0 - (total_elements / np.prod(S.shape))
 
         # For large, very sparse matrices, PRIMME is most memory-efficient
-        if sparsity > 0.7 and total_elements > 1_000_000_000:
+        if sparsity > 0.7 and total_elements > 2_000_000_000:
             if verbose:
                 print(f"Auto-selected PRIMME for large sparse matrix "
                       f"({sparsity:.1%} sparse, {total_elements:,} elements)")
