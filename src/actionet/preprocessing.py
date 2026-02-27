@@ -296,23 +296,97 @@ def _compute_filter_stats(
     row_nnz = np.zeros(obs_idx.size, dtype=np.int64)
     col_nnz = np.zeros(var_idx.size, dtype=np.int64)
 
+    obs_is_full = (
+        obs_idx.size == source.n_obs
+        and np.array_equal(obs_idx, np.arange(source.n_obs, dtype=np.int64))
+    )
+    var_is_full = (
+        var_idx.size == source.n_vars
+        and np.array_equal(var_idx, np.arange(source.n_vars, dtype=np.int64))
+    )
+    col_indices = None if var_is_full else var_idx
+
     pos = 0
-    for _rows, block in source.iter_selected_row_chunks(
-        obs_idx, chunk_size=chunk_size, col_indices=var_idx,
-    ):
-        sz = _rows.size
-        if sp.issparse(block):
-            row_sums[pos:pos + sz] = np.asarray(block.sum(axis=1)).ravel()
-            row_nnz[pos:pos + sz] = np.asarray(block.getnnz(axis=1)).ravel()
-            col_nnz += np.asarray(block.getnnz(axis=0)).ravel().astype(np.int64, copy=False)
-        else:
-            arr = np.asarray(block, dtype=np.float64)
-            row_sums[pos:pos + sz] = arr.sum(axis=1)
-            row_nnz[pos:pos + sz] = np.count_nonzero(arr, axis=1)
-            col_nnz += np.count_nonzero(arr, axis=0)
-        pos += sz
+    if obs_is_full:
+        for chunk in source.iter_row_chunks(chunk_size=chunk_size, col_indices=col_indices):
+            block = chunk.block
+            sz = chunk.end - chunk.start
+            if sp.issparse(block):
+                row_sums[pos:pos + sz] = np.asarray(block.sum(axis=1)).ravel()
+                row_nnz[pos:pos + sz] = np.asarray(block.getnnz(axis=1)).ravel()
+                col_nnz += np.asarray(block.getnnz(axis=0)).ravel().astype(np.int64, copy=False)
+            else:
+                arr = np.asarray(block, dtype=np.float64)
+                row_sums[pos:pos + sz] = arr.sum(axis=1)
+                row_nnz[pos:pos + sz] = np.count_nonzero(arr, axis=1)
+                col_nnz += np.count_nonzero(arr, axis=0)
+            pos += sz
+    else:
+        for _rows, block in source.iter_selected_row_chunks(
+            obs_idx, chunk_size=chunk_size, col_indices=col_indices,
+        ):
+            sz = _rows.size
+            if sp.issparse(block):
+                row_sums[pos:pos + sz] = np.asarray(block.sum(axis=1)).ravel()
+                row_nnz[pos:pos + sz] = np.asarray(block.getnnz(axis=1)).ravel()
+                col_nnz += np.asarray(block.getnnz(axis=0)).ravel().astype(np.int64, copy=False)
+            else:
+                arr = np.asarray(block, dtype=np.float64)
+                row_sums[pos:pos + sz] = arr.sum(axis=1)
+                row_nnz[pos:pos + sz] = np.count_nonzero(arr, axis=1)
+                col_nnz += np.count_nonzero(arr, axis=0)
+            pos += sz
 
     return row_sums, row_nnz, col_nnz
+
+
+def _adaptive_sparse_chunk_size(
+    matrix,
+    obs_idx: np.ndarray,
+    var_idx: np.ndarray | None,
+    requested_chunk_size: int,
+    *,
+    target_block_mb: int = 192,
+    overhead_factor: float = 8.0,
+    sample_rows: int = 256,
+    min_chunk_size: int = 64,
+) -> int:
+    """Estimate a safer chunk size for backed sparse row operations.
+
+    The default ``backed_chunk_size=4096`` can create very large temporary
+    sparse blocks for moderately dense matrices.  This helper samples a small
+    number of rows and scales chunk size to keep temporary block payloads near
+    ``target_block_mb``.
+    """
+    req = int(max(1, requested_chunk_size))
+    if obs_idx.size == 0:
+        return req
+
+    sample_n = int(min(sample_rows, obs_idx.size))
+    rows = obs_idx[:sample_n]
+    block = matrix[rows, :]
+
+    if var_idx is not None:
+        n_vars = block.shape[1]
+        is_full_var = (
+            var_idx.size == n_vars
+            and np.array_equal(var_idx, np.arange(n_vars, dtype=np.int64))
+        )
+        if not is_full_var:
+            block = block[:, var_idx]
+
+    block = sp.csr_matrix(block)
+    if block.shape[0] == 0 or block.nnz == 0:
+        return req
+
+    nnz_per_row = float(block.nnz) / float(block.shape[0])
+    bytes_per_nnz = float(block.data.dtype.itemsize + block.indices.dtype.itemsize)
+    est_bytes_per_row = max(1.0, nnz_per_row * bytes_per_nnz * float(max(overhead_factor, 1.0)))
+    target_bytes = float(max(1, target_block_mb)) * 1024.0 * 1024.0
+
+    safe = int(target_bytes / est_bytes_per_row)
+    safe = max(int(max(1, min_chunk_size)), safe)
+    return min(req, safe)
 
 
 def compute_filter_masks(
@@ -363,8 +437,19 @@ def compute_filter_masks(
         row_mask = np.ones(obs_idx.size, dtype=bool)
         col_mask = np.ones(var_idx.size, dtype=bool)
 
+        chunk_size = int(max(1, backed_chunk_size))
+        if source.is_backed and source.is_sparse:
+            chunk_size = _adaptive_sparse_chunk_size(
+                source.matrix,
+                obs_idx,
+                var_idx,
+                chunk_size,
+                target_block_mb=128,
+                overhead_factor=10.0,
+            )
+
         row_sums, row_nnz, col_nnz = _compute_filter_stats(
-            source, obs_idx, var_idx, backed_chunk_size,
+            source, obs_idx, var_idx, chunk_size,
         )
 
         if min_umis_per_cell is not None:
@@ -453,41 +538,68 @@ def _write_sparse_subsetted(
     source_mat = matrix
     n_out = obs_idx.size
     n_vars_out = var_idx.size if var_idx is not None else source_mat.shape[1]
+    chunk_size = _adaptive_sparse_chunk_size(
+        source_mat,
+        obs_idx,
+        var_idx,
+        chunk_size,
+        target_block_mb=128,
+        overhead_factor=8.0,
+    )
 
-    # Accumulate CSR components in lists, then concatenate once.
-    all_data = []
-    all_indices = []
-    indptr = [0]
-    nnz_so_far = 0
+    def _iter_blocks():
+        for pos in range(0, n_out, chunk_size):
+            end = min(pos + chunk_size, n_out)
+            rows = obs_idx[pos:end]
+            block = source_mat[rows, :]
+            if var_idx is not None:
+                block = block[:, var_idx]
+            yield sp.csr_matrix(block)
 
-    for pos in range(0, n_out, chunk_size):
-        end = min(pos + chunk_size, n_out)
-        rows = obs_idx[pos:end]
-        block = source_mat[rows, :]
-        if var_idx is not None:
-            block = block[:, var_idx]
-        block = sp.csr_matrix(block)
-        all_data.append(block.data)
-        all_indices.append(block.indices)
-        for row_nnz in np.diff(block.indptr):
-            nnz_so_far += int(row_nnz)
-            indptr.append(nnz_so_far)
-
-    data = np.concatenate(all_data) if all_data else np.array([], dtype=np.float64)
-    indices = np.concatenate(all_indices) if all_indices else np.array([], dtype=np.int32)
-    indptr = np.array(indptr, dtype=np.int64)
+    # Pass 1: determine final nnz and output dtypes without materializing all blocks.
+    total_nnz = 0
+    data_dtype = np.float64
+    indices_dtype = np.int32
+    for block in _iter_blocks():
+        block_nnz = int(block.nnz)
+        total_nnz += block_nnz
+        if block_nnz > 0:
+            data_dtype = block.data.dtype
+            indices_dtype = block.indices.dtype
 
     grp = f.create_group(h5_key)
-    grp.create_dataset(
+    data_ds = grp.create_dataset(
         "data",
-        data=data,
+        shape=(total_nnz,),
+        dtype=data_dtype,
         **_sparse_dataset_compression_kwargs(compression_policy, "data"),
     )
-    grp.create_dataset(
+    indices_ds = grp.create_dataset(
         "indices",
-        data=indices,
+        shape=(total_nnz,),
+        dtype=indices_dtype,
         **_sparse_dataset_compression_kwargs(compression_policy, "indices"),
     )
+
+    # Pass 2: stream-write CSR payloads and build indptr in-memory (O(n_obs)).
+    indptr = np.zeros(n_out + 1, dtype=np.int64)
+    row_pos = 0
+    nnz_pos = 0
+    for block in _iter_blocks():
+        n_rows = block.shape[0]
+        block_nnz = int(block.nnz)
+
+        if block_nnz > 0:
+            data_ds[nnz_pos:nnz_pos + block_nnz] = block.data
+            indices_ds[nnz_pos:nnz_pos + block_nnz] = block.indices
+
+        row_nnz = np.diff(block.indptr).astype(np.int64, copy=False)
+        if n_rows > 0:
+            indptr[row_pos + 1:row_pos + 1 + n_rows] = nnz_pos + np.cumsum(row_nnz, dtype=np.int64)
+
+        row_pos += n_rows
+        nnz_pos += block_nnz
+
     grp.create_dataset(
         "indptr",
         data=indptr,
