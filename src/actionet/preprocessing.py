@@ -74,13 +74,15 @@ def normalize_anndata(
     layer: str | None = None,
     backed_chunk_size: int = 4096,
     inplace: bool = True,
+    layer_added: str | None = None,
 ) -> Optional[AnnData]:
     """Total-count normalization with optional log1p transform.
 
     Mimics the R ``normalize.ace`` function: each cell's counts are scaled
     to *target_sum*, then (by default) a ``log1p`` transform is applied.
-    Both steps are chunked and backed-safe, so this function works
-    identically on in-memory and HDF5-backed AnnData objects.
+    The default normalization path works for both in-memory and HDF5-backed
+    AnnData objects. ``layer_added`` is an in-memory-only convenience mode
+    that stores normalized output in a new layer.
 
     Parameters
     ----------
@@ -102,16 +104,28 @@ def normalize_anndata(
     inplace : bool, optional (default: True)
         If ``True``, normalize in place and return ``None``; otherwise
         return a modified copy.
+    layer_added : str or None, optional (default: None)
+        If provided, write normalized values to ``adata.layers[layer_added]``
+        instead of overwriting the input matrix. This option is supported
+        only for in-memory AnnData objects.
 
     Returns
     -------
     AnnData or None
         Modified copy if ``inplace=False``, otherwise ``None``.
+
+    Raises
+    ------
+    ValueError
+        If ``target_sum`` or ``log_base`` is not positive, or if
+        ``layer_added`` is used with a backed AnnData object.
     """
     if target_sum <= 0:
         raise ValueError("target_sum must be positive.")
     if log_base is not None and log_base <= 0:
         raise ValueError("log_base must be positive.")
+    if layer_added is not None and bool(getattr(adata, "isbacked", False)):
+        raise ValueError("`layer_added` is only supported for in-memory AnnData, not backed mode.")
 
     if not inplace:
         if getattr(adata, "isbacked", False):
@@ -121,8 +135,26 @@ def normalize_anndata(
 
     source = MatrixSource(adata, layer=layer)
 
-    if not source.is_backed:
-        _normalize_in_memory(adata, source, target_sum, log_transform, log_base, layer)
+    if layer_added is not None:
+        if source.is_backed:
+            raise ValueError("`layer_added` is only supported for in-memory AnnData, not backed mode.")
+        adata.layers[layer_added] = _normalize_matrix_in_memory(
+            source.matrix,
+            target_sum=target_sum,
+            log_transform=log_transform,
+            log_base=log_base,
+        )
+    elif not source.is_backed:
+        normalized = _normalize_matrix_in_memory(
+            source.matrix,
+            target_sum=target_sum,
+            log_transform=log_transform,
+            log_base=log_base,
+        )
+        if layer is None:
+            adata.X = normalized
+        else:
+            adata.layers[layer] = normalized
     else:
         _normalize_backed(source, target_sum, log_transform, log_base, backed_chunk_size)
 
@@ -131,36 +163,19 @@ def normalize_anndata(
     return adata
 
 
-# ---------------------------------------------------------------------------
-# In-memory fast path (no chunking)
-# ---------------------------------------------------------------------------
-
-def _normalize_in_memory(
-    adata: AnnData,
-    source: MatrixSource,
+def _normalize_matrix_in_memory(
+    matrix,
     target_sum: float,
     log_transform: bool,
     log_base: Optional[float],
-    layer: str | None,
-) -> None:
-    """Normalize an in-memory AnnData matrix without chunked iteration.
+):
+    """Return a normalized in-memory copy of ``matrix``.
 
-    Operates directly on the underlying sparse or dense arrays, avoiding
-    the per-chunk slicing, copying, and write-back overhead that the
-    backed path requires.
+    The input is never modified. Sparse inputs are returned as CSR.
     """
-    X = source.matrix
+    if issparse(matrix):
+        X = matrix.tocsr(copy=True).astype(np.float64, copy=False)
 
-    if issparse(X):
-        X = X.tocsr()
-        X = X.astype(np.float64, copy=False)
-        # Ensure the converted matrix is stored back
-        if layer is None:
-            adata.X = X
-        else:
-            adata.layers[layer] = X
-
-        # Row sums via scipy (single sparse mat-vec, no chunking)
         row_sums = np.asarray(X.sum(axis=1), dtype=np.float64).ravel()
         scaling = np.divide(
             target_sum,
@@ -185,27 +200,24 @@ def _normalize_in_memory(
                 np.log1p(X.data, out=X.data)
                 if log_base is not None:
                     X.data /= np.log(log_base)
-    else:
-        arr = np.asarray(X, dtype=np.float64)
-        row_sums = arr.sum(axis=1)
-        scaling = np.divide(
-            target_sum,
-            row_sums,
-            out=np.zeros_like(row_sums, dtype=np.float64),
-            where=row_sums > 0,
-        )
+        return X
 
-        arr *= scaling[:, np.newaxis]
+    arr = np.array(matrix, dtype=np.float64, copy=True)
+    row_sums = arr.sum(axis=1)
+    scaling = np.divide(
+        target_sum,
+        row_sums,
+        out=np.zeros_like(row_sums, dtype=np.float64),
+        where=row_sums > 0,
+    )
 
-        if log_transform:
-            np.log1p(arr, out=arr)
-            if log_base is not None:
-                arr /= np.log(log_base)
+    arr *= scaling[:, np.newaxis]
 
-        if layer is None:
-            adata.X = arr
-        else:
-            adata.layers[layer] = arr
+    if log_transform:
+        np.log1p(arr, out=arr)
+        if log_base is not None:
+            arr /= np.log(log_base)
+    return arr
 
 
 # ---------------------------------------------------------------------------

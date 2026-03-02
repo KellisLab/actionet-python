@@ -318,6 +318,52 @@ def test_backed_preprocessing_csr_and_csc(tmp_path):
         an.normalize_anndata(adata, target_sum=1e4, log_transform=True, log_base=2, layer=target_layer, backed_chunk_size=24, inplace=True)
 
 
+def test_normalize_layer_added_inmemory_keeps_input_matrix():
+    """In-memory normalize with layer_added writes output layer only."""
+    adata = make_test_adata(n_cells=64, n_genes=48, sparse_fmt="csr", seed=18)
+    adata_expected = adata.copy()
+    x_before = adata.X.copy()
+
+    an.normalize_anndata(
+        adata_expected,
+        target_sum=1e4,
+        log_transform=True,
+        log_base=2,
+        inplace=True,
+    )
+    an.normalize_anndata(
+        adata,
+        target_sum=1e4,
+        log_transform=True,
+        log_base=2,
+        layer_added="normalized",
+        inplace=True,
+    )
+
+    assert "normalized" in adata.layers
+    np.testing.assert_allclose(adata.X.toarray(), x_before.toarray(), rtol=1e-12, atol=1e-12)
+    np.testing.assert_allclose(
+        adata.layers["normalized"].toarray(),
+        adata_expected.X.toarray(),
+        rtol=1e-12,
+        atol=1e-12,
+    )
+
+
+def test_normalize_layer_added_backed_raises(tmp_path):
+    """layer_added is intentionally unsupported for backed AnnData."""
+    adata = open_backed(tmp_path, make_test_adata(sparse_fmt="csr", seed=19))
+
+    with pytest.raises(ValueError, match="layer_added"):
+        an.normalize_anndata(
+            adata,
+            target_sum=1e4,
+            log_transform=True,
+            layer_added="normalized",
+            inplace=True,
+        )
+
+
 def test_reduce_kernel_warns_on_compressed_backed_matrix(tmp_path):
     """Backed reduce_kernel warns when storage is compressed."""
     adata = _open_backed_with_compression(
