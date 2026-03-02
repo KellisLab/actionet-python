@@ -81,8 +81,9 @@ def normalize_anndata(
     Mimics the R ``normalize.ace`` function: each cell's counts are scaled
     to *target_sum*, then (by default) a ``log1p`` transform is applied.
     The default normalization path works for both in-memory and HDF5-backed
-    AnnData objects. ``layer_added`` is an in-memory-only convenience mode
-    that stores normalized output in a new layer.
+    AnnData objects. When ``layer_added`` is provided in backed mode, the
+    source matrix is first copied on-disk to ``layers[layer_added]`` and the
+    normalized values are written there.
 
     Parameters
     ----------
@@ -106,8 +107,9 @@ def normalize_anndata(
         return a modified copy.
     layer_added : str or None, optional (default: None)
         If provided, write normalized values to ``adata.layers[layer_added]``
-        instead of overwriting the input matrix. This option is supported
-        only for in-memory AnnData objects.
+        instead of overwriting the input matrix. In backed mode this requires
+        a writable handle (``backed='r+'``), and any existing
+        ``layers[layer_added]`` is overwritten.
 
     Returns
     -------
@@ -118,14 +120,15 @@ def normalize_anndata(
     ------
     ValueError
         If ``target_sum`` or ``log_base`` is not positive, or if
-        ``layer_added`` is used with a backed AnnData object.
+        ``layer_added`` equals ``layer``, or if ``layer_added`` is requested
+        on a read-only backed AnnData object.
     """
     if target_sum <= 0:
         raise ValueError("target_sum must be positive.")
     if log_base is not None and log_base <= 0:
         raise ValueError("log_base must be positive.")
-    if layer_added is not None and bool(getattr(adata, "isbacked", False)):
-        raise ValueError("`layer_added` is only supported for in-memory AnnData, not backed mode.")
+    if layer_added is not None and layer is not None and layer_added == layer:
+        raise ValueError("`layer_added` must differ from `layer`.")
 
     if not inplace:
         if getattr(adata, "isbacked", False):
@@ -137,13 +140,32 @@ def normalize_anndata(
 
     if layer_added is not None:
         if source.is_backed:
-            raise ValueError("`layer_added` is only supported for in-memory AnnData, not backed mode.")
-        adata.layers[layer_added] = _normalize_matrix_in_memory(
-            source.matrix,
-            target_sum=target_sum,
-            log_transform=log_transform,
-            log_base=log_base,
-        )
+            if not _is_writable_backed(adata):
+                raise ValueError(
+                    "`layer_added` with backed AnnData requires writable mode 'r+'. "
+                    "Re-open with `ad.read_h5ad(path, backed=\"r+\")`."
+                )
+            _copy_backed_matrix_to_layer(
+                adata,
+                source_layer=layer,
+                layer_added=layer_added,
+            )
+            _refresh_backed_handle(adata, str(adata.filename), mode="r+")
+            target_source = MatrixSource(adata, layer=layer_added)
+            _normalize_backed(
+                target_source,
+                target_sum=target_sum,
+                log_transform=log_transform,
+                log_base=log_base,
+                chunk_size=backed_chunk_size,
+            )
+        else:
+            adata.layers[layer_added] = _normalize_matrix_in_memory(
+                source.matrix,
+                target_sum=target_sum,
+                log_transform=log_transform,
+                log_base=log_base,
+            )
     elif not source.is_backed:
         normalized = _normalize_matrix_in_memory(
             source.matrix,
@@ -886,6 +908,35 @@ def _decompress_sparse_group_inplace(group, chunk_size: int) -> bool:
                 chunk_size=chunk_size,
             ) or changed
     return changed
+
+
+def _copy_backed_matrix_to_layer(
+    adata: AnnData,
+    *,
+    source_layer: str | None,
+    layer_added: str,
+) -> None:
+    """Copy backed ``.X`` or one backed layer to ``layers[layer_added]``.
+
+    Existing destination layers are overwritten.
+    """
+    if not bool(getattr(adata, "isbacked", False) and getattr(adata, "filename", None)):
+        raise ValueError("_copy_backed_matrix_to_layer requires a backed AnnData object")
+    if not _is_writable_backed(adata):
+        raise ValueError(
+            "Backed layer copy requires backed mode 'r+'. "
+            "Re-open with `ad.read_h5ad(path, backed=\"r+\")`."
+        )
+
+    h5file = adata.file._file
+    layers_group = h5file["layers"] if "layers" in h5file else h5file.create_group("layers")
+
+    if layer_added in layers_group:
+        del layers_group[layer_added]
+
+    source_key = "X" if source_layer is None else f"layers/{source_layer}"
+    h5file.copy(source_key, layers_group, name=layer_added)
+    h5file.flush()
 
 
 def _resolve_backed_matrix_node(adata: AnnData, layer: str | None):

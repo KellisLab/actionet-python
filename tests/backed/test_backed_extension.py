@@ -19,6 +19,7 @@ import warnings
 
 import actionet as an
 from actionet import _core
+from actionet._matrix_source import MatrixSource
 
 from .conftest import make_test_adata, open_backed, MatrixLike
 
@@ -123,6 +124,13 @@ def _sparse_codecs(adata: ad.AnnData, *, layer: str | None = None) -> dict[str, 
         "indices": grp["indices"].compression,
         "indptr": grp["indptr"].compression,
     }
+
+
+def _as_dense(matrix_like) -> np.ndarray:
+    """Return a dense ndarray from sparse or dense matrix-like inputs."""
+    if sp.issparse(matrix_like):
+        return matrix_like.toarray()
+    return np.asarray(matrix_like)
 
 
 # ---------------------------------------------------------------------------
@@ -300,8 +308,6 @@ def test_backed_preprocessing_csr_and_csc(tmp_path):
     Note: CSC-backed X triggers h5py 'increasing order' errors on row-slice
     read, so we test CSC via a layer rather than .X directly.
     """
-    from actionet._matrix_source import MatrixSource
-
     for fmt in ("csr", "csc"):
         adata_mem = make_test_adata(sparse_fmt=fmt, seed=17 if fmt == "csr" else 23)
         adata = open_backed(tmp_path / fmt, adata_mem)
@@ -350,18 +356,154 @@ def test_normalize_layer_added_inmemory_keeps_input_matrix():
     )
 
 
-def test_normalize_layer_added_backed_raises(tmp_path):
-    """layer_added is intentionally unsupported for backed AnnData."""
-    adata = open_backed(tmp_path, make_test_adata(sparse_fmt="csr", seed=19))
+def test_normalize_layer_added_same_as_layer_raises():
+    """layer_added must differ from source layer name."""
+    adata = make_test_adata(n_cells=64, n_genes=48, sparse_fmt="csr", seed=24)
 
-    with pytest.raises(ValueError, match="layer_added"):
+    with pytest.raises(ValueError, match="must differ"):
         an.normalize_anndata(
             adata,
             target_sum=1e4,
             log_transform=True,
-            layer_added="normalized",
+            log_base=2,
+            layer="logcounts",
+            layer_added="logcounts",
             inplace=True,
         )
+
+
+def test_normalize_layer_added_backed_x_keeps_source(tmp_path):
+    """Backed layer_added from .X writes normalized output without mutating .X."""
+    adata_mem = make_test_adata(n_cells=64, n_genes=48, sparse_fmt="csr", seed=19)
+    x_before = adata_mem.X.copy()
+    expected = adata_mem.copy()
+    an.normalize_anndata(expected, target_sum=1e4, log_transform=True, log_base=2, inplace=True)
+
+    adata = open_backed(tmp_path, adata_mem)
+    an.normalize_anndata(
+        adata,
+        target_sum=1e4,
+        log_transform=True,
+        log_base=2,
+        layer_added="normalized",
+        backed_chunk_size=24,
+        inplace=True,
+    )
+
+    x_after = MatrixSource(adata, layer=None).to_memory()
+    norm_after = MatrixSource(adata, layer="normalized").to_memory()
+    np.testing.assert_allclose(_as_dense(x_after), _as_dense(x_before), rtol=1e-12, atol=1e-12)
+    np.testing.assert_allclose(_as_dense(norm_after), _as_dense(expected.X), rtol=1e-12, atol=1e-12)
+
+
+def test_normalize_layer_added_backed_layer_keeps_source_layer(tmp_path):
+    """Backed layer->layer normalization preserves source layer values."""
+    adata_mem = make_test_adata(n_cells=64, n_genes=48, sparse_fmt="csr", seed=20)
+    source_before = adata_mem.layers["logcounts"].copy()
+    expected = adata_mem.copy()
+    an.normalize_anndata(
+        expected,
+        target_sum=1e4,
+        log_transform=True,
+        log_base=2,
+        layer="logcounts",
+        inplace=True,
+    )
+
+    adata = open_backed(tmp_path, adata_mem)
+    an.normalize_anndata(
+        adata,
+        target_sum=1e4,
+        log_transform=True,
+        log_base=2,
+        layer="logcounts",
+        layer_added="normalized",
+        backed_chunk_size=24,
+        inplace=True,
+    )
+
+    source_after = MatrixSource(adata, layer="logcounts").to_memory()
+    norm_after = MatrixSource(adata, layer="normalized").to_memory()
+    np.testing.assert_allclose(_as_dense(source_after), _as_dense(source_before), rtol=1e-12, atol=1e-12)
+    np.testing.assert_allclose(
+        _as_dense(norm_after),
+        _as_dense(expected.layers["logcounts"]),
+        rtol=1e-12,
+        atol=1e-12,
+    )
+
+
+def test_normalize_layer_added_backed_readonly_raises(tmp_path):
+    """Backed read-only mode rejects layer_added writes."""
+    path = tmp_path / "readonly_layer_added.h5ad"
+    make_test_adata(sparse_fmt="csr", seed=21).write_h5ad(path)
+    adata = ad.read_h5ad(path, backed="r")
+
+    with pytest.raises(ValueError, match="r\\+|writable"):
+        an.normalize_anndata(
+            adata,
+            target_sum=1e4,
+            log_transform=True,
+            log_base=2,
+            layer_added="normalized",
+            backed_chunk_size=24,
+            inplace=True,
+        )
+    if hasattr(adata, "file") and adata.file is not None:
+        adata.file.close()
+
+
+def test_normalize_layer_added_backed_overwrites_existing_layer(tmp_path):
+    """Existing destination layer is overwritten in backed mode."""
+    adata_mem = make_test_adata(n_cells=64, n_genes=48, sparse_fmt="csr", seed=22)
+    adata_mem.layers["normalized"] = sp.csr_matrix(np.full(adata_mem.shape, 7.0, dtype=np.float64))
+    expected = adata_mem.copy()
+    an.normalize_anndata(expected, target_sum=1e4, log_transform=True, log_base=2, inplace=True)
+
+    adata = open_backed(tmp_path, adata_mem)
+    an.normalize_anndata(
+        adata,
+        target_sum=1e4,
+        log_transform=True,
+        log_base=2,
+        layer_added="normalized",
+        backed_chunk_size=24,
+        inplace=True,
+    )
+
+    norm_after = MatrixSource(adata, layer="normalized").to_memory()
+    np.testing.assert_allclose(_as_dense(norm_after), _as_dense(expected.X), rtol=1e-12, atol=1e-12)
+
+
+def test_normalize_layer_added_backed_persists_after_reopen(tmp_path):
+    """layer_added output persists across backed close/reopen cycles."""
+    path = tmp_path / "persist_layer_added.h5ad"
+    adata_mem = make_test_adata(n_cells=64, n_genes=48, sparse_fmt="csr", seed=23)
+    expected = adata_mem.copy()
+    an.normalize_anndata(expected, target_sum=1e4, log_transform=True, log_base=2, inplace=True)
+    adata_mem.write_h5ad(path)
+
+    adata = ad.read_h5ad(path, backed="r+")
+    an.normalize_anndata(
+        adata,
+        target_sum=1e4,
+        log_transform=True,
+        log_base=2,
+        layer_added="normalized",
+        backed_chunk_size=24,
+        inplace=True,
+    )
+    if hasattr(adata, "file") and adata.file is not None:
+        adata.file.close()
+
+    reopened = ad.read_h5ad(path, backed="r")
+    assert "normalized" in reopened.layers
+    reopened_x = MatrixSource(reopened, layer=None).to_memory()
+    reopened_norm = MatrixSource(reopened, layer="normalized").to_memory()
+    np.testing.assert_allclose(_as_dense(reopened_x), _as_dense(adata_mem.X), rtol=1e-12, atol=1e-12)
+    np.testing.assert_allclose(_as_dense(reopened_norm), _as_dense(expected.X), rtol=1e-12, atol=1e-12)
+    if hasattr(reopened, "file") and reopened.file is not None:
+        reopened.file.close()
 
 
 def test_reduce_kernel_warns_on_compressed_backed_matrix(tmp_path):
