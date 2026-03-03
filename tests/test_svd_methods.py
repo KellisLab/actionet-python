@@ -24,18 +24,12 @@ sys.path.insert(0, '../src')
 
 import actionet
 
-# SVD algorithm constants (from svd_main.hpp)
-ALG_IRLB = 0
-ALG_HALKO = 1
-ALG_FENG = 2
-ALG_PRIMME = 3
-
-# Dictionary mapping algorithm codes to names
+# Dictionary mapping algorithm keys to display names
 SVD_METHODS = {
-    ALG_IRLB: 'IRLB',
-    ALG_HALKO: 'Halko',
-    ALG_FENG: 'Feng',
-    ALG_PRIMME: 'PRIMME',
+    "irlb": "IRLB",
+    "halko": "Halko",
+    "feng": "Feng",
+    "primme": "PRIMME",
 }
 
 def load_and_prepare_data():
@@ -101,10 +95,10 @@ def validate_reduction_keys(adata, key, n_components, label=""):
     return errors
 
 
-def test_svd_method(adata, method_code, method_name, n_components=30):
+def test_svd_method(adata, method_key, method_name, n_components=30):
     """Test a single SVD method and return results."""
     print(f"\n{'='*60}")
-    print(f"Testing: {method_name} (algorithm code: {method_code})")
+    print(f"Testing: {method_name} (algorithm key: {method_key})")
     print(f"{'='*60}")
 
     try:
@@ -117,7 +111,7 @@ def test_svd_method(adata, method_code, method_name, n_components=30):
             n_components=n_components,
             layer='logcounts',
             key_added=f'action_{method_name.lower()}',
-            svd_algorithm=method_code,
+            svd_algorithm=method_key,
             max_iter=0,  # Use default for each method
             seed=42,
             verbose=True,
@@ -313,7 +307,7 @@ def test_primme_backed_mode(adata, n_components=30):
                 n_components=n_components,
                 layer=None,
                 key_added='action_backed',
-                svd_algorithm=3,
+                svd_algorithm="primme",
                 max_iter=0,
                 seed=42,
                 verbose=True,
@@ -379,9 +373,9 @@ def main():
 
     # Test all SVD methods
     results = {}
-    for method_code, method_name in SVD_METHODS.items():
+    for method_key, method_name in SVD_METHODS.items():
         results[method_name] = test_svd_method(
-            adata, method_code, method_name, n_components
+            adata, method_key, method_name, n_components
         )
 
     # Summary

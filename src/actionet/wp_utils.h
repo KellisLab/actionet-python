@@ -61,4 +61,18 @@ private:
     arma::uword cols_;
 };
 
+/// @brief Parse a flexible singular-value argument (1D, Nx1, or 1xN) into arma::vec.
+inline arma::vec parse_sigma(py::object d) {
+    py::array_t<double, py::array::forcecast> d_arr = d.cast<py::array_t<double, py::array::forcecast>>();
+    py::buffer_info d_buf = d_arr.request();
+    auto* ptr = static_cast<double*>(d_buf.ptr);
+    if (d_buf.ndim == 1) {
+        return arma::vec(ptr, static_cast<arma::uword>(d_buf.shape[0]), true, true);
+    }
+    if (d_buf.ndim == 2 && (d_buf.shape[0] == 1 || d_buf.shape[1] == 1)) {
+        return arma::vec(ptr, static_cast<arma::uword>(d_buf.shape[0] * d_buf.shape[1]), true, true);
+    }
+    throw std::runtime_error("Expected singular values `d` to be a 1D vector or Nx1/1xN array");
+}
+
 #endif // WP_UTILS_H

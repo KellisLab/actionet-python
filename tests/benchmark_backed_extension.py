@@ -32,7 +32,7 @@ OUT_DIR = Path(__file__).resolve().parent / "benchmark_results"
 OUT_DIR.mkdir(exist_ok=True)
 
 N_TRIALS = int(os.environ.get("ACTIONET_BENCH_TRIALS", "3"))
-SVD_ALGORITHM = 3  # PRIMME
+SVD_ALGORITHM = "primme"
 BACKED_CHUNK_SIZE = int(os.environ.get("ACTIONET_BENCH_CHUNK_SIZE", "4096"))
 SELECTED_DATASETS = {
     x.strip() for x in os.environ.get("ACTIONET_BENCH_DATASETS", "small,large").split(",") if x.strip()
@@ -582,7 +582,7 @@ def main():
     report.append("")
     report.append(f"Date: {time.strftime('%Y-%m-%d %H:%M:%S')}")
     report.append(f"Trials per mode: {N_TRIALS}")
-    report.append(f"SVD algorithm: PRIMME (id={SVD_ALGORITHM})")
+    report.append(f"SVD algorithm: {SVD_ALGORITHM}")
     report.append(f"Backed chunk size: {BACKED_CHUNK_SIZE}")
     report.append("Backed decompression: scope='file' before every backed trial")
     report.append("")

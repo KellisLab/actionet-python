@@ -23,7 +23,7 @@ OUT_DIR.mkdir(exist_ok=True)
 SRC = DATA_DIR / "test_adata.h5ad"
 BACKED_PATH = OUT_DIR / "parity_backed.h5ad"
 
-SVD_ALG = 3  # PRIMME for both
+SVD_ALG = "primme"
 N_COMP = 30
 K_MAX = 30
 BCS = 4096

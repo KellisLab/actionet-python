@@ -37,7 +37,7 @@ import actionet
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
-ALG_PRIMME = 3
+ALG_PRIMME = "primme"
 INPUT_MODES = {
     'sparse':  'PRIMME in-memory (sparse)',
     'dense':   'PRIMME in-memory (dense)',

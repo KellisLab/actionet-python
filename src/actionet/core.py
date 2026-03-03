@@ -1,5 +1,8 @@
 """High-level Python API wrapping C++ bindings with AnnData integration."""
 
+import os
+import shutil
+import tempfile
 import warnings
 from typing import Any, Optional, Union, Literal
 import numpy as np
@@ -16,10 +19,18 @@ from ._backed_compression import (
     is_compressed_storage,
 )
 from ._matrix_source import MatrixSource
+from .preprocessing import decompress_backed_storage
 from . import tools
 
 
 _WARNED_COMPRESSED_BACKED_SVD: set[tuple[str, str, str]] = set()
+_SVD_ALGORITHM_TO_ID = {
+    "irlb": 0,
+    "halko": 1,
+    "feng": 2,
+    "primme": 3,
+}
+_SVD_ID_TO_ALGORITHM = {v: k for k, v in _SVD_ALGORITHM_TO_ID.items()}
 
 
 def _is_backed_matrix(X: Any) -> bool:
@@ -70,166 +81,124 @@ def _warn_if_compressed_backed_svd(
     )
 
 
-class _TransposeMatrixOperator:
-    """Matrix operator for S = X.T where X is cells x genes (backed sparse).
-
-    Implements chunked matrix-vector products that stream through X in
-    row-blocks of ``chunk_size`` cells at a time, keeping peak memory
-    proportional to ``chunk_size * n_genes`` rather than ``n_cells * n_genes``.
-
-    Parameters
-    ----------
-    X
-        Backed sparse dataset (cells × genes).  Accessed via ``X[start:end, :]``.
-    chunk_size : int
-        Number of cell-rows to load per chunk.  Larger values reduce Python
-        loop overhead and improve BLAS utilisation, but increase peak memory.
-        The default (4096) works well for datasets where each chunk fits
-        comfortably in L3 cache (~256 MB at 64k genes, float64).
-
-    Performance notes
-    -----------------
-    - Each PRIMME iteration calls ``matvec`` and ``rmatvec`` once per block
-      vector, so I/O is the dominant cost.  Consider increasing ``chunk_size``
-      if the dataset is on fast local SSD, or decreasing it on network storage.
-    - Each chunk is converted to dense (if sparse) via ``np.asarray``, which
-      creates a temporary ``(chunk_size, n_genes)`` float64 array.  For very
-      large gene dimensions (>100k) this temporary may dominate memory.
-    - Accumulated floating-point rounding across chunks is negligible for
-      typical single-cell data but is documented here for completeness.
-
-    Possible future improvements
-    ----------------------------
-    - Accept a ``dtype`` parameter and accumulate in float32 for memory savings
-      when full double precision is unnecessary.
-    - Pre-fetch the next chunk in a background thread while computing on the
-      current chunk (double-buffering) to hide I/O latency.
-    - Expose a ``rechunk`` helper that rewrites backed data into an optimal
-      on-disk chunk layout for row-slicing.
-    """
-
-    def __init__(self, X: Any, chunk_size: int = 4096):
-        self._X = X
-        self._chunk_size = int(max(1, chunk_size))
-        n_cells, n_genes = X.shape
-        # Logical shape exposed to C++: features x cells
-        self.shape = (int(n_genes), int(n_cells))
-
-    def matvec(self, x: np.ndarray) -> np.ndarray:
-        # y = S @ x = X.T @ x
-        x = np.asarray(x, dtype=np.float64)
-        if x.ndim != 1 or x.shape[0] != self.shape[1]:
-            raise ValueError(f"matvec expected vector of length {self.shape[1]}, got {x.shape}")
-
-        y = np.zeros(self.shape[0], dtype=np.float64)
-        for start in range(0, self.shape[1], self._chunk_size):
-            end = min(start + self._chunk_size, self.shape[1])
-            block = self._X[start:end, :]
-            if sp.issparse(block):
-                y += np.asarray(block.T.dot(x[start:end])).ravel()
-            else:
-                y += np.asarray(block, dtype=np.float64).T @ x[start:end]
-        return y
-
-    def rmatvec(self, x: np.ndarray) -> np.ndarray:
-        # y = S.T @ x = X @ x
-        x = np.asarray(x, dtype=np.float64)
-        if x.ndim != 1 or x.shape[0] != self.shape[0]:
-            raise ValueError(f"rmatvec expected vector of length {self.shape[0]}, got {x.shape}")
-
-        y = np.zeros(self.shape[1], dtype=np.float64)
-        for start in range(0, self.shape[1], self._chunk_size):
-            end = min(start + self._chunk_size, self.shape[1])
-            block = self._X[start:end, :]
-            if sp.issparse(block):
-                y[start:end] = np.asarray(block.dot(x)).ravel()
-            else:
-                y[start:end] = np.asarray(block, dtype=np.float64) @ x
-        return y
+def _normalize_algorithm(algorithm: Optional[str], *, context: str) -> str:
+    if algorithm is None:
+        return "auto"
+    if not isinstance(algorithm, str):
+        raise TypeError(f"`{context}` must be a string algorithm name")
+    name = algorithm.strip().lower()
+    allowed = {"auto", *list(_SVD_ALGORITHM_TO_ID)}
+    if name not in allowed:
+        raise ValueError(f"Invalid algorithm `{algorithm}`. Allowed: {sorted(allowed)}")
+    return name
 
 
-def _select_svd_algorithm(
-    S: Any,
-    svd_algorithm: Optional[int],
-    verbose: bool = True
-) -> int:
-    """
-    Select the optimal SVD algorithm based on matrix properties.
+def _select_svd_algorithm_inmemory(S: Any, algorithm: str, verbose: bool = True) -> int:
+    if algorithm != "auto":
+        return _SVD_ALGORITHM_TO_ID[algorithm]
 
-    Parameters
-    ----------
-    S : scipy.sparse matrix, numpy.ndarray, or backed dataset
-        Input matrix (features × cells).
-    svd_algorithm : int or None
-        User-specified algorithm (if None, automatic selection is performed).
-    verbose : bool
-        Whether to print selection rationale.
-
-    Returns
-    -------
-    int
-        Selected algorithm code (0=IRLB, 1=Halko, 2=Feng, 3=PRIMME).
-
-    Selection Logic
-    ---------------
-    1. Backed inputs always use PRIMME (operator path).
-    2. If user specifies an algorithm explicitly, use it.
-    3. If matrix exceeds 32-bit indexing limits (>2^31-1 elements), force PRIMME.
-    4. For sparse matrices:
-       - Large & very sparse (>70% sparse, >1B elements): PRIMME
-       - Otherwise: IRLB
-    5. For dense matrices: Halko (fastest).
-    """
-    # If algorithm is explicitly specified, use it.
-    # Guard backed inputs first — they must go through the operator path.
-    if _is_backed_matrix(S):
-        if svd_algorithm is not None and svd_algorithm != 3:
-            raise ValueError("Backed matrices currently support only PRIMME (svd_algorithm=3)")
-        if verbose:
-            print("Detected backed matrix: selecting PRIMME operator path")
-        return 3
-
-    if svd_algorithm is not None:
-        if svd_algorithm not in [0, 1, 2, 3]:
-            raise ValueError(f"Invalid svd_algorithm {svd_algorithm}. Must be 0 (IRLB), 1 (Halko), 2 (Feng), or 3 (PRIMME).")
-        return svd_algorithm
-
-    # Calculate matrix properties
     if sp.issparse(S):
         total_elements = S.nnz
     else:
         total_elements = np.prod(S.shape)
 
-    # Check for 32-bit overflow (2^31 - 1 = 2,147,483,647)
-    # Many sparse matrix libraries use 32-bit integers for indexing
-    MAX_32BIT = 2_147_483_647
-
-    if total_elements > MAX_32BIT:
+    max_32bit = 2_147_483_647
+    if total_elements > max_32bit:
         if verbose:
-            print(f"⚠ Matrix exceeds 32-bit indexing limit ({total_elements:,} > {MAX_32BIT:,} elements)")
-            print(f"→ Auto-selected PRIMME for safe handling of large matrices")
-        return 3  # PRIMME
+            print(f"⚠ Matrix exceeds 32-bit indexing limit ({total_elements:,} > {max_32bit:,} elements)")
+            print("→ Auto-selected PRIMME for safe handling of large matrices")
+        return _SVD_ALGORITHM_TO_ID["primme"]
 
-    # Determine sparsity and select algorithm
     if sp.issparse(S):
         sparsity = 1.0 - (total_elements / np.prod(S.shape))
-
-        # For large, very sparse matrices, PRIMME is most memory-efficient
         if sparsity > 0.7 and total_elements > 2_000_000_000:
             if verbose:
-                print(f"Auto-selected PRIMME for large sparse matrix "
-                      f"({sparsity:.1%} sparse, {total_elements:,} elements)")
-            return 3  # PRIMME
-        else:
-            if verbose:
-                print(f"Auto-selected IRLB for sparse matrix "
-                      f"({sparsity:.1%} sparse, {total_elements:,} elements)")
-            return 0  # IRLB
-    else:
-        # Dense matrices: Halko is typically fastest
+                print(f"Auto-selected PRIMME for large sparse matrix ({sparsity:.1%} sparse)")
+            return _SVD_ALGORITHM_TO_ID["primme"]
         if verbose:
-            print(f"Auto-selected Halko for dense matrix ({total_elements:,} elements)")
-        return 1  # Halko
+            print(f"Auto-selected IRLB for sparse matrix ({sparsity:.1%} sparse)")
+        return _SVD_ALGORITHM_TO_ID["irlb"]
+
+    if verbose:
+        print(f"Auto-selected Halko for dense matrix ({total_elements:,} elements)")
+    return _SVD_ALGORITHM_TO_ID["halko"]
+
+
+def _select_svd_algorithm_backed(algorithm: str, verbose: bool = True) -> int:
+    if algorithm == "auto":
+        if verbose:
+            print("Detected backed matrix: selecting Halko operator path")
+        return _SVD_ALGORITHM_TO_ID["halko"]
+
+    if algorithm not in {"halko", "feng", "primme"}:
+        raise ValueError("Backed matrices support only 'auto', 'halko', 'feng', or 'primme'")
+    return _SVD_ALGORITHM_TO_ID[algorithm]
+
+
+def _backed_group_path(layer: Optional[str]) -> str:
+    return "/X" if layer is None else f"/layers/{layer}"
+
+
+def _resolve_backed_handle(X: Any, layer: Optional[str] = None) -> tuple[str, str]:
+    if isinstance(X, AnnData):
+        if not bool(getattr(X, "isbacked", False) and getattr(X, "filename", None)):
+            raise ValueError("Backed AnnData expected")
+        return str(X.filename), _backed_group_path(layer)
+
+    group = getattr(X, "group", None)
+    if group is None or not hasattr(group, "file"):
+        raise ValueError("Unable to resolve backed file/group from matrix handle")
+
+    return str(group.file.filename), str(group.name)
+
+
+def _maybe_decompress_backed_path(
+    adata: AnnData,
+    *,
+    layer: Optional[str],
+    allow_compressed: bool,
+    chunk_size: int,
+    verbose: bool,
+    context: str,
+) -> Optional[str]:
+    if allow_compressed:
+        return None
+
+    metadata = get_storage_metadata_from_adata(adata, layer=layer)
+    if not is_compressed_storage(metadata):
+        return None
+
+    src_path = str(adata.filename)
+    parent = os.path.dirname(src_path) or "."
+    free_bytes = shutil.disk_usage(parent).free
+    required_bytes = max(int(os.path.getsize(src_path) * 3), 1)
+    if free_bytes < required_bytes:
+        codecs = format_compression_summary(metadata)
+        warnings.warn(
+            (
+                f"{context}: insufficient disk for auto-decompression "
+                f"(need ~{required_bytes / 1e9:.1f} GB free, have {free_bytes / 1e9:.1f} GB). "
+                f"Continuing with compressed matrix ({codecs})."
+            ),
+            UserWarning,
+            stacklevel=3,
+        )
+        return None
+
+    fd, tmp_path = tempfile.mkstemp(prefix="actionet_oom_", suffix=".h5ad", dir=parent)
+    os.close(fd)
+    os.unlink(tmp_path)
+    decompressed = decompress_backed_storage(
+        adata,
+        layer=layer,
+        scope="matrix",
+        output_file=tmp_path,
+        chunk_size=chunk_size,
+        verbose=verbose,
+    )
+    if decompressed is not None and getattr(decompressed, "file", None) is not None:
+        decompressed.file.close()
+    return tmp_path
 
 
 def reduce_kernel(
@@ -237,111 +206,77 @@ def reduce_kernel(
     n_components: int = 30,
     layer: Optional[str] = None,
     key_added: str = "action",
-    svd_algorithm: Optional[int] = None,
+    svd_algorithm: Optional[str] = "auto",
     max_iter: int = 0,
     seed: int = 0,
     verbose: bool = True,
     precomputed_svd: Optional[dict] = None,
     backed_chunk_size: int = 4096,
+    allow_compressed: bool = False,
     inplace: bool = True
 ) -> Optional[AnnData]:
-    """
-    Compute a low-rank approximation of the kernel matrix for ACTION decomposition and store the results in AnnData.
-
-    Parameters
-    ----------
-    adata : AnnData
-        Annotated data matrix (cells × features).
-    n_components : int, optional (default: 30)
-        Number of singular vectors (components) to compute.
-    layer : str or None, optional (default: None)
-        Layer in AnnData to use for computation. If None, uses adata.X.
-    key_added : str, optional (default: "action")
-        Key under which to store the results in adata.obsm and related fields.
-    svd_algorithm : int or None, optional (default: None)
-        SVD algorithm to use:
-        - 0: IRLB (Implicitly Restarted Lanczos Bidiagonalization)
-        - 1: Halko (Randomized SVD)
-        - 2: Feng (Feng's randomized algorithm)
-        - 3: PRIMME (PReconditioned Iterative MultiMethod Eigensolver)
-        - None: Automatic selection based on matrix properties (recommended)
-    max_iter : int, optional (default: 0)
-        Maximum number of iterations for SVD solver (0=auto).
-    seed : int, optional (default: 0)
-        Random seed for reproducibility.
-    verbose : bool, optional (default: True)
-        Whether to print progress messages.
-    precomputed_svd : dict or None, optional (default: None)
-        If provided, skip SVD computation and use this precomputed result.
-        Expected keys: ``"u"`` (features × k), ``"d"`` (k,), ``"v"`` (cells × k).
-        Obtain via :func:`run_svd`.
-    backed_chunk_size : int, optional (default: 4096)
-        Number of cell-rows per chunk when streaming backed sparse data.
-        Ignored for in-memory matrices.  See :class:`_TransposeMatrixOperator`
-        for tuning guidance.
-    inplace : bool, optional (default: True)
-        If True, modifies the AnnData object in place. If False, returns a new AnnData object with the results.
-
-    Returns
-    -------
-    None or AnnData
-        If inplace=True, returns None and modifies adata in place. If inplace=False, returns a new AnnData object with the results.
-
-    Updates AnnData
-    --------------
-    adata.obsm[key_added] : np.ndarray
-        Reduced representation (cells × n_components).
-    adata.obsm[f"{key_added}_B"] : np.ndarray
-        B matrix from decomposition (cells × n_components).
-    adata.varm[f"{key_added}_U"] : np.ndarray
-        Left singular vectors (features × n_components).
-    adata.varm[f"{key_added}_A"] : np.ndarray
-        A matrix from decomposition (features × n_components).
-    adata.uns[f"{key_added}_params"] : dict
-        Parameters used for reduction (e.g., sigma, n_components, svd_algorithm).
-    """
+    """Compute low-rank kernel reduction and persist outputs to AnnData."""
     if not inplace:
         adata = adata.copy()
 
     source = MatrixSource(adata, layer=layer)
-    X = source.matrix  # cells x genes
+    X = source.matrix
     use_operator = source.is_backed
+    algorithm_name = _normalize_algorithm(svd_algorithm, context="svd_algorithm")
 
     if use_operator:
-        if precomputed_svd is None:
-            matrix_metadata = get_storage_metadata_from_adata(adata, layer=layer)
-            _warn_if_compressed_backed_svd(
-                matrix_metadata,
+        selected_algorithm = _select_svd_algorithm_backed(algorithm_name, verbose)
+        temp_path: Optional[str] = None
+        op = None
+        file_path = str(adata.filename)
+        try:
+            temp_path = _maybe_decompress_backed_path(
+                adata,
+                layer=layer,
+                allow_compressed=allow_compressed,
+                chunk_size=backed_chunk_size,
+                verbose=verbose,
                 context="reduce_kernel",
-                recommendation=(
-                    f'actionet.decompress_backed_storage(adata, layer={repr(layer)}, scope="matrix")'
-                ),
+            )
+            if temp_path is not None:
+                file_path = temp_path
+
+            op = _core.create_backed_operator(
+                file_path=file_path,
+                group_path=_backed_group_path(layer),
+                chunk_size=backed_chunk_size,
+                row_scale_factors=None,
+                apply_log1p=False,
             )
 
-        svd_algorithm = 3  # OOM v1 supports PRIMME only.
-        op = _TransposeMatrixOperator(X, chunk_size=backed_chunk_size)
-        if precomputed_svd is None:
-            result = _core.reduce_kernel_operator(op, n_components, max_iter, seed, verbose)
-        else:
-            result = _core.reduce_kernel_from_svd_operator(
-                op,
-                precomputed_svd["u"],
-                precomputed_svd["d"],
-                precomputed_svd["v"],
-                verbose,
-            )
+            if precomputed_svd is None:
+                result = _core.reduce_kernel_backed_operator(
+                    op, n_components, selected_algorithm, max_iter, seed, verbose
+                )
+            else:
+                result = _core.reduce_kernel_from_svd_backed_operator(
+                    op,
+                    precomputed_svd["u"],
+                    precomputed_svd["d"],
+                    precomputed_svd["v"],
+                    verbose,
+                )
+        finally:
+            op = None
+            if temp_path is not None and os.path.exists(temp_path):
+                os.remove(temp_path)
+
+        svd_algorithm_id = selected_algorithm
     else:
         S = anndata_to_matrix(adata, layer=layer, transpose=True)
-        svd_algorithm = _select_svd_algorithm(S, svd_algorithm, verbose)
+        svd_algorithm_id = _select_svd_algorithm_inmemory(S, algorithm_name, verbose)
 
         if precomputed_svd is None:
             if sp.issparse(S):
-                result = _core.reduce_kernel_sparse(S, n_components, svd_algorithm, max_iter, seed, verbose)
+                result = _core.reduce_kernel_sparse(S, n_components, svd_algorithm_id, max_iter, seed, verbose)
             else:
-                result = _core.reduce_kernel_dense(S, n_components, svd_algorithm, max_iter, seed, verbose)
+                result = _core.reduce_kernel_dense(S, n_components, svd_algorithm_id, max_iter, seed, verbose)
         else:
-            # Use the efficient in-memory path that computes perturbation terms
-            # directly via Armadillo instead of the chunked operator path.
             if sp.issparse(S):
                 result = _core.reduce_kernel_from_svd_sparse(
                     S, precomputed_svd["u"], precomputed_svd["d"],
@@ -353,14 +288,11 @@ def reduce_kernel(
                     precomputed_svd["v"], verbose,
                 )
 
-    # Map algorithm code to name for better user understanding
-    algorithm_names = {0: 'IRLB', 1: 'Halko', 2: 'Feng', 3: 'PRIMME'}
-
     params = {
         "sigma": np.asarray(result["sigma"]).ravel(),
         "n_components": n_components,
-        "svd_algorithm": svd_algorithm,
-        "svd_algorithm_name": algorithm_names.get(svd_algorithm, f'Unknown({svd_algorithm})'),
+        "svd_algorithm": svd_algorithm_id,
+        "svd_algorithm_name": _SVD_ID_TO_ALGORITHM.get(svd_algorithm_id, f"unknown({svd_algorithm_id})"),
         "used_precomputed_svd": precomputed_svd is not None,
         "operator_mode": use_operator,
     }
@@ -1087,11 +1019,11 @@ def layout_network(
             else:
                 print("Computing initial coordinates from adata.X via SVD")
 
-        X = MatrixSource(adata, layer=layer).matrix
         k = max(3, n_components)
         svd_result = run_svd(
-            X,
+            adata,
             n_components=k,
+            layer=layer,
             algorithm=None,
             max_iter=0,
             seed=seed,
@@ -1140,74 +1072,74 @@ def layout_network(
 
 
 def run_svd(
-    X: Union[np.ndarray, sp.spmatrix, Any],
+    X: Union[AnnData, np.ndarray, sp.spmatrix, Any],
     n_components: int = 30,
-    algorithm: Union[int] = None,
+    algorithm: Optional[str] = "auto",
     max_iter: int = 0,
     seed: int = 0,
     verbose: bool = True,
     return_operator_compatible: bool = True,
     backed_chunk_size: int = 4096,
+    layer: Optional[str] = None,
+    allow_compressed: bool = False,
 ) -> dict:
-    """
-    Compute truncated SVD decomposition.
+    """Compute truncated SVD decomposition."""
+    algorithm_name = _normalize_algorithm(algorithm, context="algorithm")
 
-    Transposes X internally (to features × cells) before decomposing, so the
-    caller should pass the matrix in its natural obs × vars orientation.
+    adata_ctx: Optional[AnnData] = X if isinstance(X, AnnData) else None
+    matrix = MatrixSource(X, layer=layer).matrix if isinstance(X, AnnData) else X
 
-    Parameters
-    ----------
-    X : numpy.ndarray, scipy.sparse matrix, or backed sparse dataset
-        Matrix to decompose (obs × vars, e.g. cells × genes).
-    n_components : int
-        Number of singular components to compute.
-    algorithm : int or None
-        SVD algorithm code (0=IRLB, 1=Halko, 2=Feng, 3=PRIMME).
-        None enables automatic selection.
-    max_iter : int
-        Maximum iterations (0 = auto).
-    seed : int
-        Random seed for reproducibility.
-    verbose : bool
-        Print progress messages.
-    return_operator_compatible : bool
-        If True (default), normalise output keys to ``{"u", "d", "v"}`` so the
-        result can be passed directly as ``precomputed_svd`` to :func:`reduce_kernel`.
-    backed_chunk_size : int
-        Chunk size for the operator path when X is a backed sparse dataset.
+    if _is_backed_matrix(matrix):
+        selected_algorithm = _select_svd_algorithm_backed(algorithm_name, verbose)
 
-    Returns
-    -------
-    dict
-        ``{"u": ndarray, "d": ndarray, "v": ndarray}`` — left singular vectors
-        (features × k), singular values (k,), and right singular vectors (cells × k).
-    """
+        temp_path: Optional[str] = None
+        op = None
+        try:
+            if adata_ctx is not None:
+                temp_path = _maybe_decompress_backed_path(
+                    adata_ctx,
+                    layer=layer,
+                    allow_compressed=allow_compressed,
+                    chunk_size=backed_chunk_size,
+                    verbose=verbose,
+                    context="run_svd",
+                )
+                file_path = temp_path if temp_path is not None else str(adata_ctx.filename)
+                group_path = _backed_group_path(layer)
+            else:
+                metadata = get_storage_metadata_from_matrix(matrix)
+                if not allow_compressed and is_compressed_storage(metadata):
+                    _warn_if_compressed_backed_svd(
+                        metadata,
+                        context="run_svd",
+                        recommendation="run_svd(..., allow_compressed=True) or pass a backed AnnData object for auto-decompression",
+                    )
+                file_path, group_path = _resolve_backed_handle(matrix)
 
-    if _is_backed_matrix(X):
-        _warn_if_compressed_backed_svd(
-            get_storage_metadata_from_matrix(X),
-            context="run_svd",
-            recommendation='actionet.decompress_backed_storage(adata, layer=None, scope="matrix")',
-        )
-        algorithm = 3
-        op = _TransposeMatrixOperator(X, chunk_size=backed_chunk_size)
-        result = _core.run_svd_operator(op, n_components, max_iter, seed, verbose)
-    elif sp.issparse(X):
-        if not sp.isspmatrix_csr(X):
-            X = X.tocsr()
-
-        algorithm = _select_svd_algorithm(X, algorithm, verbose)
-        result = _core.run_svd_sparse(X.T, n_components, max_iter, seed, algorithm, verbose)
+            op = _core.create_backed_operator(
+                file_path=file_path,
+                group_path=group_path,
+                chunk_size=backed_chunk_size,
+                row_scale_factors=None,
+                apply_log1p=False,
+            )
+            result = _core.run_svd_backed_operator(
+                op, n_components, max_iter, seed, selected_algorithm, verbose
+            )
+        finally:
+            op = None
+            if temp_path is not None and os.path.exists(temp_path):
+                os.remove(temp_path)
+    elif sp.issparse(matrix):
+        if not sp.isspmatrix_csr(matrix):
+            matrix = matrix.tocsr()
+        algorithm_id = _select_svd_algorithm_inmemory(matrix, algorithm_name, verbose)
+        result = _core.run_svd_sparse(matrix.T, n_components, max_iter, seed, algorithm_id, verbose)
     else:
-        algorithm = _select_svd_algorithm(X, algorithm, verbose)
-        result = _core.run_svd_dense(X.T, n_components, max_iter, seed, algorithm, verbose)
+        algorithm_id = _select_svd_algorithm_inmemory(matrix, algorithm_name, verbose)
+        result = _core.run_svd_dense(matrix.T, n_components, max_iter, seed, algorithm_id, verbose)
 
     if return_operator_compatible:
-        # Ensure fields expected by reduce_kernel(..., precomputed_svd=...) are always present.
-        result = {
-            "u": result["u"],
-            "d": result["d"],
-            "v": result["v"],
-        }
+        result = {"u": result["u"], "d": result["d"], "v": result["v"]}
 
     return result

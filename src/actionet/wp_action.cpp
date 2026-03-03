@@ -178,25 +178,13 @@ py::dict reduce_kernel_dense(py::array_t<double> S, int k = 50, int svd_alg = 0,
     return out;
 }
 
-py::dict reduce_kernel_operator(py::object op, int k = 50, int max_it = 0,
-                                int seed = 0, bool verbose = true) {
+py::dict reduce_kernel_operator(py::object op, int k = 50, int svd_alg = ALG_HALKO,
+                                int max_it = 0, int seed = 0, bool verbose = true) {
     PythonMatrixOperator mat_op(std::move(op));
-    actionet::KernelReductionResult res = actionet::reduceKernel_Operator(mat_op, k, max_it, seed, verbose);
+    actionet::KernelReductionResult res = actionet::reduceKernel_Operator(
+        mat_op, k, svd_alg, max_it, seed, verbose
+    );
     return kernel_result_to_dict(res);
-}
-
-// Helper to parse a flexible singular-value argument (1D, Nx1, or 1xN) into arma::vec.
-static arma::vec parse_sigma(py::object d) {
-    py::array_t<double, py::array::forcecast> d_arr = d.cast<py::array_t<double, py::array::forcecast>>();
-    py::buffer_info d_buf = d_arr.request();
-    auto* ptr = static_cast<double*>(d_buf.ptr);
-    if (d_buf.ndim == 1) {
-        return arma::vec(ptr, static_cast<arma::uword>(d_buf.shape[0]), true, true);
-    }
-    if (d_buf.ndim == 2 && (d_buf.shape[0] == 1 || d_buf.shape[1] == 1)) {
-        return arma::vec(ptr, static_cast<arma::uword>(d_buf.shape[0] * d_buf.shape[1]), true, true);
-    }
-    throw std::runtime_error("Expected singular values `d` to be a 1D vector or Nx1/1xN array");
 }
 
 py::dict reduce_kernel_from_svd_operator(py::object op, py::array_t<double> u, py::object d,
@@ -304,9 +292,9 @@ void init_action(py::module_ &m) {
           py::arg("S"), py::arg("k") = 50, py::arg("svd_alg") = 0,
           py::arg("max_it") = 0, py::arg("seed") = 0, py::arg("verbose") = true);
 
-    m.def("reduce_kernel_operator", &reduce_kernel_operator, "Reduce kernel (operator, PRIMME)",
-          py::arg("op"), py::arg("k") = 50, py::arg("max_it") = 0,
-          py::arg("seed") = 0, py::arg("verbose") = true);
+    m.def("reduce_kernel_operator", &reduce_kernel_operator, "Reduce kernel (generic operator)",
+          py::arg("op"), py::arg("k") = 50, py::arg("svd_alg") = ALG_HALKO,
+          py::arg("max_it") = 0, py::arg("seed") = 0, py::arg("verbose") = true);
 
     m.def("reduce_kernel_from_svd_operator", &reduce_kernel_from_svd_operator,
           "Reduce kernel from precomputed SVD (operator)",

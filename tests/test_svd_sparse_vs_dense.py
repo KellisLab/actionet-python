@@ -26,18 +26,12 @@ sys.path.insert(0, '../src')
 
 import actionet
 
-# SVD algorithm constants (from svd_main.hpp)
-ALG_IRLB = 0
-ALG_HALKO = 1
-ALG_FENG = 2
-ALG_PRIMME = 3
-
-# Dictionary mapping algorithm codes to names
+# Dictionary mapping algorithm keys to display names
 SVD_METHODS = {
-    ALG_IRLB: 'IRLB',
-    ALG_HALKO: 'Halko',
-    ALG_FENG: 'Feng',
-    ALG_PRIMME: 'PRIMME',
+    "irlb": "IRLB",
+    "halko": "Halko",
+    "feng": "Feng",
+    "primme": "PRIMME",
 }
 
 
@@ -128,7 +122,7 @@ def validate_reduction_keys(adata, key, n_components, label=""):
     return errors
 
 
-def test_svd_sparse_vs_dense(adata, method_code, method_name, n_components=30):
+def test_svd_sparse_vs_dense(adata, method_key, method_name, n_components=30):
     """Test a single SVD method with both sparse and dense inputs."""
     print(f"\n{'='*60}")
     print(f"Testing: {method_name} (Sparse vs Dense)")
@@ -153,7 +147,7 @@ def test_svd_sparse_vs_dense(adata, method_code, method_name, n_components=30):
             n_components=n_components,
             layer='logcounts',
             key_added='action_sparse',
-            svd_algorithm=method_code,
+            svd_algorithm=method_key,
             max_iter=0,
             seed=42,
             verbose=True,
@@ -197,7 +191,7 @@ def test_svd_sparse_vs_dense(adata, method_code, method_name, n_components=30):
             n_components=n_components,
             layer='logcounts',
             key_added='action_dense',
-            svd_algorithm=method_code,
+            svd_algorithm=method_key,
             max_iter=0,
             seed=42,
             verbose=True,
@@ -450,7 +444,7 @@ def test_primme_backed_mode(adata, n_components=30):
                 n_components=n_components,
                 layer=None,  # Use .X which is backed
                 key_added='action_backed',
-                svd_algorithm=3,  # PRIMME
+                svd_algorithm="primme",
                 max_iter=0,
                 seed=42,
                 verbose=True,
@@ -518,7 +512,7 @@ def test_primme_backed_vs_inmemory(adata, n_components=30):
             n_components=n_components,
             layer='logcounts',
             key_added='action_primme',
-            svd_algorithm=3,
+            svd_algorithm="primme",
             max_iter=0,
             seed=42,
             verbose=True,
@@ -596,9 +590,9 @@ def main():
 
     # Test all SVD methods
     all_results = {}
-    for method_code, method_name in SVD_METHODS.items():
+    for method_key, method_name in SVD_METHODS.items():
         all_results[method_name] = test_svd_sparse_vs_dense(
-            adata, method_code, method_name, n_components
+            adata, method_key, method_name, n_components
         )
 
     # Summary

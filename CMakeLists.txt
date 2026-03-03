@@ -84,6 +84,7 @@ set(WRAPPER_SOURCES
     src/actionet/wp_network.cpp
     src/actionet/wp_annotation.cpp
     src/actionet/wp_decomposition.cpp
+    src/actionet/wp_io.cpp
     src/actionet/wp_tools.cpp
     src/actionet/wp_visualization.cpp
 )

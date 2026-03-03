@@ -53,18 +53,12 @@ sys.path.insert(0, '../src')
 
 import actionet
 
-# SVD algorithm constants (from svd_main.hpp)
-ALG_IRLB = 0
-ALG_HALKO = 1
-ALG_FENG = 2
-ALG_PRIMME = 3
-
-# Dictionary mapping algorithm codes to names
+# Dictionary mapping algorithm keys to display names
 SVD_METHODS = {
-    ALG_IRLB: 'IRLB',
-    ALG_HALKO: 'Halko',
-    ALG_FENG: 'Feng',
-    ALG_PRIMME: 'PRIMME',
+    "irlb": "IRLB",
+    "halko": "Halko",
+    "feng": "Feng",
+    "primme": "PRIMME",
 }
 
 # Colors for visualization
@@ -139,14 +133,14 @@ def load_and_prepare_data():
     return adata
 
 
-def benchmark_svd_method(adata, method_code, method_name, input_type='sparse',
+def benchmark_svd_method(adata, method_key, method_name, input_type='sparse',
                          n_components=30, n_runs=3, detailed_memory=False):
     """
     Benchmark a single SVD method.
 
     Args:
         adata: AnnData object with preprocessed data
-        method_code: Integer code for SVD algorithm
+        method_key: String key for SVD algorithm
         method_name: Name of the method
         input_type: 'sparse' or 'dense'
         n_components: Number of components to compute
@@ -202,7 +196,7 @@ def benchmark_svd_method(adata, method_code, method_name, input_type='sparse',
                 n_components=n_components,
                 layer='logcounts',
                 key_added=f'action_benchmark',
-                svd_algorithm=method_code,
+                svd_algorithm=method_key,
                 max_iter=0,  # Use default
                 seed=42,
                 verbose=False,
@@ -314,7 +308,7 @@ def benchmark_primme_backed(adata, n_components=30, n_runs=3, backed_chunk_size=
                     n_components=n_components,
                     layer=None,
                     key_added='action_benchmark',
-                    svd_algorithm=3,
+                    svd_algorithm="primme",
                     max_iter=0,
                     seed=42,
                     verbose=False,
@@ -373,11 +367,11 @@ def run_all_benchmarks(adata, n_components=30, n_runs=3, detailed_memory=False,
 
     all_results = []
 
-    for method_code, method_name in SVD_METHODS.items():
+    for method_key, method_name in SVD_METHODS.items():
         for input_type in ['sparse', 'dense']:
             result = benchmark_svd_method(
                 adata,
-                method_code,
+                method_key,
                 method_name,
                 input_type=input_type,
                 n_components=n_components,

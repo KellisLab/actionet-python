@@ -506,8 +506,8 @@ def test_normalize_layer_added_backed_persists_after_reopen(tmp_path):
         reopened.file.close()
 
 
-def test_reduce_kernel_warns_on_compressed_backed_matrix(tmp_path):
-    """Backed reduce_kernel warns when storage is compressed."""
+def test_reduce_kernel_autodecompresses_compressed_backed_matrix(tmp_path):
+    """Backed reduce_kernel auto-decompresses compressed storage by default."""
     adata = _open_backed_with_compression(
         tmp_path,
         make_test_adata(n_cells=64, n_genes=48, sparse_fmt="csr", seed=70),
@@ -522,16 +522,18 @@ def test_reduce_kernel_warns_on_compressed_backed_matrix(tmp_path):
         inplace=True,
     )
 
-    with pytest.warns(UserWarning, match="decompress_backed_storage"):
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
         an.reduce_kernel(
             adata,
             n_components=6,
             key_added="action",
-            svd_algorithm=3,
+            svd_algorithm="primme",
             backed_chunk_size=24,
             verbose=False,
             inplace=True,
         )
+    assert not any("insufficient disk" in str(w.message).lower() for w in caught)
 
 
 def test_reduce_kernel_no_warning_on_uncompressed_backed_matrix(tmp_path):
@@ -555,7 +557,7 @@ def test_reduce_kernel_no_warning_on_uncompressed_backed_matrix(tmp_path):
             adata,
             n_components=6,
             key_added="action",
-            svd_algorithm=3,
+            svd_algorithm="primme",
             backed_chunk_size=24,
             verbose=False,
             inplace=True,

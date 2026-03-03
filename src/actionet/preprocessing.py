@@ -73,6 +73,7 @@ def normalize_anndata(
     log_base: Optional[float] = None,
     layer: str | None = None,
     backed_chunk_size: int = 4096,
+    dtype_out: str = "float32",
     inplace: bool = True,
     layer_added: str | None = None,
 ) -> Optional[AnnData]:
@@ -102,6 +103,8 @@ def normalize_anndata(
     backed_chunk_size : int, optional (default: 4096)
         Number of rows per chunk when operating on backed AnnData.
         Ignored for in-memory objects.
+    dtype_out : str, optional (default: "float32")
+        Output dtype for backed normalization blocks.
     inplace : bool, optional (default: True)
         If ``True``, normalize in place and return ``None``; otherwise
         return a modified copy.
@@ -129,6 +132,8 @@ def normalize_anndata(
         raise ValueError("log_base must be positive.")
     if layer_added is not None and layer is not None and layer_added == layer:
         raise ValueError("`layer_added` must differ from `layer`.")
+
+    out_dtype = np.dtype(dtype_out)
 
     if not inplace:
         if getattr(adata, "isbacked", False):
@@ -158,6 +163,7 @@ def normalize_anndata(
                 log_transform=log_transform,
                 log_base=log_base,
                 chunk_size=backed_chunk_size,
+                dtype_out=out_dtype,
             )
         else:
             adata.layers[layer_added] = _normalize_matrix_in_memory(
@@ -178,7 +184,14 @@ def normalize_anndata(
         else:
             adata.layers[layer] = normalized
     else:
-        _normalize_backed(source, target_sum, log_transform, log_base, backed_chunk_size)
+        _normalize_backed(
+            source,
+            target_sum,
+            log_transform,
+            log_base,
+            backed_chunk_size,
+            out_dtype,
+        )
 
     if inplace:
         return None
@@ -252,6 +265,7 @@ def _normalize_backed(
     log_transform: bool,
     log_base: Optional[float],
     chunk_size: int,
+    dtype_out: np.dtype,
 ) -> None:
     """Normalize a backed AnnData matrix using chunked streaming I/O."""
     row_sums = source.row_sums(chunk_size=chunk_size)
@@ -265,22 +279,11 @@ def _normalize_backed(
     if log_transform:
         log_scale = 1.0 if log_base is None else 1.0 / np.log(log_base)
 
-        if source.is_sparse:
-            global_min = source.global_min(chunk_size=chunk_size)
-            if global_min < 0:
-                import warnings
-                warnings.warn(
-                    f"Matrix contains negative values (min={global_min:.4g}). "
-                    "log1p is only meaningful for non-negative data; "
-                    "results may contain NaN.",
-                    stacklevel=2,
-                )
-
         def _normalize_block(block, start: int, end: int):
             scale = scaling[start:end]
             if issparse(block):
                 block = block.tocsr(copy=True)
-                block = block.astype(np.float64, copy=False)
+                block = block.astype(dtype_out, copy=False)
                 if block.nnz > 0:
                     row_nnz = np.diff(block.indptr)
                     block.data *= np.repeat(scale, row_nnz)
@@ -288,7 +291,7 @@ def _normalize_backed(
                     if log_scale != 1.0:
                         block.data *= log_scale
                 return block
-            arr = np.asarray(block, dtype=np.float64)
+            arr = np.asarray(block, dtype=dtype_out)
             arr *= scale[:, np.newaxis]
             np.log1p(arr, out=arr)
             if log_scale != 1.0:
@@ -299,12 +302,12 @@ def _normalize_backed(
             scale = scaling[start:end]
             if issparse(block):
                 block = block.tocsr(copy=True)
-                block = block.astype(np.float64, copy=False)
+                block = block.astype(dtype_out, copy=False)
                 if block.nnz > 0:
                     row_nnz = np.diff(block.indptr)
                     block.data *= np.repeat(scale, row_nnz)
                 return block
-            arr = np.asarray(block, dtype=np.float64)
+            arr = np.asarray(block, dtype=dtype_out)
             arr *= scale[:, np.newaxis]
             return arr
 
@@ -590,40 +593,53 @@ def _write_sparse_subsetted(
                 block = block[:, var_idx]
             yield sp.csr_matrix(block)
 
-    # Pass 1: determine final nnz and output dtypes without materializing all blocks.
-    total_nnz = 0
-    data_dtype = np.float64
+    blocks = _iter_blocks()
+    first_block = next(blocks, None)
+    data_dtype = source_mat.dtype if hasattr(source_mat, "dtype") else np.float64
     indices_dtype = np.int32
-    for block in _iter_blocks():
-        block_nnz = int(block.nnz)
-        total_nnz += block_nnz
-        if block_nnz > 0:
-            data_dtype = block.data.dtype
-            indices_dtype = block.indices.dtype
+    initial_capacity = 1024
+    if first_block is not None and first_block.nnz > 0:
+        data_dtype = first_block.data.dtype
+        indices_dtype = first_block.indices.dtype
+        initial_capacity = max(initial_capacity, int(first_block.nnz) * 2)
 
     grp = f.create_group(h5_key)
     data_ds = grp.create_dataset(
         "data",
-        shape=(total_nnz,),
+        shape=(initial_capacity,),
+        maxshape=(None,),
         dtype=data_dtype,
         **_sparse_dataset_compression_kwargs(compression_policy, "data"),
     )
     indices_ds = grp.create_dataset(
         "indices",
-        shape=(total_nnz,),
+        shape=(initial_capacity,),
+        maxshape=(None,),
         dtype=indices_dtype,
         **_sparse_dataset_compression_kwargs(compression_policy, "indices"),
     )
 
-    # Pass 2: stream-write CSR payloads and build indptr in-memory (O(n_obs)).
+    # Single-pass stream write with extensible datasets.
     indptr = np.zeros(n_out + 1, dtype=np.int64)
     row_pos = 0
     nnz_pos = 0
-    for block in _iter_blocks():
+
+    def _ensure_capacity(required: int) -> None:
+        if required <= data_ds.shape[0]:
+            return
+        new_size = data_ds.shape[0]
+        while new_size < required:
+            new_size = max(new_size * 2, required)
+        data_ds.resize((new_size,))
+        indices_ds.resize((new_size,))
+
+    def _write_block(block: sp.csr_matrix) -> None:
+        nonlocal row_pos, nnz_pos
         n_rows = block.shape[0]
         block_nnz = int(block.nnz)
 
         if block_nnz > 0:
+            _ensure_capacity(nnz_pos + block_nnz)
             data_ds[nnz_pos:nnz_pos + block_nnz] = block.data
             indices_ds[nnz_pos:nnz_pos + block_nnz] = block.indices
 
@@ -633,6 +649,14 @@ def _write_sparse_subsetted(
 
         row_pos += n_rows
         nnz_pos += block_nnz
+
+    if first_block is not None:
+        _write_block(first_block)
+    for block in blocks:
+        _write_block(block)
+
+    data_ds.resize((nnz_pos,))
+    indices_ds.resize((nnz_pos,))
 
     grp.create_dataset(
         "indptr",
