@@ -477,7 +477,8 @@ def annotate_cells(
 def annotate_clusters(
     adata: AnnData,
     markers: Union[Dict[str, List[str]], pd.DataFrame, np.ndarray],
-    cluster_key: str = "cluster",
+    cluster_key: str = None,
+    specificity_key: Optional[str] = None,
     features_use: Optional[str] = None,
     layer: Optional[str] = None,
     n_threads: int = 0,
@@ -488,8 +489,8 @@ def annotate_clusters(
 
     This function assigns cell type labels to clusters by computing enrichment
     of marker gene sets within cluster-specific gene expression profiles. If
-    cluster feature specificity has not been pre-computed, it will be calculated
-    automatically.
+    a pre-computed feature specificity result is provided, it will be used
+    instead of computing it from the cluster labels.
 
     Parameters
     ----------
@@ -500,8 +501,12 @@ def annotate_clusters(
         - dict: Keys are cell types, values are lists of marker genes
         - DataFrame: Wide format with columns as cell types, values as gene names
         - ndarray: Binary/weighted matrix (features × cell types)
-    cluster_key : str, optional (default: "cluster")
-        Key in adata.obs containing cluster labels.
+    cluster_key : str, optional (default: None)
+        Key in adata.obs containing cluster labels. Also used to extract cluster assignments
+        for computing feature specificity (if not pre-computed).
+    specificity_key : str, optional (default: None)
+        Base key in adata.varm for pre-computed feature specificity matrices from `compute_feature_specificity()`.
+        If None, computes feature specificity de novo from cluster_key.
     features_use : str, optional
         Column name in adata.var containing feature labels matching markers.
         If None, uses adata.var_names.
@@ -528,49 +533,66 @@ def annotate_clusters(
 
     Examples
     --------
-    >>> # Define markers and annotate (feature specificity computed automatically)
+    >>> # Example 1: Automatic computation (default, specificity_key=None)
     >>> markers = {
     ...     "T cells": ["CD3D", "CD3E", "CD3G"],
     ...     "B cells": ["CD19", "MS4A1", "CD79A"],
     ...     "Monocytes": ["CD14", "FCGR3A"]
     ... }
-    >>> result = annotate_clusters(adata, markers, cluster_key="cluster")
-    >>> cluster_labels = result["labels"]  # Annotation for each cluster
-    >>> cluster_confidence = result["confidence"]  # Confidence for each cluster
-    >>> cluster_names = result["cluster_names"]  # Original cluster names
+    >>> result = annotate_clusters(adata, markers, cluster_key="leiden")
+    >>> # Feature specificity computed de novo from adata.obs["leiden"]
 
-    >>> # Create a mapping from cluster name to annotation
+    >>> # Example 2: Using pre-computed specificity
+    >>> # First compute and store specificity
+    >>> from actionet import compute_feature_specificity
+    >>> compute_feature_specificity(adata, "leiden", key_added="leiden_spec")
+    >>> # Now use it for annotation
+    >>> result = annotate_clusters(adata, markers, specificity_key="leiden_spec")
+    >>> # Uses adata.varm["leiden_spec_upper"] and adata.varm["leiden_spec_lower"]
+
+    >>> # Map annotations to cells
+    >>> cluster_to_annotation = dict(zip(result["cluster_names"], result["labels"]))
+    >>> adata.obs["cell_type"] = adata.obs["leiden"].map(cluster_to_annotation)
+
+    >>> # Create enrichment DataFrame
     >>> import pandas as pd
-    >>> cluster_annotation_map = pd.DataFrame({
-    ...     "cluster": cluster_names,
-    ...     "annotation": cluster_labels,
-    ...     "confidence": cluster_confidence
-    ... })
-
-    >>> # Map annotations back to cells
-    >>> cluster_to_annotation = dict(zip(cluster_names, cluster_labels))
-    >>> adata.obs["cell_type"] = adata.obs["cluster"].map(cluster_to_annotation)
-
-    >>> # Access the enrichment matrix (clusters × cell types)
-    >>> enrichment = result["enrichment"]  # Row i corresponds to cluster_names[i]
-
-    >>> # Note: For integer clusters with non-contiguous values (e.g., [1,2,5,8]),
-    >>> # cluster_names will be [0,1,2,3,4,5,6,7,8] to match the C++ sparse array.
-    >>> # Filter to only the clusters that actually have cells for mapping.
+    >>> enrichment_df = pd.DataFrame(
+    ...     result["enrichment"],
+    ...     index=result["cluster_names"],
+    ...     columns=list(markers.keys())
+    ... )
     """
-    # Check if cluster labels exist
-    if cluster_key not in adata.obs:
-        raise ValueError(f"Cluster key '{cluster_key}' not found in adata.obs")
+    # Check if we have pre-computed specificity or need to compute it
+    if specificity_key is not None:
+        # Use pre-computed feature specificity
+        upper_key = f"{specificity_key}_upper"
+        lower_key = f"{specificity_key}_lower"
 
-    cluster_labels = adata.obs[cluster_key].values
+        if upper_key not in adata.varm or lower_key not in adata.varm:
+            raise ValueError(
+                f"Pre-computed specificity not found. Expected '{upper_key}' and '{lower_key}' "
+                f"in adata.varm. Available keys: {list(adata.varm.keys())}"
+            )
 
-    # Normalize to plain array to ensure consistent ordering (matching compute_feature_specificity)
-    if hasattr(cluster_labels, 'categories'):
-        cluster_labels = np.asarray(cluster_labels)
+        upper_sig = adata.varm[upper_key]
+        lower_sig = adata.varm[lower_key]
+        cluster_feat_spec = upper_sig - lower_sig
+        cluster_feat_spec[cluster_feat_spec < 0] = 0
 
-    # Check if cluster feature specificity exists, if not compute it
-    specificity_key = f"{cluster_key}_feat_spec"
-    if specificity_key not in adata.varm:
+        # For pre-computed specificity, we need cluster labels to determine cluster names
+        if cluster_key not in adata.obs.columns:
+            raise ValueError(
+                f"Cluster key '{cluster_key}' not found in adata.obs. "
+                f"Needed to determine cluster names for pre-computed specificity."
+            )
+        cluster_labels = adata.obs[cluster_key].values
+    else:
+        # Compute feature specificity de novo
+        if cluster_key not in adata.obs.columns:
+            raise ValueError(f"Cluster key '{cluster_key}' not found in adata.obs")
+
+        cluster_labels = adata.obs[cluster_key].values
+
         # Compute feature specificity on the fly using return_raw to avoid expensive AnnData copy
         result = compute_feature_specificity(
             adata,
@@ -585,8 +607,10 @@ def annotate_clusters(
         lower_sig = result["lower_significance"]
         cluster_feat_spec = upper_sig - lower_sig
         cluster_feat_spec[cluster_feat_spec < 0] = 0
-    else:
-        cluster_feat_spec = adata.varm[specificity_key]
+
+    # Normalize cluster labels to plain array to ensure consistent ordering
+    if hasattr(cluster_labels, 'categories'):
+        cluster_labels = np.asarray(cluster_labels)
 
     # Get cluster names in the same order as the feature specificity matrix columns
     # This matches the logic in compute_feature_specificity
