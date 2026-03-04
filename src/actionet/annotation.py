@@ -474,6 +474,190 @@ def annotate_cells(
     return result
 
 
+def annotate_clusters(
+    adata: AnnData,
+    markers: Union[Dict[str, List[str]], pd.DataFrame, np.ndarray],
+    cluster_key: str = "cluster",
+    features_use: Optional[str] = None,
+    layer: Optional[str] = None,
+    n_threads: int = 0,
+    backed_chunk_size: int = 4096,
+) -> Dict[str, np.ndarray]:
+    """
+    Annotate clusters using known marker genes.
+
+    This function assigns cell type labels to clusters by computing enrichment
+    of marker gene sets within cluster-specific gene expression profiles. If
+    cluster feature specificity has not been pre-computed, it will be calculated
+    automatically.
+
+    Parameters
+    ----------
+    adata : AnnData
+        Annotated data matrix.
+    markers : dict, DataFrame, or ndarray
+        Marker genes specification. Can be:
+        - dict: Keys are cell types, values are lists of marker genes
+        - DataFrame: Wide format with columns as cell types, values as gene names
+        - ndarray: Binary/weighted matrix (features × cell types)
+    cluster_key : str, optional (default: "cluster")
+        Key in adata.obs containing cluster labels.
+    features_use : str, optional
+        Column name in adata.var containing feature labels matching markers.
+        If None, uses adata.var_names.
+    layer : str, optional
+        Layer to use for expression data when computing feature specificity.
+        If None, uses adata.X. Only used if feature specificity needs to be computed.
+    n_threads : int, optional (default: 0)
+        Number of threads (0 = auto).
+    backed_chunk_size : int, optional (default: 4096)
+        Number of rows per chunk when streaming backed AnnData.
+        Only used if feature specificity needs to be computed.
+
+    Returns
+    -------
+    dict
+        Dictionary with keys:
+        - "labels": Inferred cell type labels for each cluster (array of length n_clusters)
+        - "confidence": Confidence scores for labels (array of length n_clusters)
+        - "enrichment": Enrichment score matrix (n_clusters × n_celltypes)
+        - "cluster_names": Cluster names in the same order as labels/confidence/enrichment rows.
+          For string clusters: lexicographically sorted unique cluster values.
+          For integer clusters with sparse values (e.g., [1,2,5,8]): array indices [0,1,2,3,4,5,6,7,8]
+          matching the C++ backend's sparse representation.
+
+    Examples
+    --------
+    >>> # Define markers and annotate (feature specificity computed automatically)
+    >>> markers = {
+    ...     "T cells": ["CD3D", "CD3E", "CD3G"],
+    ...     "B cells": ["CD19", "MS4A1", "CD79A"],
+    ...     "Monocytes": ["CD14", "FCGR3A"]
+    ... }
+    >>> result = annotate_clusters(adata, markers, cluster_key="cluster")
+    >>> cluster_labels = result["labels"]  # Annotation for each cluster
+    >>> cluster_confidence = result["confidence"]  # Confidence for each cluster
+    >>> cluster_names = result["cluster_names"]  # Original cluster names
+
+    >>> # Create a mapping from cluster name to annotation
+    >>> import pandas as pd
+    >>> cluster_annotation_map = pd.DataFrame({
+    ...     "cluster": cluster_names,
+    ...     "annotation": cluster_labels,
+    ...     "confidence": cluster_confidence
+    ... })
+
+    >>> # Map annotations back to cells
+    >>> cluster_to_annotation = dict(zip(cluster_names, cluster_labels))
+    >>> adata.obs["cell_type"] = adata.obs["cluster"].map(cluster_to_annotation)
+
+    >>> # Access the enrichment matrix (clusters × cell types)
+    >>> enrichment = result["enrichment"]  # Row i corresponds to cluster_names[i]
+
+    >>> # Note: For integer clusters with non-contiguous values (e.g., [1,2,5,8]),
+    >>> # cluster_names will be [0,1,2,3,4,5,6,7,8] to match the C++ sparse array.
+    >>> # Filter to only the clusters that actually have cells for mapping.
+    """
+    # Check if cluster labels exist
+    if cluster_key not in adata.obs:
+        raise ValueError(f"Cluster key '{cluster_key}' not found in adata.obs")
+
+    cluster_labels = adata.obs[cluster_key].values
+
+    # Normalize to plain array to ensure consistent ordering (matching compute_feature_specificity)
+    if hasattr(cluster_labels, 'categories'):
+        cluster_labels = np.asarray(cluster_labels)
+
+    # Check if cluster feature specificity exists, if not compute it
+    specificity_key = f"{cluster_key}_feat_spec"
+    if specificity_key not in adata.varm:
+        # Compute feature specificity on the fly using return_raw to avoid expensive AnnData copy
+        result = compute_feature_specificity(
+            adata,
+            cluster_labels,
+            layer=layer,
+            n_threads=n_threads,
+            backed_chunk_size=backed_chunk_size,
+            return_raw=True,
+        )
+        # Combine upper and lower to get feature specificity
+        upper_sig = result["upper_significance"]
+        lower_sig = result["lower_significance"]
+        cluster_feat_spec = upper_sig - lower_sig
+        cluster_feat_spec[cluster_feat_spec < 0] = 0
+    else:
+        cluster_feat_spec = adata.varm[specificity_key]
+
+    # Get cluster names in the same order as the feature specificity matrix columns
+    # This matches the logic in compute_feature_specificity
+    from pandas import Categorical
+    from pandas.api.types import is_integer_dtype
+
+    n_clusters = cluster_feat_spec.shape[1]
+
+    if not is_integer_dtype(cluster_labels):
+        # For string/categorical labels: use lexicographic ordering (from Categorical)
+        cat = Categorical(cluster_labels)
+        cluster_names = np.asarray(cat.categories)
+    else:
+        # For integer labels: C++ backend may create sparse array with max(label)+1 columns
+        # We need to match the actual column count of the specificity matrix
+        if n_clusters == len(np.unique(cluster_labels)):
+            # Contiguous or small range: use actual unique values
+            cluster_names = np.unique(cluster_labels)
+        else:
+            # Sparse integer range: create array matching matrix columns (0 to n_clusters-1)
+            cluster_names = np.arange(n_clusters)
+
+    # Get feature labels
+    if features_use is None:
+        feature_set = adata.var_names.values
+    else:
+        if features_use not in adata.var.columns:
+            raise ValueError(f"Column '{features_use}' not found in adata.var")
+        feature_set = adata.var[features_use].values
+
+    # Encode markers into binary/weighted matrix
+    marker_mat, celltype_names = _encode_markers(markers, feature_set)
+
+    # Convert to dense if sparse
+    if issparse(cluster_feat_spec):
+        cluster_feat_spec = cluster_feat_spec.toarray()
+
+    # Convert marker_mat to sparse for efficiency
+    if not issparse(marker_mat):
+        marker_mat = csr_matrix(marker_mat)
+
+    # Compute enrichment using C++ backend
+    # assess_enrichment expects (features × annotations) for both inputs
+    # Returns dict with "logPvals" and "thresholds"
+    enrichment_result = _core.assess_enrichment(
+        cluster_feat_spec,  # features × clusters
+        marker_mat,         # features × celltypes
+        n_threads
+    )
+
+    # enrichment_result["logPvals"] is clusters × celltypes
+    log_pvals = enrichment_result["logPvals"].T  # Transpose to clusters × celltypes
+
+    # Handle non-finite values
+    log_pvals = np.nan_to_num(log_pvals, nan=0.0, posinf=0.0, neginf=0.0)
+
+    # Assign labels based on highest enrichment
+    labels_idx = np.argmax(log_pvals, axis=1)
+    confidence = np.max(log_pvals, axis=1)
+
+    # Convert indices to label names
+    labels = np.array([celltype_names[i] for i in labels_idx])
+
+    return {
+        "labels": labels,
+        "confidence": confidence,
+        "enrichment": log_pvals,
+        "cluster_names": cluster_names,
+    }
+
+
 def _encode_markers(
     markers: Union[Dict[str, List[str]], pd.DataFrame, np.ndarray],
     feature_set: np.ndarray,

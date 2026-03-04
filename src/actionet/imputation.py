@@ -125,7 +125,6 @@ def impute_features(
         H = smooth_out["H"]
         X_imputed = (W @ H.T).T
     else:
-        # X0_T = X0.T
         X_imputed = _core.compute_network_diffusion(
             G, X0.T, alpha, max_iter, n_threads, True, norm_method_code, 1e-8
         )

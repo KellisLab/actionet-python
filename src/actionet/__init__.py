@@ -49,6 +49,7 @@ from .advanced import (
 from .annotation import (
     find_markers,
     annotate_cells,
+    annotate_clusters,
 )
 from .visualization import (
     compute_node_colors,
@@ -109,6 +110,7 @@ __all__ = [
     # Annotation
     "find_markers",
     "annotate_cells",
+    "annotate_clusters",
     # Visualization
     "compute_node_colors",
     "plot_feature_expression",

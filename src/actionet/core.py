@@ -759,7 +759,8 @@ def compute_feature_specificity(
     key_added: str = "specificity",
     inplace: bool = True,
     backed_chunk_size: int = 4096,
-) -> Optional[AnnData]:
+    return_raw: bool = False,
+) -> Optional[Union[AnnData, dict]]:
     """
     Compute feature specificity scores for clusters/archetypes.
 
@@ -780,13 +781,18 @@ def compute_feature_specificity(
     backed_chunk_size : int, optional (default: 4096)
         Number of rows per chunk for streamed specificity computation on
         backed AnnData.  Ignored for in-memory objects.
+    return_raw : bool, optional (default: False)
+        If True, returns raw results dict without modifying adata.
+        Useful for temporary computations to avoid expensive AnnData copies.
 
     Returns
     -------
-    None or AnnData
-        If inplace=True, returns None and modifies adata in place. If inplace=False, returns a new AnnData object with the results.
+    None, AnnData, or dict
+        - If return_raw=True: returns dict with keys "average_profile", "upper_significance", "lower_significance"
+        - If inplace=True and return_raw=False: returns None and modifies adata in place
+        - If inplace=False and return_raw=False: returns a new AnnData object with the results
 
-    Updates AnnData
+    Updates AnnData (if return_raw=False)
     --------------
     adata.varm[f"{key_added}_profile"] : np.ndarray
         Average feature profile per cluster/archetype (features × clusters).
@@ -795,7 +801,7 @@ def compute_feature_specificity(
     adata.varm[f"{key_added}_lower"] : np.ndarray
         Lower-tail significance scores (features × clusters).
     """
-    if not inplace:
+    if not inplace and not return_raw:
         adata = adata.copy()
 
     source = MatrixSource(adata, layer=layer)
@@ -834,6 +840,9 @@ def compute_feature_specificity(
             result = _core.compute_feature_specificity_sparse(S, labels_int, n_threads)
         else:
             result = _core.compute_feature_specificity_dense(S, labels_int, n_threads)
+
+    if return_raw:
+        return result
 
     persist_updates(
         adata,
