@@ -2,10 +2,111 @@
 // Conversion functions between Python and C++ data structures
 
 #include "wp_utils.h"
+#include <algorithm>
+#include <cstdint>
 #include <cstring>
 #include <limits>
 #include <stdexcept>
 #include <string>
+#include <vector>
+
+namespace {
+
+py::ssize_t checked_py_size(arma::uword value, const char* name) {
+    if (value > static_cast<arma::uword>(std::numeric_limits<py::ssize_t>::max())) {
+        throw std::runtime_error(std::string(name) + " exceeds Python array limits");
+    }
+    return static_cast<py::ssize_t>(value);
+}
+
+template <typename IndexT>
+bool fits_sparse_index_type(const arma::sp_mat& sp_mat) {
+    constexpr arma::uword index_max = static_cast<arma::uword>(std::numeric_limits<IndexT>::max());
+    return sp_mat.n_rows <= index_max && sp_mat.n_cols <= index_max && sp_mat.n_nonzero <= index_max;
+}
+
+py::object arma_sparse_to_scipy_legacy(const arma::sp_mat& sp_mat) {
+    py::module_ scipy_sparse = py::module_::import("scipy.sparse");
+
+    std::vector<double> data;
+    std::vector<py::ssize_t> rows;
+    std::vector<py::ssize_t> cols;
+
+    data.reserve(static_cast<size_t>(sp_mat.n_nonzero));
+    rows.reserve(static_cast<size_t>(sp_mat.n_nonzero));
+    cols.reserve(static_cast<size_t>(sp_mat.n_nonzero));
+
+    for (arma::sp_mat::const_iterator it = sp_mat.begin(); it != sp_mat.end(); ++it) {
+        data.push_back(*it);
+        rows.push_back(static_cast<py::ssize_t>(it.row()));
+        cols.push_back(static_cast<py::ssize_t>(it.col()));
+    }
+
+    py::array_t<double> data_arr(data.size());
+    py::array_t<py::ssize_t> rows_arr(rows.size());
+    py::array_t<py::ssize_t> cols_arr(cols.size());
+
+    if (!data.empty()) {
+        std::memcpy(data_arr.mutable_data(), data.data(), data.size() * sizeof(double));
+        std::memcpy(rows_arr.mutable_data(), rows.data(), rows.size() * sizeof(py::ssize_t));
+        std::memcpy(cols_arr.mutable_data(), cols.data(), cols.size() * sizeof(py::ssize_t));
+    }
+
+    return scipy_sparse.attr("coo_matrix")(
+        py::make_tuple(
+            data_arr,
+            py::make_tuple(
+                rows_arr,
+                cols_arr
+            )
+        ),
+        py::make_tuple(sp_mat.n_rows, sp_mat.n_cols)
+    ).attr("tocsr")();
+}
+
+template <typename IndexT>
+py::object arma_sparse_to_scipy_csr_impl(const arma::sp_mat& sp_mat) {
+    py::module_ scipy_sparse = py::module_::import("scipy.sparse");
+
+    const py::ssize_t n_rows = checked_py_size(sp_mat.n_rows, "Sparse matrix row count");
+    const py::ssize_t n_cols = checked_py_size(sp_mat.n_cols, "Sparse matrix column count");
+    const py::ssize_t nnz = checked_py_size(sp_mat.n_nonzero, "Sparse matrix nnz");
+
+    py::array_t<double> data(nnz);
+    py::array_t<IndexT> indices(nnz);
+    py::array_t<IndexT> indptr(n_rows + 1);
+
+    double* data_ptr = data.mutable_data();
+    IndexT* indices_ptr = indices.mutable_data();
+    IndexT* indptr_ptr = indptr.mutable_data();
+
+    std::fill(indptr_ptr, indptr_ptr + n_rows + 1, IndexT{0});
+
+    for (arma::sp_mat::const_iterator it = sp_mat.begin(); it != sp_mat.end(); ++it) {
+        ++indptr_ptr[static_cast<py::ssize_t>(it.row()) + 1];
+    }
+
+    for (py::ssize_t row = 0; row < n_rows; ++row) {
+        indptr_ptr[row + 1] += indptr_ptr[row];
+    }
+
+    std::vector<IndexT> next_offset(static_cast<size_t>(n_rows));
+    std::copy(indptr_ptr, indptr_ptr + n_rows, next_offset.begin());
+
+    for (arma::sp_mat::const_iterator it = sp_mat.begin(); it != sp_mat.end(); ++it) {
+        const size_t row = static_cast<size_t>(it.row());
+        const IndexT dest = next_offset[row]++;
+        indices_ptr[dest] = static_cast<IndexT>(it.col());
+        data_ptr[dest] = *it;
+    }
+
+    return scipy_sparse.attr("csr_matrix")(
+        py::make_tuple(data, indices, indptr),
+        py::make_tuple(n_rows, n_cols)
+    );
+}
+
+} // namespace
 
 // Convert NumPy array to Armadillo dense matrix
 arma::mat numpy_to_arma_mat(py::array_t<double, py::array::c_style | py::array::forcecast> arr) {
@@ -104,28 +205,18 @@ py::array_t<double> arma_mat_to_numpy(const arma::mat& mat) {
 
 // Convert Armadillo sparse matrix to SciPy sparse matrix
 py::object arma_sparse_to_scipy(const arma::sp_mat& sp_mat) {
-    py::module scipy_sparse = py::module::import("scipy.sparse");
-
-    std::vector<double> data;
-    std::vector<py::ssize_t> rows;
-    std::vector<py::ssize_t> cols;
-
-    for (arma::sp_mat::const_iterator it = sp_mat.begin(); it != sp_mat.end(); ++it) {
-        data.push_back(*it);
-        rows.push_back(static_cast<py::ssize_t>(it.row()));
-        cols.push_back(static_cast<py::ssize_t>(it.col()));
+    try {
+        if (fits_sparse_index_type<std::int32_t>(sp_mat)) {
+            return arma_sparse_to_scipy_csr_impl<std::int32_t>(sp_mat);
+        }
+        return arma_sparse_to_scipy_csr_impl<std::int64_t>(sp_mat);
+    } catch (const py::error_already_set&) {
+        throw;
+    } catch (const std::exception&) {
+        // Preserve the legacy conversion path as a fallback while the direct CSR
+        // builder settles in.
+        return arma_sparse_to_scipy_legacy(sp_mat);
     }
-
-    return scipy_sparse.attr("coo_matrix")(
-        py::make_tuple(
-            py::array_t<double>(data.size(), data.data()),
-            py::make_tuple(
-                py::array_t<py::ssize_t>(rows.size(), rows.data()),
-                py::array_t<py::ssize_t>(cols.size(), cols.data())
-            )
-        ),
-        py::make_tuple(sp_mat.n_rows, sp_mat.n_cols)
-    ).attr("tocsr")();
 }
 
 // Convert NumPy vector to Armadillo vector
