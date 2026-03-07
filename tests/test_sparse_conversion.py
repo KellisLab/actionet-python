@@ -65,3 +65,63 @@ def test_build_network_returns_valid_csr_matrix():
     assert graph.nnz > 0
     assert graph.has_sorted_indices
     assert np.isfinite(graph.data).all()
+
+
+def test_build_network_knn_k1_retains_nearest_neighbor():
+    H = np.array(
+        [
+            [0.0],
+            [1.0],
+            [2.0],
+            [3.0],
+        ],
+        dtype=np.float64,
+    )
+    adata = ad.AnnData(np.zeros((H.shape[0], 1), dtype=np.float64))
+    adata.obsm["line"] = H
+
+    an.build_network(
+        adata,
+        algorithm="knn",
+        distance_metric="l2",
+        k=1,
+        mutual_edges_only=False,
+        n_threads=1,
+        obsm_key="line",
+        key_added="line_graph",
+    )
+    graph = adata.obsp["line_graph"].tocsr()
+
+    assert graph.nnz > 0
+    assert graph[0, 1] > 0
+
+
+def test_build_network_knn_line_support_matches_expected_neighbors():
+    H = np.array(
+        [
+            [0.0],
+            [1.0],
+            [2.0],
+            [3.0],
+            [4.0],
+            [5.0],
+        ],
+        dtype=np.float64,
+    )
+    adata = ad.AnnData(np.zeros((H.shape[0], 1), dtype=np.float64))
+    adata.obsm["line"] = H
+
+    an.build_network(
+        adata,
+        algorithm="knn",
+        distance_metric="l2",
+        k=4,
+        mutual_edges_only=False,
+        n_threads=1,
+        obsm_key="line",
+        key_added="line_graph",
+    )
+    graph = adata.obsp["line_graph"].tocsr()
+
+    support = set(graph[0].indices.tolist())
+    assert support == {1, 2, 3, 4}
