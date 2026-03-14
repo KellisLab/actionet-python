@@ -32,6 +32,11 @@ Completed in this pass:
   - orphaned `C_buildNetworkFast` Roxygen block removed from `src/wr_network.cpp`; the stale
     block had been mis-attached to `C_runLPA` in the generated `RcppExports.R` — fixed by
     re-running `Rcpp::compileAttributes()`
+  - `C_buildNetwork` wrapper now accepts `Rcpp::NumericMatrix` and calls `buildNetworkCore`
+    directly; the `arma::mat` intermediate and `arma::fmat` staging copy are eliminated;
+    the col-major double→row-major float32 conversion is inlined in the wrapper
+  - `ef` default corrected from 50 to 200 to match all other callers and the `BuildNetworkParams` default
+  - `Rcpp::compileAttributes()` re-run; `RcppExports.cpp` and `RcppExports.R` regenerated
   - `src/libactionet` submodule synced to all `libactionet` changes above
 - validation-only test scaffolding used during implementation has been removed
 
@@ -62,7 +67,7 @@ The shared design remains:
 | 4 | Python-only `float32` / row-major fast binding | `actionet-python` | Completed 2026-03-13 | Pybind calls `buildNetworkCore` directly; no Python transpose copy. |
 | 5 | Direct sparse conversion for Python | `actionet-python` | Completed 2026-03-13 | Network path converts `CSRGraph` directly to SciPy CSR; `forcecast` on sparse input data. |
 | 6 | Backed dense `obsm` reader and direct `obsp` writer | `libactionet` + `actionet-python` | Pending | Still the main missing piece for truly out-of-core network construction. |
-| 7 | R handling of new core path | `actionet-r` | Completed for cleanup; optimization deferred | Stale Roxygen comment fixed; generated exports regenerated. Public R API stays on the legacy shim. |
+| 7 | R handling of new core path | `actionet-r` | Completed 2026-03-13 | Completed 2026-03-13. C_buildNetwork now accepts Rcpp::NumericMatrix, inlines the col-major double→row-major float32 conversion, and calls buildNetworkCore + armaSpMatFromCSR directly. The arma::mat intermediate copy is eliminated. RcppExports regenerated. ef default corrected from 50 to 200. |
 | 8 | Adaptive `k*nn` rewrite for large N | `libactionet` + wrappers | Deferred | Correctness is fixed; scalability rewrite is still intentionally out of scope. |
 
 ### Implemented Details
@@ -139,16 +144,24 @@ Updated:
 - `src/wr_network.cpp`
 - `R/RcppExports.R`
 - `src/RcppExports.cpp`
+- `src/libactionet/wrappers_r/wr_network.cpp` (mirror of `libactionet`)
 - `src/libactionet/*` synced to the same `libactionet` changes
 
-Current R stance:
+Current R network path:
 
-- public `buildNetwork()` remains unchanged
+- `C_buildNetwork` accepts `Rcpp::NumericMatrix H` (col-major double, k × n_cells)
+- The wrapper inlines the col-major double → row-major float32 conversion that was
+  previously buried inside the `actionet::buildNetwork` shim
+- Calls `actionet::buildNetworkCore(ptr, n_points, dim, params)` directly
+- Calls `actionet::armaSpMatFromCSR(g)` to produce the `arma::sp_mat` return value
+- Eliminates: the `arma::mat` intermediate copy (k × n doubles) and the `std::vector<float>`
+  owned by the legacy shim — the only allocation on the hot path is the single float32 buffer
+  written in the wrapper's conversion loop
+- The `ef` default was corrected from 50 to 200, matching `BuildNetworkParams` and all other callers
+- Public R `buildNetwork()` in `network_tools.R` is unchanged
 - `C_buildNetworkFast` export was added and then removed in the same pass; the final
   `src/wr_network.cpp` contains only `C_buildNetwork` as the network export
-- the generated `RcppExports.R` and `RcppExports.cpp` are clean (no orphaned Roxygen blocks)
-- the real package stays on the legacy shim path; the core fast path is available for a
-  future optional R adoption (plan item 7)
+- The generated `RcppExports.R` and `RcppExports.cpp` are clean (no orphaned Roxygen blocks)
 
 ### CSR Type Layout and Graph Size Limits
 
@@ -191,8 +204,9 @@ width.
 
 `actionet-r`
 
-- `Rcpp::compileAttributes()` re-run; `C_runLPA` no longer carries the orphaned
-  `C_buildNetworkFast` Roxygen block
+- `Rcpp::compileAttributes()` re-run; `C_buildNetwork` declaration in `RcppExports.cpp`
+  updated from `const arma::mat&` to `Rcpp::NumericMatrix`; `ef` default corrected to 200
+- `C_runLPA` no longer carries the orphaned `C_buildNetworkFast` Roxygen block
 
 ### Remaining Work
 
