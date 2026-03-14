@@ -11,6 +11,7 @@
 // Armadillo includes (libactionet uses Armadillo)
 #include "armadillo"
 #include "decomposition/matrix_operator.hpp"
+#include "network/build_network_core.hpp"
 
 namespace py = pybind11;
 
@@ -25,6 +26,9 @@ py::array_t<double> arma_mat_to_numpy(const arma::mat& mat);
 
 // Convert Armadillo sparse matrix to SciPy sparse matrix
 py::object arma_sparse_to_scipy(const arma::sp_mat& sp_mat);
+
+// Convert libactionet CSRGraph to SciPy CSR sparse matrix.
+py::object csr_graph_to_scipy(const actionet::CSRGraph& graph);
 
 // Convert NumPy vector to Armadillo vector
 arma::vec numpy_to_arma_vec(py::array_t<double, py::array::c_style | py::array::forcecast> arr);

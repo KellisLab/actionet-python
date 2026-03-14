@@ -505,8 +505,14 @@ def build_network(
 
     H = adata.obsm[obsm_key]
 
-    # Ensure C-contiguous memory layout for C++ compatibility
-    H = np.ascontiguousarray(H.T)
+    # buildNetworkCore expects row-major (cells x features) float32 input.
+    H = np.ascontiguousarray(H, dtype=np.float32)
+
+    if not np.isfinite(H).all():
+        raise ValueError(
+            f"obsm['{obsm_key}'] contains NaN or Inf values. "
+            "Clean the input matrix before building a network."
+        )
 
     G = _core.build_network(
         H, algorithm, distance_metric, density, n_threads,

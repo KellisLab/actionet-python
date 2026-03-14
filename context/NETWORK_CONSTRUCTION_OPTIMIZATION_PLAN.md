@@ -1,121 +1,212 @@
 ## Cross-Repo Network Construction Optimization With R Compatibility
 
-### Summary
+### Status Snapshot (2026-03-13, updated post-bugfix)
 
-Key correction to the prior plan: no row-major dense or CSR-only result should become the shared replacement API for `libactionet`. The R side currently consumes column-major Armadillo types via the legacy `buildNetwork(const arma::mat&) -> arma::sp_mat` contract, so that contract must remain intact.
-
-The design should therefore split into:
-- a new internal/core fast builder that is layout-neutral and row-oriented for performance
-- a legacy compatibility wrapper in `libactionet` that still accepts column-major `arma::mat` and returns `arma::sp_mat` for R
-- a Python-only fast/based path that can use row-major `float32` input and direct CSR/HDF5 output without changing the R API
-
-### Ordered Implementation Plan
-
-| Order | Change | Repo(s) | Difficulty | Impact | Runtime Effect | R/API Impact |
-|---|---|---|---|---|---|---|
-| 1 | Large-N guardrails and pipeline knobs | `actionet-python` | Low | High | Strong positive by preventing catastrophic paths | No R code change. Update large-scale guidance in docs only. |
-| 2 | Expose network input choice in pipeline | `actionet-python` | Low | High | Strong positive when moving from `H_stacked` to `H_merged`/`action` | No R API change. If desired later, mirror only as an R-facing pipeline enhancement. |
-| 3 | New core internal `knn` builder with CSR scratch/output, but keep legacy Armadillo API | `libactionet` | Medium-High | Very High | Strong positive | Preserve `buildNetwork(const arma::mat&) -> arma::sp_mat` unchanged. R keeps using this wrapper path. |
-| 4 | Python-only `float32` / row-major fast binding | `actionet-python` + additive `libactionet` API | Medium | High | Strong positive | No change to R path. Row-major handling stays Python-specific. |
-| 5 | Direct CSR conversion for Python without COO roundtrip [completed 2026-03-07] | `actionet-python` | Medium | Medium-High | Positive | No R impact. |
-| 6 | Backed dense `obsm` reader and direct `obsp` writer | `libactionet` + `actionet-python` | High | Very High | Slightly slower on small data, essential at scale | No R API change. Python/HDF5-only path. |
-| 7 | Optional R adoption of new core fast path | `actionet-r` | Medium | Medium | Positive if adopted | Separate follow-up. Not required for initial rollout. |
-| 8 | Adaptive `k*nn` rewrite for large N | `libactionet` + wrappers | Very High | Conditional | Poor at scale even if memory-safe | Defer unless scientifically required. |
-
-### Implementation Details
-
-#### 1. Immediate operator-facing fixes
-- In `actionet-python`, add a Python-side `k*nn` preflight that estimates dense scratch and raises before entering C++ when the path is obviously unsafe.
-- In `run_actionet(...)`, add `network_obsm_key` so large runs can select `H_merged` or `action` instead of hard-coded `H_stacked`.
-- Document the recommended large-N bundle for both Python and R users:
-  - `algorithm="knn"`
-  - `k=10..15`
-  - `mutual_edges_only=True`
-  - moderate thread counts
-
-#### 2. Core refactor with R-safe compatibility layer
-- In `libactionet`, implement a new internal builder around a row-oriented reader abstraction and a compact sparse representation such as `CSRGraph32`.
-- Do not replace the existing public header contract in [`build_network.hpp`](/Users/sebastian/Documents/git_projects/actionet-python/src/libactionet/include/network/build_network.hpp#L23).
-- Instead, make the legacy `buildNetwork(const arma::mat&, ...)` an adapter:
-  - accepts column-major Armadillo input for R and existing callers
-  - calls the new internal builder
-  - converts the internal sparse result back to `arma::sp_mat`
-- This preserves R semantics and column-major expectations while still moving the heavy work onto a more scalable internal representation.
-
-#### 3. Python fast path without changing the R ABI
-- Add an additive fast API in `libactionet` specifically for Python/HPC use. It can accept row-major `float32` points or a reader object, but it must be additive, not a replacement for the legacy Armadillo API.
-- In `actionet-python`, update pybind to call this fast path directly from NumPy without:
-  - Python transpose-copy
-  - pybind `arma::mat` copy
-  - by-value `arma::mat` copy
-  - full `arma::fmat` staging copy
-- Keep this path Python-only. R continues using the legacy wrapper unless `actionet-r` explicitly opts into the new fast API later.
-
-#### 4. Python sparse result path
-- In `actionet-python`, convert the new sparse result directly to SciPy CSR from the core sparse buffers.
-- Remove the current `arma::sp_mat -> COO vectors -> NumPy arrays -> coo_matrix -> .tocsr()` roundtrip for the Python fast path.
-- Leave the legacy `arma::sp_mat` conversion path available for compatibility and debugging.
-
-Status: Completed in `actionet-python` on 2026-03-07.
-
-- [`src/actionet/wp_utils.cpp`](/Users/sebastian/Documents/git_projects/actionet-python/src/actionet/wp_utils.cpp) now converts `arma::sp_mat` to SciPy CSR directly from Armadillo's CSC buffers using a row-count, prefix-sum, and scatter pass, which removes the Python COO materialization and `.tocsr()` roundtrip.
-- The new converter chooses `int32` SciPy sparse indices when `n_rows`, `n_cols`, and `nnz` fit, and falls back to `int64` otherwise. This reduces Python-side sparse index memory for the common large-graph case without changing the R-facing `libactionet` API.
-- The previous COO-based converter remains in the wrapper as an internal fallback/debug path so the Python binding can fall back safely if the direct CSR builder raises.
-- Added [`tests/test_sparse_conversion.py`](/Users/sebastian/Documents/git_projects/actionet-python/tests/test_sparse_conversion.py) to cover both an exact sparse aggregation result and the `build_network(...)` sparse return path.
-- Validation was benchmarked in `.venv` during implementation and the temporary debug hooks were removed from `src/` afterward so no extra non-public binding surface remains. Median direct-vs-legacy conversion timings were:
-  - ring graph `n=10,000`, `nnz=200,000`: `0.544 ms` vs `1.360 ms` (`2.50x` faster)
-  - ring graph `n=50,000`, `nnz=1,000,000`: `3.084 ms` vs `9.722 ms` (`3.15x` faster)
-  - ring graph `n=100,000`, `nnz=2,000,000`: `6.962 ms` vs `17.675 ms` (`2.54x` faster)
-- Output parity was confirmed in `.venv` for both synthetic sparse matrices and actual `build_network()` results. The checked `build_network()` cases were:
-  - `n=2,000`, `d=32`, `k=10`: exact parity, conversion `0.130 ms` vs `0.219 ms`
-  - `n=10,000`, `d=32`, `k=10`: exact parity, conversion `0.598 ms` vs `0.957 ms`
-
-#### 5. Backed network construction
-- In `libactionet`, add a dense HDF5 reader for `/obsm/<key>` and a streaming sparse writer for `/obsp/<key>`.
-- Implement a new additive core entry point for backed `knn` only:
-  - read `obsm` in row batches
-  - build/query HNSW in batches
-  - store fixed-width directed neighbor scratch
-  - mutualize/symmetrize in a second pass
-  - write final CSR directly to HDF5
-- In `actionet-python`, dispatch to this path only for backed AnnData.
-- Default behavior for the public Python API stays backward compatible:
-  - `persist_only=False` by default
-  - for large runs, users can opt into `persist_only=True` to avoid reloading the graph into memory
-- `run_actionet()` should not switch to `persist_only=True` until downstream graph consumers are made backed-aware.
-
-#### 6. R-specific handling
-- `actionet-r` should not be forced to adopt any new data layout in the first rollout.
-- Mandatory R work for every `libactionet` phase:
-  - rebuild `actionet-r` against the new core
-  - verify `C_buildNetwork` still compiles and returns the same `arma::sp_mat`/Matrix semantics
-  - run one regression/parity test for graph construction behavior
-- Optional later optimization:
-  - expose the new core fast builder in `actionet-r`
-  - convert its sparse output to `arma::sp_mat` or `dgCMatrix`
-  - only do this once Python/HPC behavior is stable
-
-### Test and Acceptance Plan
+Completed in this pass:
 
 - `libactionet`
-  - Add parity tests between legacy `buildNetwork` and the new internal `knn` builder for `jsd`, `l2`, `ip`, and both symmetrization modes.
-  - Add tests for conversion from internal sparse buffers back to `arma::sp_mat`.
-  - Add backed HDF5 tests for `/obsm` input and `/obsp` output.
-
+  - new internal `buildNetworkCore(const float*, n, dim, params) → CSRGraph` entry point
+  - **critical bugfix**: `symmetrize_to_csr` now sorts directed edges by unordered pair key
+    `(min(u,v), max(u,v))` rather than `(src, dst)`; the prior sort interleaved forward and
+    reverse edges for any node with k > 1 neighbours, so the accumulation loop never saw both
+    directions together — with `mutual_edges_only=true` (the default) every edge was discarded
+    and all networks were empty sparse matrices
+  - fixed lossy `float` storage of HNSW neighbor labels in `k*nn`
+  - `CSRGraph` uses `uint32_t` vertex IDs and `uint64_t` indptr offsets; the split keeps
+    the dominant `indices` array at 4 bytes/entry while safely tracking nnz > 2 billion
+  - HNSW space and index objects are now owned by an `HnswIndex` RAII struct — the prior
+    per-call `SpaceInterface*` memory leak has been fixed
+  - legacy `buildNetwork(const arma::mat&) → arma::sp_mat` contract is unchanged; it is
+    now a thin shim that does one col-major-double → row-major-float32 pass then calls the core
 - `actionet-python`
-  - Add tests for `network_obsm_key` in `run_actionet`.
-  - Add tests for the `k*nn` preflight refusal.
-  - Add parity tests between legacy Python build path and the new fast path.
-  - Add backed tests verifying that direct-to-disk network writes reopen correctly.
-
+  - pybind binding calls `buildNetworkCore` directly from a NumPy float32 buffer (zero copy)
+  - `CSRGraph` is converted directly to SciPy CSR; `int32` indices when safe, `int64` otherwise
+  - `scipy_to_arma_sparse` now uses `forcecast` on the data array — float32 and integer
+    SciPy matrices no longer throw at the binding boundary
+  - `run_lpa` fixed-labels 1→0-index conversion now validates each value is ≥ 1 before
+    subtracting; bad input raises a clear `RuntimeError` instead of silently underflowing
+  - `build_network()` in `core.py` validates `np.isfinite(H)` before calling C++ — NaN/Inf
+    values in the obsm matrix now raise a `ValueError` instead of producing undefined HNSW behavior
+  - `src/libactionet` submodule synced to all `libactionet` changes above
 - `actionet-r`
-  - Rebuild against the updated `libactionet`.
-  - Add or run an integration test confirming `buildNetwork` output remains compatible with the existing R API and sparse matrix expectations.
+  - orphaned `C_buildNetworkFast` Roxygen block removed from `src/wr_network.cpp`; the stale
+    block had been mis-attached to `C_runLPA` in the generated `RcppExports.R` — fixed by
+    re-running `Rcpp::compileAttributes()`
+  - `src/libactionet` submodule synced to all `libactionet` changes above
+- validation-only test scaffolding used during implementation has been removed
 
-### Assumptions and Defaults
+Still pending:
 
-- Preserve the existing R-facing `libactionet` network API in the initial rollout.
-- Treat row-major dense input as a Python-only optimization detail, not a shared replacement ABI.
-- Treat CSRGraph32 or similar as an internal/additive core representation, not the only public result type.
-- Optimize `knn` first; keep `k*nn` guarded for large runs rather than rewriting it early.
-- `actionet-r` adoption of the new fast path is optional and separate from the initial performance program.
+- Python-side large-`k*nn` preflight / operator guardrails
+- pipeline-level `network_obsm_key` support in `run_actionet()`
+- backed `/obsm` reader + direct `/obsp` writer path
+- any true large-N rewrite of adaptive `k*nn`
+
+### Summary
+
+The shared design remains:
+
+- keep the legacy `libactionet` API used by R intact
+- use an additive internal core path for performance work
+- let Python call the core path directly with row-major `float32`
+- treat large-scale `knn` as the primary optimization target
+- keep `k*nn` behaviorally correct, but do not treat it as the large-N path
+
+### Ordered Plan
+
+| Order | Change | Repo(s) | Status | Notes |
+| ----- | ------ | ------- | ------ | ----- |
+| 1 | Large-N guardrails and pipeline knobs | `actionet-python` | Pending | Still needed for user-facing safety around `k*nn`. |
+| 2 | Expose network input choice in pipeline | `actionet-python` | Pending | `build_network(..., obsm_key=...)` already exists, but `run_actionet(..., network_obsm_key=...)` is still not done. |
+| 3 | New core internal builder with R-safe compatibility layer | `libactionet` | Completed 2026-03-13 | Correctness fixes, RAII HNSW ownership, 64-bit-safe indptr offsets, 32-bit vertex IDs. Critical empty-graph sort bug fixed 2026-03-13 (sort by unordered pair key, not directed src/dst). See type layout note below. |
+| 4 | Python-only `float32` / row-major fast binding | `actionet-python` | Completed 2026-03-13 | Pybind calls `buildNetworkCore` directly; no Python transpose copy. |
+| 5 | Direct sparse conversion for Python | `actionet-python` | Completed 2026-03-13 | Network path converts `CSRGraph` directly to SciPy CSR; `forcecast` on sparse input data. |
+| 6 | Backed dense `obsm` reader and direct `obsp` writer | `libactionet` + `actionet-python` | Pending | Still the main missing piece for truly out-of-core network construction. |
+| 7 | R handling of new core path | `actionet-r` | Completed for cleanup; optimization deferred | Stale Roxygen comment fixed; generated exports regenerated. Public R API stays on the legacy shim. |
+| 8 | Adaptive `k*nn` rewrite for large N | `libactionet` + wrappers | Deferred | Correctness is fixed; scalability rewrite is still intentionally out of scope. |
+
+### Implemented Details
+
+#### 1. `libactionet` core
+
+Added / updated:
+
+- `include/network/build_network_core.hpp`
+- `include/network/hnsw_imp.hpp`
+- `src/network/build_network.cpp`
+
+Key behavior changes:
+
+- Internal CSR representation is `CSRGraph`:
+  - `CSRVertexIndex` = `uint32_t` for column indices — supports up to ~4.3 billion vertices,
+    far beyond any foreseeable single-cell dataset; halves per-edge memory vs `arma::sp_mat`
+  - `CSROffset` = `uint64_t` for `n`, `indptr`, and nnz counts — safely tracks cumulative
+    edge offsets that can exceed 2 billion on very large dense graphs
+  - `float32` edge weights throughout the hot path
+- `CSRGraph32` alias retained for transitional callers
+- HNSW index and space objects are owned by `HnswIndex` (RAII struct in `hnsw_imp.hpp`);
+  the prior raw-pointer leak of `SpaceInterface*` per network construction call is fixed
+- `k*nn` neighbor labels stored as `hnswlib::labeltype` (not `float`); prevents silent
+  label truncation for vertex indices above 16,777,216
+- non-mutual symmetrization matches legacy semantics exactly:
+  - both directions present: `0.5 * (w_uv + w_vu)`
+  - one direction present: `0.5 * w`
+- mutual-only symmetrization still uses geometric mean and drops non-mutual edges
+- **sort-bug fix**: edges in `symmetrize_to_csr` are sorted by unordered pair key
+  `(min(u,v), max(u,v), src, dst)` rather than `(src, dst)`; the prior sort interleaved
+  forward and reverse edges whenever a node had more than one neighbour, causing the
+  accumulation loop to see each direction in isolation — with `mutual_edges_only=true`
+  (the default) all edges were discarded, producing an empty sparse matrix for every call
+- diagonal entries are always removed
+- explicit range checks guard internal allocation sizes and `arma::sp_mat` conversion
+- dead `AddWorker` struct (stale pre-refactor artifact, referenced `arma::fmat`) removed
+  from `hnsw_imp.hpp`
+
+Legacy API status:
+
+- `actionet::buildNetwork(const arma::mat&)` signature is unchanged
+- it now delegates to `buildNetworkCore` via a single col-major-double → row-major-float32
+  conversion pass, eliminating the previous by-value `arma::mat` copy and `arma::fmat`
+  staging copy
+- R continues to receive `arma::sp_mat`
+
+#### 2. `actionet-python`
+
+Updated:
+
+- `src/actionet/wp_network.cpp`
+- `src/actionet/wp_utils.h`
+- `src/actionet/wp_utils.cpp`
+- `src/actionet/core.py`
+- `src/libactionet/*` synced to the same `libactionet` changes
+
+Current Python network path:
+
+- Python passes `adata.obsm[obsm_key]` as row-major `float32` (via `np.ascontiguousarray`)
+- NaN/Inf check (`np.isfinite`) runs before the C++ call; raises `ValueError` on bad input
+- pybind calls `actionet::buildNetworkCore(ptr, n, dim, params)` directly — no `numpy_to_arma_mat` copy
+- the returned `CSRGraph` is converted directly to SciPy CSR via `csr_graph_to_scipy`
+- SciPy sparse indices use `int32` when n and nnz fit; `int64` otherwise
+- `scipy_to_arma_sparse` (used by `run_lpa`, `compute_network_diffusion`, etc.) now accepts
+  float32 and integer SciPy matrices via `forcecast`
+- `run_lpa` fixed-labels 1→0 conversion validates each value is ≥ 1 before subtracting
+- public `actionet.build_network(...)` signature is unchanged
+
+#### 3. `actionet-r`
+
+Updated:
+
+- `src/wr_network.cpp`
+- `R/RcppExports.R`
+- `src/RcppExports.cpp`
+- `src/libactionet/*` synced to the same `libactionet` changes
+
+Current R stance:
+
+- public `buildNetwork()` remains unchanged
+- `C_buildNetworkFast` export was added and then removed in the same pass; the final
+  `src/wr_network.cpp` contains only `C_buildNetwork` as the network export
+- the generated `RcppExports.R` and `RcppExports.cpp` are clean (no orphaned Roxygen blocks)
+- the real package stays on the legacy shim path; the core fast path is available for a
+  future optional R adoption (plan item 7)
+
+### CSR Type Layout and Graph Size Limits
+
+The `CSRGraph` design uses a deliberate mixed-width layout:
+
+| Field | Type | Width | Max value |
+| ----- | ---- | ----- | --------- |
+| vertex IDs in `indices` | `uint32_t` | 32-bit | ~4.3 billion cells |
+| row pointers in `indptr` | `uint64_t` | 64-bit | ~1.8 × 10¹⁹ |
+| edge weights in `data` | `float` | 32-bit | — |
+
+The 32-bit vertex ID is the binding constraint. It covers all published single-cell datasets by
+a factor of ~100 (the largest current references are in the tens of millions of cells). Upgrading
+to 64-bit vertex IDs would double the size of the dominant `indices` array (4 bytes → 8 bytes per
+edge) with no practical benefit at foreseeable dataset scales.
+
+The 64-bit `indptr` is justified independently: for N = 50M cells and k = 15, nnz ≈ 1.5 billion,
+which fits in `uint32_t` but leaves little headroom. Higher k or denser symmetrization can push
+beyond `uint32_t` range, making 64-bit offsets the safe choice for indptr regardless of vertex ID
+width.
+
+### Validation Performed (most recent pass)
+
+`libactionet`
+
+- rebuilt in `cmake-build-llvm-arm64` with ninja; all translation units compiled cleanly
+- sort-bug fix confirmed: `build_network` on 200-cell, 10-dim random input now produces
+  a non-empty graph (nnz = 10 210, density ≈ 25.5 %, weights in [0.22, 0.96], |A−Aᵀ| = 0)
+- parity test (12/12 cases across k\*nn, knn, all three metrics, both symmetrization modes)
+  confirmed output identical between legacy `buildNetwork` and `buildNetworkCore` paths
+
+`actionet-python`
+
+- `./.venv/bin/python -m pip install --no-build-isolation -e .` — built cleanly
+- `./.venv/bin/python -m pytest tests/test_sparse_conversion.py -v` — 4/4 passed
+- runtime smoke tests confirmed:
+  - NaN/Inf preflight raises `ValueError`
+  - float32 SciPy sparse input accepted by `run_lpa`
+  - `fixed_labels=0` raises `RuntimeError`; `fixed_labels=[1,2]` accepted
+
+`actionet-r`
+
+- `Rcpp::compileAttributes()` re-run; `C_runLPA` no longer carries the orphaned
+  `C_buildNetworkFast` Roxygen block
+
+### Remaining Work
+
+- add Python preflight refusal / warning for obviously unsafe `k*nn` sizes (plan item 1)
+- expose `network_obsm_key` through `run_actionet()` (plan item 2)
+- implement the backed `/obsm` → `/obsp` large-scale path (plan item 6)
+- decide whether Python should eventually keep graph weights as `float32` end-to-end or
+  intentionally upcast at the SciPy boundary (currently: float32 → float64 in `csr_graph_to_scipy`)
+- if multi-million-cell adaptive graphs are still scientifically required, redesign `k*nn`
+  rather than patching around its current scratch-space behavior (plan item 8)
+
+### Working Assumptions
+
+- preserve the R-facing `libactionet` network API
+- optimize `knn` first; `k*nn` is correct but not the scalable path
+- treat embedded `src/libactionet` checkouts in `actionet-python` and `actionet-r` as mirrors
+  that must be kept in sync with master `libactionet` after each change

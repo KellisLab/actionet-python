@@ -12,8 +12,9 @@
 
 namespace {
 
-py::ssize_t checked_py_size(arma::uword value, const char* name) {
-    if (value > static_cast<arma::uword>(std::numeric_limits<py::ssize_t>::max())) {
+template <typename SizeT>
+py::ssize_t checked_py_size(SizeT value, const char* name) {
+    if (value > static_cast<SizeT>(std::numeric_limits<py::ssize_t>::max())) {
         throw std::runtime_error(std::string(name) + " exceeds Python array limits");
     }
     return static_cast<py::ssize_t>(value);
@@ -23,6 +24,13 @@ template <typename IndexT>
 bool fits_sparse_index_type(const arma::sp_mat& sp_mat) {
     constexpr arma::uword index_max = static_cast<arma::uword>(std::numeric_limits<IndexT>::max());
     return sp_mat.n_rows <= index_max && sp_mat.n_cols <= index_max && sp_mat.n_nonzero <= index_max;
+}
+
+template <typename IndexT>
+bool fits_sparse_index_type(const actionet::CSRGraph& graph) {
+    constexpr actionet::CSROffset index_max =
+        static_cast<actionet::CSROffset>(std::numeric_limits<IndexT>::max());
+    return graph.n <= index_max && graph.nnz() <= index_max;
 }
 
 py::object arma_sparse_to_scipy_legacy(const arma::sp_mat& sp_mat) {
@@ -106,6 +114,38 @@ py::object arma_sparse_to_scipy_csr_impl(const arma::sp_mat& sp_mat) {
     );
 }
 
+template <typename IndexT>
+py::object csr_graph_to_scipy_impl(const actionet::CSRGraph& graph) {
+    py::module_ scipy_sparse = py::module_::import("scipy.sparse");
+
+    const py::ssize_t n = checked_py_size(graph.n, "Sparse matrix row count");
+    const py::ssize_t nnz = checked_py_size(graph.nnz(), "Sparse matrix nnz");
+
+    py::array_t<double> data(nnz);
+    py::array_t<IndexT> indices(nnz);
+    py::array_t<IndexT> indptr(n + 1);
+
+    double* data_ptr = data.mutable_data();
+    IndexT* indices_ptr = indices.mutable_data();
+    IndexT* indptr_ptr = indptr.mutable_data();
+
+    for (py::ssize_t i = 0; i < n; ++i) {
+        indptr_ptr[i] = static_cast<IndexT>(graph.indptr[static_cast<size_t>(i)]);
+    }
+    indptr_ptr[n] = static_cast<IndexT>(graph.indptr.back());
+
+    for (py::ssize_t i = 0; i < nnz; ++i) {
+        const size_t idx = static_cast<size_t>(i);
+        indices_ptr[i] = static_cast<IndexT>(graph.indices[idx]);
+        data_ptr[i] = static_cast<double>(graph.data[idx]);
+    }
+
+    return scipy_sparse.attr("csr_matrix")(
+        py::make_tuple(data, indices, indptr),
+        py::make_tuple(n, n)
+    );
+}
+
 } // namespace
 
 // Convert NumPy array to Armadillo dense matrix
@@ -131,7 +171,7 @@ arma::sp_mat scipy_to_arma_sparse(py::object scipy_sparse) {
     // Convert to CSC format
     py::object csc = scipy_sparse.attr("tocsc")();
 
-    auto data = csc.attr("data").cast<py::array_t<double>>();
+    auto data = csc.attr("data").cast<py::array_t<double, py::array::forcecast>>();
     auto indices = csc.attr("indices").cast<py::array_t<py::ssize_t, py::array::forcecast>>();
     auto indptr = csc.attr("indptr").cast<py::array_t<py::ssize_t, py::array::forcecast>>();
     auto shape = csc.attr("shape").cast<std::pair<py::ssize_t, py::ssize_t>>();
@@ -217,6 +257,20 @@ py::object arma_sparse_to_scipy(const arma::sp_mat& sp_mat) {
         // builder settles in.
         return arma_sparse_to_scipy_legacy(sp_mat);
     }
+}
+
+py::object csr_graph_to_scipy(const actionet::CSRGraph& graph) {
+    if (graph.indptr.size() != static_cast<size_t>(graph.n) + 1) {
+        throw std::runtime_error("CSRGraph indptr length does not match row count");
+    }
+    if (graph.indices.size() != graph.data.size()) {
+        throw std::runtime_error("CSRGraph indices/data lengths do not match");
+    }
+
+    if (fits_sparse_index_type<std::int32_t>(graph)) {
+        return csr_graph_to_scipy_impl<std::int32_t>(graph);
+    }
+    return csr_graph_to_scipy_impl<std::int64_t>(graph);
 }
 
 // Convert NumPy vector to Armadillo vector

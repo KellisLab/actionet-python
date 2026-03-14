@@ -8,18 +8,35 @@ namespace py = pybind11;
 
 // build_network =======================================================================================================
 
-py::object build_network(py::array_t<double> H, std::string algorithm = "k*nn",
+py::object build_network(py::array_t<float, py::array::c_style | py::array::forcecast> X,
+                         std::string algorithm = "k*nn",
                          std::string distance_metric = "jsd", double density = 1.0,
                          int thread_no = 0, double M = 16, double ef_construction = 200,
                          double ef = 200, bool mutual_edges_only = true, int k = 10) {
-    arma::mat H_mat = numpy_to_arma_mat(H);
+    py::buffer_info buf = X.request();
+    if (buf.ndim != 2) {
+        throw std::runtime_error("Expected 2D array");
+    }
 
-    arma::sp_mat G = actionet::buildNetwork(
-        H_mat, algorithm, distance_metric, density, thread_no,
-        M, ef_construction, ef, mutual_edges_only, k
+    actionet::BuildNetworkParams params;
+    params.algorithm = std::move(algorithm);
+    params.distance_metric = std::move(distance_metric);
+    params.density = density;
+    params.thread_no = thread_no;
+    params.M = M;
+    params.ef_construction = ef_construction;
+    params.ef = ef;
+    params.mutual_edges_only = mutual_edges_only;
+    params.k = k;
+
+    const auto* ptr = static_cast<const float*>(buf.ptr);
+    const auto graph = actionet::buildNetworkCore(
+        ptr,
+        static_cast<std::size_t>(buf.shape[0]),
+        static_cast<std::size_t>(buf.shape[1]),
+        params
     );
-
-    return arma_sparse_to_scipy(G);
+    return csr_graph_to_scipy(graph);
 }
 
 // label_propagation ===================================================================================================
@@ -31,12 +48,19 @@ py::array_t<double> run_lpa(py::object G, py::array_t<double> labels, double lam
 
     arma::uvec fixed_labels_vec;
     if (!fixed_labels.is_none()) {
-        auto fixed_arr = fixed_labels.cast<py::array_t<int>>();
+        auto fixed_arr = fixed_labels.cast<py::array_t<int, py::array::forcecast>>();
         auto fixed_buf = fixed_arr.request();
-        auto fixed_ptr = static_cast<int*>(fixed_buf.ptr);
-        fixed_labels_vec.set_size(fixed_buf.size);
-        for (size_t i = 0; i < fixed_buf.size; i++) {
-            fixed_labels_vec(i) = fixed_ptr[i] - 1;  // Convert to 0-indexed
+        auto fixed_ptr = static_cast<const int*>(fixed_buf.ptr);
+        fixed_labels_vec.set_size(static_cast<arma::uword>(fixed_buf.size));
+        for (py::ssize_t i = 0; i < fixed_buf.size; ++i) {
+            const int val = fixed_ptr[i];
+            if (val < 1) {
+                throw std::runtime_error(
+                    "fixed_labels values must be >= 1 (1-indexed); got " +
+                    std::to_string(val)
+                );
+            }
+            fixed_labels_vec(static_cast<arma::uword>(i)) = static_cast<arma::uword>(val - 1);
         }
     }
 
