@@ -28,6 +28,8 @@ def run_actionet(
     network_metric: Literal["jsd", "l2", "ip"] = "jsd",
     network_algorithm: Literal["k*nn", "knn"] = "k*nn",
     network_density: float = 1.0,
+    network_ef_construction: float = 200,
+    network_ef: float = 200,
     mutual_edges_only: bool = True,
     layout_method: Literal["umap", "tumap"] = "umap",
     layout_epochs: int = 100,
@@ -85,6 +87,14 @@ def run_actionet(
         - "k*nn": k-star nearest neighbors (adaptive)
     network_density : float, optional (default: 1.0)
         Density factor for network construction.
+    network_ef_construction : float, optional (default: 200)
+        HNSW construction search breadth for network construction.
+        For ``network_algorithm="k*nn"``, the effective value is
+        ``max(network_ef_construction, kNN)``.
+    network_ef : float, optional (default: 200)
+        HNSW query search breadth for network construction.
+        For ``network_algorithm="k*nn"``, the effective value is
+        ``max(network_ef, kNN)``.
     mutual_edges_only : bool, optional (default: True)
         Keep only mutual nearest neighbors.
     layout_method : {"umap", "tumap"}, optional (default: "umap")
@@ -188,6 +198,8 @@ def run_actionet(
         algorithm=network_algorithm,
         distance_metric=network_metric,
         density=network_density,
+        ef_construction=network_ef_construction,
+        ef=network_ef,
         mutual_edges_only=mutual_edges_only,
         key_added=network_key,
         n_threads=n_threads,

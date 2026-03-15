@@ -1,8 +1,8 @@
 ## Cross-Repo Network Construction Optimization With R Compatibility
 
-### Status Snapshot (2026-03-13, updated post-bugfix)
+### Status Snapshot (2026-03-14, updated post-k*nn-rewrite)
 
-Completed in this pass:
+Completed in this session (2026-03-13, core/binding/R pass):
 
 - `libactionet`
   - new internal `buildNetworkCore(const float*, n, dim, params) → CSRGraph` entry point
@@ -40,12 +40,53 @@ Completed in this pass:
   - `src/libactionet` submodule synced to all `libactionet` changes above
 - validation-only test scaffolding used during implementation has been removed
 
+Completed in this session (2026-03-14, adaptive k*nn rewrite pass):
+
+- `libactionet`
+  - `symmetrize_to_csr` replaced with a two-pass direct CSR builder: Pass 1 sorts, aggregates,
+    computes symmetric weights and row degrees into a flat `SymPair` list; Pass 2 prefix-sums
+    degrees into `indptr` and writes both symmetric directions via a `write_pos` cursor —
+    eliminates the `rows[n]` vector-of-vectors and its per-row sort; row indices are naturally
+    sorted by construction
+  - `ContiguousFloat32Reader` added: row-access abstraction satisfying the `PointReader` concept;
+    for `l2`/`ip` returns a direct pointer into the source buffer (no copy); for `jsd` normalizes
+    the row on demand into a per-thread scratch buffer — eliminates the `X_norm_buf` full-matrix
+    copy from both `k*nn` and `knn` paths
+  - `AdaptiveScratch` added: per-thread working memory struct (`row_buf`, `knn_result`,
+    `local_srcs/dsts/dists`); one instance per OpenMP thread, never shared
+  - `buildNetworkCore_KstarNN` rewritten: global `idx_flat`, `dist_flat`, `lambda_flat`
+    buffers eliminated (were `16 * N * (kNN+1)` bytes; ~177 GB at N=1.7M); adaptive cutoff
+    now computed incrementally per-row without a lambda array; self-exclusion by label (not
+    position); per-thread edge accumulators merged after the parallel region in a single
+    sequential pass; `ef`/`ef_construction` floored at `kNN` via `std::max` while preserving
+    larger user-supplied values; this is an intentional correctness-over-parity change and is
+    now documented
+  - `buildNetworkCore_KNN` updated to also use `ContiguousFloat32Reader` — eliminates its
+    own `X_norm_buf` copy for `jsd`
+  - `getApproximationAlgo` removed from `hnsw_imp.hpp`: the function leaked its internally
+    allocated `SpaceInterface*` on every call and had no remaining callers
+  - `BuildNetworkParams` documentation updated: `ef` and `ef_construction` fields note the
+    `k*nn` floor behavior
+  - bundled HNSW confirmed as v0.8.0 (current upstream release); `searchKnnCloserFirst`
+    does not exist in any hnswlib release — ascending-distance order obtained by draining
+    the `searchKnn` max-heap and iterating in reverse
+  - `src/libactionet` mirrors in `actionet-python` and `actionet-r` updated by file copy
+    (pending submodule sync)
+- `actionet-python`
+  - `run_actionet()` now exposes `network_ef_construction` and `network_ef`; defaults remain
+    `200` / `200` and are forwarded to `build_network()`
+  - low-level `build_network()` documentation now states that for `algorithm="k*nn"`, the
+    effective values are `max(user_value, kNN)`
+- `actionet-r`
+  - `runACTIONet()` now exposes `network_ef_construction` and `network_ef`; defaults remain
+    `200` / `200` and are forwarded to `buildNetwork()`
+  - stale low-level comments claiming `ef` / `ef_construction` were `knn`-only have been removed
+
 Still pending:
 
-- Python-side large-`k*nn` preflight / operator guardrails
-- pipeline-level `network_obsm_key` support in `run_actionet()`
-- backed `/obsm` reader + direct `/obsp` writer path
-- any true large-N rewrite of adaptive `k*nn`
+- Python-side large-`k*nn` preflight / operator guardrails (plan item 1)
+- pipeline-level `network_obsm_key` support in `run_actionet()` (plan item 2)
+- backed `/obsm` reader + direct `/obsp` writer path (plan item 6)
 
 ### Summary
 
@@ -54,8 +95,8 @@ The shared design remains:
 - keep the legacy `libactionet` API used by R intact
 - use an additive internal core path for performance work
 - let Python call the core path directly with row-major `float32`
-- treat large-scale `knn` as the primary optimization target
-- keep `k*nn` behaviorally correct, but do not treat it as the large-N path
+- the adaptive `k*nn` memory rewrite is complete; large-scale `knn` remains the preferred path for very large N
+- `k*nn` is now both behaviorally correct and memory-safe at large N; its asymptotic query cost (`kNN = O(sqrt(N))`) is unchanged
 
 ### Ordered Plan
 
@@ -68,7 +109,7 @@ The shared design remains:
 | 5 | Direct sparse conversion for Python | `actionet-python` | Completed 2026-03-13 | Network path converts `CSRGraph` directly to SciPy CSR; `forcecast` on sparse input data. |
 | 6 | Backed dense `obsm` reader and direct `obsp` writer | `libactionet` + `actionet-python` | Pending | Still the main missing piece for truly out-of-core network construction. |
 | 7 | R handling of new core path | `actionet-r` | Completed 2026-03-13 | Completed 2026-03-13. C_buildNetwork now accepts Rcpp::NumericMatrix, inlines the col-major double→row-major float32 conversion, and calls buildNetworkCore + armaSpMatFromCSR directly. The arma::mat intermediate copy is eliminated. RcppExports regenerated. ef default corrected from 50 to 200. |
-| 8 | Adaptive `k*nn` rewrite for large N | `libactionet` + wrappers | Deferred | Correctness is fixed; scalability rewrite is still intentionally out of scope. |
+| 8 | Adaptive `k*nn` rewrite for large N | `libactionet` + wrappers | Completed 2026-03-14 | Global scratch eliminated: `idx_flat`/`dist_flat`/`lambda_flat` (`16 * N * (kNN+1)` bytes) and `X_norm_buf` full-matrix JSD copy replaced by per-thread `AdaptiveScratch` and on-demand `ContiguousFloat32Reader::load_row()`. Two-pass direct CSR builder replaces vector-of-vectors symmetrization. `getApproximationAlgo` memory leak fixed. `ef`/`ef_construction` are now floored at `kNN` while preserving larger user values under correctness-first semantics. Temporary validation scaffolding was removed after verification. Submodule mirrors updated by file copy; formal submodule sync pending. |
 
 ### Implemented Details
 
@@ -136,6 +177,8 @@ Current Python network path:
   float32 and integer SciPy matrices via `forcecast`
 - `run_lpa` fixed-labels 1→0 conversion validates each value is ≥ 1 before subtracting
 - public `actionet.build_network(...)` signature is unchanged
+- high-level `run_actionet(...)` now exposes `network_ef_construction` and `network_ef`
+  and forwards them to `build_network(...)`; defaults remain `200` / `200`
 
 #### 3. `actionet-r`
 
@@ -163,7 +206,59 @@ Current R network path:
   `src/wr_network.cpp` contains only `C_buildNetwork` as the network export
 - The generated `RcppExports.R` and `RcppExports.cpp` are clean (no orphaned Roxygen blocks)
 
-### CSR Type Layout and Graph Size Limits
+#### 4. `libactionet` — adaptive `k*nn` rewrite (plan item 8)
+
+Updated:
+
+- `include/network/build_network_core.hpp`
+- `include/network/hnsw_imp.hpp`
+- `src/network/build_network.cpp`
+
+Key changes:
+
+**New types (anonymous namespace in `build_network.cpp`):**
+
+- `SymPair { VertexIndex lo, hi; float w_sym; }` — flat symmetric pair used by the two-pass CSR builder
+- `ContiguousFloat32Reader` — satisfies the `PointReader` concept over a row-major `const float*` buffer:
+  - `l2`/`ip`: `load_row(i, scratch)` returns `X + i * dim` directly; no copy
+  - `jsd`: `load_row(i, scratch)` clamps and L1-normalizes row `i` into per-thread `scratch`, returns `scratch.data()` — eliminates the `X_norm_buf` full-matrix copy from both `k*nn` and `knn`
+- `AdaptiveScratch` — per-thread working memory: `row_buf` (JSD scratch, must not be shared), `knn_result` (heap drain buffer), `local_srcs/dsts/dists` (per-thread edge accumulator)
+
+**`symmetrize_to_csr` rewritten as a two-pass direct CSR builder:**
+
+- Pass 1a: distance → directed similarity (unchanged semantics)
+- Pass 1b: sort by unordered pair key `(lo, hi, src, dst)`
+- Pass 1c: aggregate consecutive duplicate directed edges
+- Pass 1d: walk unordered pairs, compute `w_sym`, record in `flat_pairs: Vec<SymPair>` and `degree[n]`
+- Pass 2a: prefix-sum `degree` into `indptr`
+- Pass 2b: write both symmetric directions via `write_pos` cursor; rows are naturally sorted (proved in source comment) — no per-row sort needed
+- Eliminates: `rows[n]` vector-of-vectors, N individual heap allocations, per-row sort
+
+**`buildNetworkCore_KstarNN` rewritten:**
+
+- `X_norm_buf` (`N * dim * 4` bytes for JSD): eliminated; normalization happens in `load_row()` during both index build and query
+- `idx_flat` (`8 * N * (kNN+1)` bytes): eliminated
+- `dist_flat` (`4 * N * (kNN+1)` bytes): eliminated
+- `lambda_flat` (`4 * N * (kNN+1)` bytes): eliminated
+- Total eliminated: `16 * N * (kNN+1)` bytes (~177 GB at N=1.7M, kNN=6520)
+- Replaced by: `std::vector<AdaptiveScratch> per_thread(threads_use)` — peak per-thread scratch ~51 MB/thread at N=1.7M, k_bar=32, T=16
+- `ef`/`ef_construction` now explicitly floored at `kNN` via `std::max` instead of silent override; documented in `BuildNetworkParams`
+- Self-exclusion by label (not position) — correct for duplicated rows and any heap ordering
+- Adaptive cutoff computed incrementally: `beta_sum`, `beta_sq_sum` maintained per non-self neighbor; `lambda` computed inline; loop breaks at first failure; `neighbor_no - 1` neighbors emitted (exclusive bound, matching prior semantics exactly)
+- Per-thread edge accumulators merged sequentially after the parallel region with exact pre-computed capacity; no `#pragma omp critical` inside the hot loop
+
+**`buildNetworkCore_KNN` updated:**
+
+- Also uses `ContiguousFloat32Reader` — eliminates its own `X_norm_buf` copy for `jsd`
+
+**`hnsw_imp.hpp` cleanup:**
+
+- `getApproximationAlgo` removed: allocated `SpaceInterface*` internally but returned only `HierarchicalNSW<float>*`; caller could never delete the space; had no remaining callers outside `_EXCLUDE/`
+
+**HNSW version note:**
+
+- Bundled hnswlib is v0.8.0, the current upstream release
+- `searchKnnCloserFirst` does not exist in any hnswlib release; ascending-distance order obtained by draining `searchKnn` max-heap into a local vector and iterating in reverse
 
 The `CSRGraph` design uses a deliberate mixed-width layout:
 
@@ -183,7 +278,7 @@ which fits in `uint32_t` but leaves little headroom. Higher k or denser symmetri
 beyond `uint32_t` range, making 64-bit offsets the safe choice for indptr regardless of vertex ID
 width.
 
-### Validation Performed (most recent pass)
+### Validation Performed (2026-03-13, core/binding/R pass)
 
 `libactionet`
 
@@ -208,19 +303,44 @@ width.
   updated from `const arma::mat&` to `Rcpp::NumericMatrix`; `ef` default corrected to 200
 - `C_runLPA` no longer carries the orphaned `C_buildNetworkFast` Roxygen block
 
+### Validation Performed (2026-03-14, adaptive k*nn rewrite pass)
+
+`libactionet`
+
+- rebuilt in `cmake-build-llvm-arm64` with ninja; `build_network.cpp` compiled cleanly
+- deterministic single-threaded validation during implementation covered seeded combinations
+  of `{k*nn, knn}`, `{jsd, l2, ip}`, and `{mutual=true, mutual=false}` by comparing the
+  current core path with the legacy shim under the new semantics
+- seeded checks explicitly confirmed that default `k*nn` behavior can differ from
+  `ef=0, ef_construction=0`, proving larger user-supplied `ef` values are now respected
+- edge-case validation covered `n < 2`, `n = 2` (empty graph), duplicated rows, and
+  zero-sum / clipped JSD rows
+
+`actionet-python`
+
+- `./.venv/bin/python -m pip install --no-build-isolation -e .` — built cleanly with updated mirror
+- `./.venv/bin/python -m pytest tests/test_sparse_conversion.py -v` — 4/4 passed
+- smoke tests confirmed:
+  - k\*nn JSD: non-empty symmetric graph (nnz=17 186, density≈0.19, |A−Aᵀ|=0) on 300-cell, 30-dim synthetic input
+  - knn L2: correct fixed-k graph (nnz=1 500 for k=10)
+  - NaN preflight still raises `ValueError`
+  - `run_actionet(...)` accepts and forwards `network_ef_construction` / `network_ef`
+
 ### Remaining Work
 
 - add Python preflight refusal / warning for obviously unsafe `k*nn` sizes (plan item 1)
 - expose `network_obsm_key` through `run_actionet()` (plan item 2)
 - implement the backed `/obsm` → `/obsp` large-scale path (plan item 6)
+- formally sync `actionet-python` and `actionet-r` submodules to the `libactionet` commit
+  containing the k\*nn rewrite (currently propagated by file copy)
 - decide whether Python should eventually keep graph weights as `float32` end-to-end or
   intentionally upcast at the SciPy boundary (currently: float32 → float64 in `csr_graph_to_scipy`)
-- if multi-million-cell adaptive graphs are still scientifically required, redesign `k*nn`
-  rather than patching around its current scratch-space behavior (plan item 8)
+- add a dedicated pipeline-level smoke test for `run_actionet(..., network_ef_construction, network_ef)` forwarding
 
 ### Working Assumptions
 
 - preserve the R-facing `libactionet` network API
-- optimize `knn` first; `k*nn` is correct but not the scalable path
+- `k*nn` is now memory-safe and correct at large N; fixed-`k` `knn` remains the preferred path
+  for very large N due to its lower asymptotic query cost
 - treat embedded `src/libactionet` checkouts in `actionet-python` and `actionet-r` as mirrors
   that must be kept in sync with master `libactionet` after each change

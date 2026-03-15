@@ -477,8 +477,18 @@ def build_network(
         Distance metric for similarity.
     density
         Graph density factor.
+    M
+        HNSW graph connectivity parameter.
+    ef_construction
+        HNSW construction search breadth.
+        For ``algorithm="k*nn"``, the effective value is
+        ``max(ef_construction, kNN)``.
+    ef
+        HNSW query search breadth.
+        For ``algorithm="k*nn"``, the effective value is
+        ``max(ef, kNN)``.
     k
-        Number of nearest neighbors.
+        Number of nearest neighbors for ``algorithm="knn"``.
     mutual_edges_only
         Only keep mutual nearest neighbors.
     n_threads
