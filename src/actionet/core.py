@@ -102,19 +102,20 @@ def _select_svd_algorithm_inmemory(S: Any, algorithm: str, verbose: bool = True)
     else:
         total_elements = np.prod(S.shape)
 
-    max_32bit = 2_147_483_647
-    if total_elements > max_32bit:
+    # For in-memory Armadillo sparse matrices (sp_mat), indices are signed 32-bit
+    # internally, so NNZ or shape dimensions exceeding 2^31 - 1 would overflow.
+    # PRIMME uses external matvec callbacks that bypass Armadillo indexing, so it
+    # is safe. (The backed/operator path never hits this function — it always uses
+    # Halko via _select_svd_algorithm_backed.)
+    max_int32 = 2_147_483_647
+    if total_elements > max_int32:
         if verbose:
-            print(f"⚠ Matrix exceeds 32-bit indexing limit ({total_elements:,} > {max_32bit:,} elements)")
+            print(f"⚠ Matrix exceeds 32-bit indexing limit ({total_elements:,} > {max_int32:,} elements)")
             print("→ Auto-selected PRIMME for safe handling of large matrices")
         return _SVD_ALGORITHM_TO_ID["primme"]
 
     if sp.issparse(S):
         sparsity = 1.0 - (total_elements / np.prod(S.shape))
-        if sparsity > 0.7 and total_elements > 2_000_000_000:
-            if verbose:
-                print(f"Auto-selected PRIMME for large sparse matrix ({sparsity:.1%} sparse)")
-            return _SVD_ALGORITHM_TO_ID["primme"]
         if verbose:
             print(f"Auto-selected IRLB for sparse matrix ({sparsity:.1%} sparse)")
         return _SVD_ALGORITHM_TO_ID["irlb"]
@@ -126,6 +127,13 @@ def _select_svd_algorithm_inmemory(S: Any, algorithm: str, verbose: bool = True)
 
 def _select_svd_algorithm_backed(algorithm: str, verbose: bool = True) -> int:
     if algorithm == "auto":
+        # For backed (operator) mode, Halko is unconditionally selected regardless
+        # of matrix size. The backed operator path bypasses Armadillo's in-memory
+        # indexing, so the 32-bit overflow concern that triggers PRIMME in the
+        # in-memory path does not apply here. Halko's peak memory usage depends
+        # only on (k+2) * max(n_obs, n_var), not on NNZ, so it scales safely to
+        # atlas-size datasets. PRIMME and Feng are also available for backed
+        # operator mode if specified explicitly.
         if verbose:
             print("Detected backed matrix: selecting Halko operator path")
         return _SVD_ALGORITHM_TO_ID["halko"]

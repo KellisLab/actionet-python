@@ -1,44 +1,179 @@
-# Benchmark actionet-python backed extension
+# ACTIONet Scaling Benchmark Suite — Runbook
 
-Background: A major refactoring and feature extension of this package was just completed. Please review the context files.
+This document is the runbook for the ACTIONet Scaling Benchmark Suite.
+See `ACTIONet Scaling Benchmark Suite.md` for the full specification.
 
-Task: Please generate and execute a series of tests comparing the performance of running a typicaly workflow in-memory vs backed. Test any other functionality you deem appropriate. Run multiple trials.
+## Files
 
-## Datasets
+| File | Role |
+|---|---|
+| `benchmark_backed_extension.py` | CLI orchestrator |
+| `benchmark_support.py` | Helper module (dataset manifests, metrics, reporting) |
 
-Use two datasets for testing:
+## Prerequisites
 
-1. `data/test_adata.h5ad` contains a small singular sample.
-2. `data/adata_agg_Hm_STR_MSN_1000plus_only_processed.h5ad` contains a larger dataset with multiple samples. This one requires using batch correction. Use .obs['UID] as the batch labels.
+1. **Environment**: `.venv` at the repo root (`.venv/bin/python`).
+2. **Dependencies**: `psutil`, `matplotlib`, `tabulate` must be installed in `.venv`.
+3. **Data**: All source datasets in `data/`:
+   - `test_adata.h5ad` (small_full, 6,790 cells)
+   - `adata_agg_Hm_STR_MSN_1000plus_only_processed.h5ad` (sparse_medium, 41,007 cells)
+   - `adata_agg_Scn4b_OX_fil.h5ad` (scale_full, 300,157 cells)
+4. **Disk**: ≥ 500 GB free on `/data/actionet_benchmark/` for backed copies + subsets.
+5. **`LD_LIBRARY_PATH`**: `_core.so` was built against HDF5 1.14.5 (installed at
+   `/HDF_Group/HDF5/1.14.5`). Must be on `LD_LIBRARY_PATH` at runtime. See **Build Notes**.
 
-## Implementation
+## One-Time Setup
 
-Use the following workflow for testing:
+```bash
+# Install benchmark dependencies
+.venv/bin/pip install psutil matplotlib tabulate
 
-1. Filter the data to remove genes that are not expressed in at least 1% of cells. Do not filter cells.
-2. Normalize and log transform the data to remove library size effects. Scale to 10,000 counts and use log base 2.
-3. Reduce the data to a lower dimensional space using the kernel reduction. Use PRIMME for all tests. Keep additional parameters as default.
-4. Correct the batch effects using the batch correction (when applicable).
-5. Run the core pipeline components separately (ACTION decomposition, network construction, archetype diffusion, UMAP generation, color computation, feature specificity) for profiling purposes. Remember to use the approriate reduction key if preceded by batch correction.
-6. Find the top 30 markers for each cell type. Use .obs['CellLabel'] for dataset (1) and .obs['CellType'] for dataset (2) as the cell type labels. Use .var['Gene'] as features.
-7. Annotate the cells using the cell type annotation. Use the vision method with the default parameters. Use .var['Gene'] as features.
-8. Impute 10 arbitrary features for each dataset. Use .var['Gene'] as features.
+# Set LD_LIBRARY_PATH (add to ~/.bashrc or equivalent for persistence)
+export LD_LIBRARY_PATH=/HDF_Group/HDF5/1.14.5/lib:/opt/intel/oneapi/compiler/2024.2/lib:$LD_LIBRARY_PATH
 
-**CRITICAL**: Fully decompress backed objects for testing (`decompress_backed_storage(scope = "file")`)
+# Convert sparse_medium to CSR format (one-time, detects and skips if already sparse)
+cd tests
+.venv/bin/python -c "import sys; sys.path.insert(0,'tests'); import benchmark_support as bs; bs.ensure_sparse_medium()"
+```
 
-## Evaluation
+## Build Notes
 
-Use the following metrics for testing:
+The C++ backed SVD operator (`_core.so`) must be built against HDF5 ≥ 1.14 and run with
+that library on `LD_LIBRARY_PATH`. The root cause of previous failures was a **bug in the
+C++ code** in `src/libactionet/src/io/backed_h5ad/backed_sparse_matrix_operator.cpp`:
+`H5Aread` was called with a memory type that had `H5T_CSET_ASCII` (the default for a copied
+`H5T_C_S1`), but modern h5py writes variable-length string attributes with `H5T_CSET_UTF8`.
+HDF5 ≥ 1.14 enforces strict charset matching during type conversion. The fix: call
+`H5Tset_cset(mem_type, H5T_CSET_UTF8)` before `H5Aread`. This has been applied.
 
-1. The runtime of each major component and the total runtime of the workflow.
-2. The peak memory usage of each major component and the peak memory usage of the workflow.
-3. Result parity between in-memory and backed modes.
+HDF5 files are fully portable across HDF5 versions. The original files created on different
+machines open without issue in Python (h5py) and R (rhdf5/hdf5r) — the problem was solely
+in the C++ reading code.
 
-With these results and knowledge of the computational complexity of the workflow, estimate the runtime and memory usage for datasets with:
+HDF5 1.14.5 was installed from the official [GitHub release `.deb`](https://github.com/HDFGroup/hdf5/releases)
+to `/HDF_Group/HDF5/1.14.5/`. To rebuild `_core.so` against it:
 
-1. 100k, 500k, 1M, 5M, and 10M cells expressing an average of 10,000 genes.
-2. 1, 5, 25, 50, and 100 batches.
+```bash
+cd /data/git_projects/actionet-python
+PYBIND11_DIR=$(.venv/bin/python -c 'import pybind11; print(pybind11.get_cmake_dir())')
+HDF5_ROOT=/HDF_Group/HDF5/1.14.5 \
+CMAKE_ARGS="-DHDF5_ROOT=/HDF_Group/HDF5/1.14.5 -Dpybind11_DIR=${PYBIND11_DIR} -DCMAKE_CXX_FLAGS='-march=native -O3'" \
+.venv/bin/pip install . --no-build-isolation --no-cache-dir
+```
 
-## Output
+## Running the Benchmark
 
-Generate a comprehensive report of the results. Produce tables and figures to visualize the results as appropriate.
+### Smoke test (validates harness, ~5 min on small_full)
+
+```bash
+cd /home/sebastian/data/git_projects/actionet-python/tests
+LD_LIBRARY_PATH=/HDF_Group/HDF5/1.14.5/lib:/opt/intel/oneapi/compiler/2024.2/lib:$LD_LIBRARY_PATH \
+/home/sebastian/data/git_projects/actionet-python/.venv/bin/python benchmark_backed_extension.py \
+  --suite smoke \
+  --output-dir /data/actionet_benchmark/run_smoke \
+  --skip-subsets \
+  --threads 44
+```
+
+### Full benchmark (all suites, all tiers, both profiles)
+
+```bash
+cd /home/sebastian/data/git_projects/actionet-python/tests
+LD_LIBRARY_PATH=/HDF_Group/HDF5/1.14.5/lib:/opt/intel/oneapi/compiler/2024.2/lib:$LD_LIBRARY_PATH \
+/home/sebastian/data/git_projects/actionet-python/.venv/bin/python benchmark_backed_extension.py \
+  --suite all \
+  --output-dir /data/actionet_benchmark/run_001 \
+  --threads 44 \
+  --resume
+```
+
+### Workflow only (no focused sweeps)
+
+```bash
+LD_LIBRARY_PATH=/HDF_Group/HDF5/1.14.5/lib:/opt/intel/oneapi/compiler/2024.2/lib:$LD_LIBRARY_PATH \
+/home/sebastian/data/git_projects/actionet-python/.venv/bin/python benchmark_backed_extension.py \
+  --suite workflow \
+  --datasets small_full sparse_medium scale_subset_25k scale_subset_50k scale_subset_100k \
+  --profiles default knn_ceiling \
+  --modes backed_decompressed in_memory \
+  --output-dir /data/actionet_benchmark/run_workflow \
+  --threads 44 \
+  --resume
+```
+
+### Specific tiers only
+
+```bash
+LD_LIBRARY_PATH=/HDF_Group/HDF5/1.14.5/lib:/opt/intel/oneapi/compiler/2024.2/lib:$LD_LIBRARY_PATH \
+/home/sebastian/data/git_projects/actionet-python/.venv/bin/python benchmark_backed_extension.py \
+  --suite workflow \
+  --max-tier 100k \
+  --output-dir /data/actionet_benchmark/run_to_100k \
+  --threads 44
+```
+
+### Regenerate report from existing results
+
+```bash
+LD_LIBRARY_PATH=/HDF_Group/HDF5/1.14.5/lib:/opt/intel/oneapi/compiler/2024.2/lib:$LD_LIBRARY_PATH \
+/home/sebastian/data/git_projects/actionet-python/.venv/bin/python benchmark_backed_extension.py \
+  --output-dir /data/actionet_benchmark/run_001 \
+  --report-only
+```
+
+## CLI Reference
+
+```
+python benchmark_backed_extension.py \
+  --suite {all,workflow,network,reduction,batch,thread,ef,kmax,smoke}
+  --datasets HANDLE [HANDLE ...]   # dataset handles (see DATASET_MANIFEST)
+  --profiles {default,knn_ceiling} [...]
+  --modes {in_memory,backed_decompressed,backed_compressed} [...]
+  --output-dir PATH                # default: /data/actionet_benchmark/run_<timestamp>
+  --resume                         # skip cases with existing status=ok total row
+  --max-tier 200k                  # stop after this tier (e.g. 100k, 200k, 300k)
+  --trials N                       # override trial count per case
+  --threads N                      # thread count (default: 44)
+  --skip-subsets                   # skip stratified subset generation
+  --report-only                    # regenerate report without running new cases
+```
+
+## Output Structure
+
+```
+/data/actionet_benchmark/<run_id>/
+  raw/         one JSONL file per case (one row per stage)
+  summary.csv  aggregated table
+  report.md    Markdown summary with tables and plot references
+  plots/       PNG scaling plots
+  work/        temporary backed h5ad copies (auto-cleaned after each case)
+```
+
+## Dataset Handles
+
+| Handle | Description |
+|---|---|
+| `small_full` | test_adata.h5ad (6,790 cells) |
+| `sparse_medium` | sparse_medium h5ad (41,007 cells, 25 batches) |
+| `scale_full` | scale_full h5ad (300,157 cells, 26 batches) |
+| `scale_subset_25k` | 25,000-cell stratified subset of scale_full |
+| `scale_subset_50k` | 50,000-cell stratified subset of scale_full |
+| `scale_subset_100k` | 100,000-cell stratified subset |
+| `scale_subset_150k` | 150,000-cell stratified subset |
+| `scale_subset_200k` | 200,000-cell stratified subset |
+| `scale_subset_250k` | 250,000-cell stratified subset |
+| `scale_subset_300k` | 300,000-cell (full scale_full) |
+
+Subsets are generated automatically from `scale_full` (stratified by UID, seed=42, min 100 cells/batch)
+and written to `/data/actionet_benchmark/scale_subset_<tier>.h5ad`.
+
+## Notes on Backed Mode
+
+- `_core.create_backed_operator` opens the h5ad file with its own HDF5 handle.
+- The benchmark closes the h5py (anndata) handle before calling `reduce_kernel`, then
+  re-opens it after. `HDF5_USE_FILE_LOCKING=FALSE` is set in the benchmark script as an
+  additional safeguard against transient lock contention.
+- All 13 stages work correctly in backed-decompressed mode after the C++ UTF-8 string fix
+  and the HDF5 1.14.5 rebuild.
+- **`LD_LIBRARY_PATH` must be set** (see Build Notes above) or `_core.so` will fail to load.
+
