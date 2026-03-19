@@ -7,6 +7,7 @@
 * Add run_lpa/propagate_labels
 * Decouple compute_network_diffusion from anndata
 * Change output from numpy to pandas (annotate_*)
+* Reorganize and consolidate code
 
 ## Secondary
 * compute_transparency() use scale()

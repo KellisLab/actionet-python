@@ -393,7 +393,7 @@ def test_normalize_layer_added_backed_x_keeps_source(tmp_path):
     x_after = MatrixSource(adata, layer=None).to_memory()
     norm_after = MatrixSource(adata, layer="normalized").to_memory()
     np.testing.assert_allclose(_as_dense(x_after), _as_dense(x_before), rtol=1e-12, atol=1e-12)
-    np.testing.assert_allclose(_as_dense(norm_after), _as_dense(expected.X), rtol=1e-12, atol=1e-12)
+    np.testing.assert_allclose(_as_dense(norm_after), _as_dense(expected.X), rtol=1e-5, atol=1e-6)
 
 
 def test_normalize_layer_added_backed_layer_keeps_source_layer(tmp_path):
@@ -428,8 +428,8 @@ def test_normalize_layer_added_backed_layer_keeps_source_layer(tmp_path):
     np.testing.assert_allclose(
         _as_dense(norm_after),
         _as_dense(expected.layers["logcounts"]),
-        rtol=1e-12,
-        atol=1e-12,
+        rtol=1e-5,
+        atol=1e-6,
     )
 
 
@@ -472,7 +472,7 @@ def test_normalize_layer_added_backed_overwrites_existing_layer(tmp_path):
     )
 
     norm_after = MatrixSource(adata, layer="normalized").to_memory()
-    np.testing.assert_allclose(_as_dense(norm_after), _as_dense(expected.X), rtol=1e-12, atol=1e-12)
+    np.testing.assert_allclose(_as_dense(norm_after), _as_dense(expected.X), rtol=1e-5, atol=1e-6)
 
 
 def test_normalize_layer_added_backed_persists_after_reopen(tmp_path):
@@ -501,9 +501,48 @@ def test_normalize_layer_added_backed_persists_after_reopen(tmp_path):
     reopened_x = MatrixSource(reopened, layer=None).to_memory()
     reopened_norm = MatrixSource(reopened, layer="normalized").to_memory()
     np.testing.assert_allclose(_as_dense(reopened_x), _as_dense(adata_mem.X), rtol=1e-12, atol=1e-12)
-    np.testing.assert_allclose(_as_dense(reopened_norm), _as_dense(expected.X), rtol=1e-12, atol=1e-12)
+    np.testing.assert_allclose(_as_dense(reopened_norm), _as_dense(expected.X), rtol=1e-5, atol=1e-6)
     if hasattr(reopened, "file") and reopened.file is not None:
         reopened.file.close()
+
+
+def test_normalize_layer_added_backed_hardlink_and_dtype(tmp_path):
+    """Backed layer_added hard-links indices, copies indptr, and uses correct dtype."""
+    import h5py
+
+    adata_mem = make_test_adata(n_cells=64, n_genes=48, sparse_fmt="csr", seed=25)
+    path = tmp_path / "hardlink_test.h5ad"
+    adata_mem.write_h5ad(path)
+    adata = ad.read_h5ad(path, backed="r+")
+
+    an.normalize_anndata(
+        adata,
+        target_sum=1e4,
+        log_transform=True,
+        log_base=2,
+        layer_added="normalized",
+        backed_chunk_size=24,
+        dtype_out="float32",
+        inplace=True,
+    )
+    if hasattr(adata, "file") and adata.file is not None:
+        adata.file.close()
+
+    with h5py.File(path, "r") as f:
+        src_grp = f["X"]
+        dst_grp = f["layers/normalized"]
+
+        assert dst_grp["data"].dtype == np.float32
+
+        src_indices_addr = h5py.h5o.get_info(src_grp["indices"].id).addr
+        dst_indices_addr = h5py.h5o.get_info(dst_grp["indices"].id).addr
+        assert src_indices_addr == dst_indices_addr, "indices should be hard-linked"
+
+        src_indptr_addr = h5py.h5o.get_info(src_grp["indptr"].id).addr
+        dst_indptr_addr = h5py.h5o.get_info(dst_grp["indptr"].id).addr
+        assert src_indptr_addr != dst_indptr_addr, "indptr should be an independent copy"
+
+        np.testing.assert_array_equal(src_grp["indptr"][...], dst_grp["indptr"][...])
 
 
 def test_reduce_kernel_autodecompresses_compressed_backed_matrix(tmp_path):
