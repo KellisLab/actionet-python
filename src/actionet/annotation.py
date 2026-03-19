@@ -7,7 +7,7 @@ from anndata import AnnData
 from scipy.stats import rankdata
 from scipy.sparse import issparse, csr_matrix
 
-from .core import compute_feature_specificity, _compute_specificity_streamed, _labels_to_membership
+from .core import compute_feature_specificity, _compute_specificity_streamed, _labels_to_membership, _run_specificity_backed_sparse
 from . import _core
 from ._matrix_source import MatrixSource
 
@@ -135,10 +135,25 @@ def find_markers(
 
         labels_int = labels_int + 1
         source = MatrixSource(adata_filtered, layer=layer)
-        H = _labels_to_membership(labels_int, source.n_obs)
-        streamed = _compute_specificity_streamed(source, H, chunk_size=backed_chunk_size)
-        upper_sig = streamed["upper_significance"]
-        lower_sig = streamed["lower_significance"]
+        if source.is_sparse:
+            # Sparse-backed: use the C++ ABI path via the shared dispatcher.
+            raw = _run_specificity_backed_sparse(
+                adata_filtered,
+                layer=layer,
+                chunk_size=backed_chunk_size,
+                labels_int=labels_int,
+                n_threads=0,
+            )
+            upper_sig = raw["upper_significance"]
+            lower_sig = raw["lower_significance"]
+        else:
+            # Dense-backed: fall back to the Python streamed path, which is
+            # the intended permanent role of _compute_specificity_streamed
+            # for dense backed inputs.
+            H = _labels_to_membership(labels_int, source.n_obs)
+            streamed = _compute_specificity_streamed(source, H, chunk_size=backed_chunk_size)
+            upper_sig = streamed["upper_significance"]
+            lower_sig = streamed["lower_significance"]
     else:
         # compute_feature_specificity internally does np.asarray → Categorical
         # to map labels to integer codes.  Because we already normalised

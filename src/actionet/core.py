@@ -642,6 +642,45 @@ def _labels_to_membership(labels_int: np.ndarray, n_obs: int) -> np.ndarray:
     return H
 
 
+def _run_specificity_backed_sparse(
+    adata: AnnData,
+    layer: Optional[str],
+    chunk_size: int,
+    *,
+    H: Optional[np.ndarray] = None,
+    labels_int: Optional[np.ndarray] = None,
+    n_threads: int = 0,
+) -> dict:
+    """Dispatch backed sparse specificity through the C++ ABI.
+
+    Exactly one of *H* (archetype/membership matrix, shape ``(k, n_obs)``) or
+    *labels_int* (1-based integer labels, shape ``(n_obs,)``) must be supplied.
+
+    For backed **dense** matrices this function is never called; those callers
+    retain ``_compute_specificity_streamed`` as their fallback, which is its
+    intended and permanent role for backed inputs that are not sparse.
+
+    Returns the raw result dict from the C++ binding.
+    """
+    file_path = str(adata.filename)
+    group_path = _backed_group_path(layer)
+    op = None
+    try:
+        op = _core.create_backed_operator(
+            file_path=file_path,
+            group_path=group_path,
+            chunk_size=chunk_size,
+            row_scale_factors=None,
+            apply_log1p=False,
+        )
+        if H is not None:
+            return _core.archetype_feature_specificity_backed_operator(op, H, n_threads)
+        else:
+            return _core.compute_feature_specificity_backed_operator(op, labels_int, n_threads)
+    finally:
+        op = None
+
+
 def _compute_specificity_streamed(
     source: MatrixSource,
     H_cells: np.ndarray,
@@ -816,6 +855,15 @@ def compute_feature_specificity(
         - If inplace=True and return_raw=False: returns None and modifies adata in place
         - If inplace=False and return_raw=False: returns a new AnnData object with the results
 
+    Notes
+    -----
+    When *adata* is in backed mode (on-disk), the function dispatches
+    through the C++ ABI for sparse-backed matrices, performing a
+    single streaming scan over the HDF5 data without loading the full
+    matrix into memory.  Dense-backed matrices fall back to the pure-Python
+    ``_compute_specificity_streamed`` path, which is the intended permanent
+    fallback for that case.
+
     Updates AnnData (if return_raw=False)
     --------------
     adata.varm[f"{key_added}_profile"] : np.ndarray
@@ -856,8 +904,21 @@ def compute_feature_specificity(
     labels_int = labels_int + 1
 
     if source.is_backed:
-        H = _labels_to_membership(labels_int, source.n_obs)
-        result = _compute_specificity_streamed(source, H, chunk_size=backed_chunk_size)
+        if source.is_sparse:
+            # Sparse-backed: dispatch through the C++ ABI for full performance.
+            result = _run_specificity_backed_sparse(
+                adata,
+                layer=layer,
+                chunk_size=backed_chunk_size,
+                labels_int=labels_int,
+                n_threads=n_threads,
+            )
+        else:
+            # Dense-backed: use the Python streamed fallback.  This is the
+            # intended permanent role of _compute_specificity_streamed for backed
+            # inputs; there is no C++ dense-backed specificity path.
+            H = _labels_to_membership(labels_int, source.n_obs)
+            result = _compute_specificity_streamed(source, H, chunk_size=backed_chunk_size)
     else:
         S = anndata_to_matrix(adata, layer=layer, transpose=True)
         if sp.issparse(S):
@@ -922,6 +983,15 @@ def compute_archetype_feature_specificity(
         If inplace=True, returns None and modifies adata in place.
         If inplace=False, returns a new AnnData object with the results.
 
+    Notes
+    -----
+    When *adata* is in backed mode (on-disk), the function dispatches
+    through the C++ ABI for sparse-backed matrices, performing a
+    single streaming scan over the HDF5 data without loading the full
+    matrix into memory.  Dense-backed matrices fall back to the pure-Python
+    ``_compute_specificity_streamed`` path, which is the intended permanent
+    fallback for that case.
+
     Updates AnnData
     --------------
     adata.varm[f"{key_added}_feat_profile"] : np.ndarray
@@ -946,12 +1016,26 @@ def compute_archetype_feature_specificity(
     H = np.ascontiguousarray(H, dtype=np.float64)
 
     if source.is_backed:
-        result_stream = _compute_specificity_streamed(source, H, chunk_size=backed_chunk_size)
-        result = {
-            "archetypes": result_stream["average_profile"],
-            "upper_significance": result_stream["upper_significance"],
-            "lower_significance": result_stream["lower_significance"],
-        }
+        if source.is_sparse:
+            # Sparse-backed: H is (n_obs, k); the C++ binding expects (k, n_obs).
+            H_t = np.ascontiguousarray(H.T, dtype=np.float64)
+            result = _run_specificity_backed_sparse(
+                adata,
+                layer=layer,
+                chunk_size=backed_chunk_size,
+                H=H_t,
+                n_threads=n_threads,
+            )
+        else:
+            # Dense-backed: use the Python streamed fallback.  This is the
+            # intended permanent role of _compute_specificity_streamed for backed
+            # inputs; there is no C++ dense-backed specificity path.
+            result_stream = _compute_specificity_streamed(source, H, chunk_size=backed_chunk_size)
+            result = {
+                "archetypes": result_stream["average_profile"],
+                "upper_significance": result_stream["upper_significance"],
+                "lower_significance": result_stream["lower_significance"],
+            }
     else:
         S = anndata_to_matrix(adata, layer=layer, transpose=True)
         H_t = np.ascontiguousarray(H.T, dtype=np.float64)
