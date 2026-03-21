@@ -262,6 +262,30 @@ class MatrixSource:
             return h5file["X"]
         return h5file["layers"][self.layer]
 
+    def backed_sparse_format(self) -> Optional[str]:
+        """Return ``'csr'`` or ``'csc'`` for backed sparse storage when known."""
+        if not (self.is_backed and self.is_sparse):
+            return None
+
+        fmt = getattr(self.matrix, "format", None)
+        if isinstance(fmt, str):
+            fmt = fmt.lower()
+            if fmt in {"csr", "csc"}:
+                return fmt
+
+        grp = self._resolve_h5_group()
+        enc = grp.attrs.get("encoding-type", "")
+        if isinstance(enc, bytes):
+            enc = enc.decode("utf-8", errors="ignore")
+        if isinstance(enc, str):
+            enc = enc.lower()
+            if "csr" in enc:
+                return "csr"
+            if "csc" in enc:
+                return "csc"
+
+        return None
+
     @staticmethod
     def _h5py_cast_data_dataset(
         grp,
@@ -304,6 +328,13 @@ class MatrixSource:
         Validates that the incoming block preserves the sparsity structure
         (same nnz per row) and handles dtype promotion when needed.
         """
+        sparse_format = self.backed_sparse_format()
+        if sparse_format == "csc":
+            raise ValueError(
+                "Direct row-wise writes to CSC-backed sparse matrices are not "
+                "supported. Rewrite the destination through CSR-backed storage."
+            )
+
         values_csr = sp.csr_matrix(values) if not sp.issparse(values) else values.tocsr()
 
         grp = self._resolve_h5_group()

@@ -150,23 +150,34 @@ def normalize_anndata(
                     "`layer_added` with backed AnnData requires writable mode 'r+'. "
                     "Re-open with `ad.read_h5ad(path, backed=\"r+\")`."
                 )
-            _create_backed_normalized_layer(
-                adata,
-                source=source,
-                layer_added=layer_added,
-                dtype_out=out_dtype,
-            )
-            _normalize_backed_streamed(
-                source,
-                adata,
-                layer_added=layer_added,
-                target_sum=target_sum,
-                log_transform=log_transform,
-                log_base=log_base,
-                chunk_size=backed_chunk_size,
-                dtype_out=out_dtype,
-            )
-            _refresh_backed_handle(adata, str(adata.filename), mode="r+")
+            if source.is_sparse and source.backed_sparse_format() == "csc":
+                _normalize_backed_csc_via_csr_rewrite(
+                    source,
+                    target_sum=target_sum,
+                    log_transform=log_transform,
+                    log_base=log_base,
+                    chunk_size=backed_chunk_size,
+                    dtype_out=out_dtype,
+                    layer_added=layer_added,
+                )
+            else:
+                _create_backed_normalized_layer(
+                    adata,
+                    source=source,
+                    layer_added=layer_added,
+                    dtype_out=out_dtype,
+                )
+                _normalize_backed_streamed(
+                    source,
+                    adata,
+                    layer_added=layer_added,
+                    target_sum=target_sum,
+                    log_transform=log_transform,
+                    log_base=log_base,
+                    chunk_size=backed_chunk_size,
+                    dtype_out=out_dtype,
+                )
+                _refresh_backed_handle(adata, str(adata.filename), mode="r+")
         else:
             adata.layers[layer_added] = _normalize_matrix_in_memory(
                 source.matrix,
@@ -257,6 +268,45 @@ def _normalize_matrix_in_memory(
     return arr
 
 
+def _normalize_sparse_block(
+    block,
+    scale: np.ndarray,
+    *,
+    log_transform: bool,
+    log_scale: Optional[float],
+    dtype_out: np.dtype,
+) -> sp.csr_matrix:
+    """Normalize one sparse row block and return CSR output."""
+    block = block.tocsr(copy=True)
+    block = block.astype(dtype_out, copy=False)
+    if block.nnz > 0:
+        row_nnz = np.diff(block.indptr)
+        block.data *= np.repeat(scale, row_nnz)
+        if log_transform:
+            np.log1p(block.data, out=block.data)
+            if log_scale is not None and log_scale != 1.0:
+                block.data *= log_scale
+    return block
+
+
+def _normalize_dense_block(
+    block,
+    scale: np.ndarray,
+    *,
+    log_transform: bool,
+    log_scale: Optional[float],
+    dtype_out: np.dtype,
+) -> np.ndarray:
+    """Normalize one dense row block and return dense output."""
+    arr = np.asarray(block, dtype=dtype_out)
+    arr *= scale[:, np.newaxis]
+    if log_transform:
+        np.log1p(arr, out=arr)
+        if log_scale is not None and log_scale != 1.0:
+            arr *= log_scale
+    return arr
+
+
 # ---------------------------------------------------------------------------
 # Backed (disk-backed) chunked path
 # ---------------------------------------------------------------------------
@@ -270,6 +320,18 @@ def _normalize_backed(
     dtype_out: np.dtype,
 ) -> None:
     """Normalize a backed AnnData matrix using chunked streaming I/O."""
+    if source.is_sparse and source.backed_sparse_format() == "csc":
+        _normalize_backed_csc_via_csr_rewrite(
+            source,
+            target_sum=target_sum,
+            log_transform=log_transform,
+            log_base=log_base,
+            chunk_size=chunk_size,
+            dtype_out=dtype_out,
+            layer_added=None,
+        )
+        return
+
     row_sums = source.row_sums(chunk_size=chunk_size)
     scaling = np.divide(
         target_sum,
@@ -277,41 +339,25 @@ def _normalize_backed(
         out=np.zeros_like(row_sums, dtype=np.float64),
         where=row_sums > 0,
     )
+    log_scale = None if not log_transform else (1.0 if log_base is None else 1.0 / np.log(log_base))
 
-    if log_transform:
-        log_scale = 1.0 if log_base is None else 1.0 / np.log(log_base)
-
-        def _normalize_block(block, start: int, end: int):
-            scale = scaling[start:end]
-            if issparse(block):
-                block = block.tocsr(copy=True)
-                block = block.astype(dtype_out, copy=False)
-                if block.nnz > 0:
-                    row_nnz = np.diff(block.indptr)
-                    block.data *= np.repeat(scale, row_nnz)
-                    np.log1p(block.data, out=block.data)
-                    if log_scale != 1.0:
-                        block.data *= log_scale
-                return block
-            arr = np.asarray(block, dtype=dtype_out)
-            arr *= scale[:, np.newaxis]
-            np.log1p(arr, out=arr)
-            if log_scale != 1.0:
-                arr *= log_scale
-            return arr
-    else:
-        def _normalize_block(block, start: int, end: int):
-            scale = scaling[start:end]
-            if issparse(block):
-                block = block.tocsr(copy=True)
-                block = block.astype(dtype_out, copy=False)
-                if block.nnz > 0:
-                    row_nnz = np.diff(block.indptr)
-                    block.data *= np.repeat(scale, row_nnz)
-                return block
-            arr = np.asarray(block, dtype=dtype_out)
-            arr *= scale[:, np.newaxis]
-            return arr
+    def _normalize_block(block, start: int, end: int):
+        scale = scaling[start:end]
+        if issparse(block):
+            return _normalize_sparse_block(
+                block,
+                scale,
+                log_transform=log_transform,
+                log_scale=log_scale,
+                dtype_out=dtype_out,
+            )
+        return _normalize_dense_block(
+            block,
+            scale,
+            log_transform=log_transform,
+            log_scale=log_scale,
+            dtype_out=dtype_out,
+        )
 
     source.apply_rowwise(_normalize_block, chunk_size=chunk_size)
 
@@ -433,6 +479,12 @@ def _normalize_backed_streamed(
     is_sparse_dest = hasattr(dest_node, "keys") and "data" in dest_node
 
     if is_sparse_dest:
+        dest_encoding = _backed_sparse_group_format(dest_node)
+        if dest_encoding != "csr":
+            raise ValueError(
+                "Streamed sparse normalization destinations must use CSR-backed storage."
+            )
+
         dest_data_ds = dest_node["data"]
         dest_indptr_ds = dest_node["indptr"]
 
@@ -441,23 +493,23 @@ def _normalize_backed_streamed(
             scale = scaling[chunk.start:chunk.end]
 
             if issparse(block):
-                block = block.tocsr(copy=True)
-                block = block.astype(dtype_out, copy=False)
-                if block.nnz > 0:
-                    row_nnz = np.diff(block.indptr)
-                    block.data *= np.repeat(scale, row_nnz)
-                    if log_transform:
-                        np.log1p(block.data, out=block.data)
-                        if log_scale != 1.0:
-                            block.data *= log_scale
+                block = _normalize_sparse_block(
+                    block,
+                    scale,
+                    log_transform=log_transform,
+                    log_scale=log_scale,
+                    dtype_out=dtype_out,
+                )
             else:
-                block = np.asarray(block, dtype=dtype_out)
-                block *= scale[:, np.newaxis]
-                if log_transform:
-                    np.log1p(block, out=block)
-                    if log_scale != 1.0:
-                        block *= log_scale
-                block = sp.csr_matrix(block)
+                block = sp.csr_matrix(
+                    _normalize_dense_block(
+                        block,
+                        scale,
+                        log_transform=log_transform,
+                        log_scale=log_scale,
+                        dtype_out=dtype_out,
+                    )
+                )
 
             ip_start = int(dest_indptr_ds[chunk.start])
             ip_end = int(dest_indptr_ds[chunk.end])
@@ -472,16 +524,238 @@ def _normalize_backed_streamed(
 
             if issparse(block):
                 block = block.toarray()
-            arr = np.asarray(block, dtype=dtype_out)
-            arr *= scale[:, np.newaxis]
-            if log_transform:
-                np.log1p(arr, out=arr)
-                if log_scale is not None and log_scale != 1.0:
-                    arr *= log_scale
+            arr = _normalize_dense_block(
+                block,
+                scale,
+                log_transform=log_transform,
+                log_scale=log_scale,
+                dtype_out=dtype_out,
+            )
 
             dest_node[chunk.start:chunk.end, :] = arr
 
     h5file.flush()
+
+
+def _backed_sparse_group_format(group) -> str | None:
+    """Return ``'csr'`` or ``'csc'`` for one sparse HDF5 group when known."""
+    enc = group.attrs.get("encoding-type", "")
+    if isinstance(enc, bytes):
+        enc = enc.decode("utf-8", errors="ignore")
+    if not isinstance(enc, str):
+        return None
+    enc = enc.lower()
+    if "csr" in enc:
+        return "csr"
+    if "csc" in enc:
+        return "csc"
+    return None
+
+
+def _dataset_create_kwargs_like(
+    src_ds,
+    *,
+    shape: tuple[int, ...],
+    dtype: np.dtype,
+) -> dict:
+    """Build create_dataset kwargs that preserve codec settings best-effort."""
+    kwargs = {
+        "shape": shape,
+        "dtype": dtype,
+    }
+    if getattr(src_ds, "compression", None) is not None:
+        kwargs["compression"] = src_ds.compression
+        if src_ds.compression_opts is not None:
+            kwargs["compression_opts"] = src_ds.compression_opts
+    if getattr(src_ds, "chunks", None) is not None and all(dim > 0 for dim in shape):
+        chunks = tuple(min(int(src_chunk), int(dim)) for src_chunk, dim in zip(src_ds.chunks, shape))
+        if all(chunk > 0 for chunk in chunks):
+            kwargs["chunks"] = chunks
+    return kwargs
+
+
+def _compute_backed_sparse_row_stats(
+    source: MatrixSource,
+    *,
+    chunk_size: int,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Return row sums and row nnz counts for one backed sparse source."""
+    row_sums = np.zeros(source.n_obs, dtype=np.float64)
+    row_nnz = np.zeros(source.n_obs, dtype=np.int64)
+
+    for chunk in source.iter_row_chunks(chunk_size=chunk_size):
+        block = chunk.block
+        if issparse(block):
+            block_csr = block.tocsr(copy=False)
+            row_sums[chunk.start:chunk.end] = np.asarray(block_csr.sum(axis=1)).ravel()
+            row_nnz[chunk.start:chunk.end] = np.diff(block_csr.indptr).astype(np.int64, copy=False)
+        else:
+            arr = np.asarray(block, dtype=np.float64)
+            row_sums[chunk.start:chunk.end] = arr.sum(axis=1)
+            row_nnz[chunk.start:chunk.end] = np.count_nonzero(arr, axis=1)
+
+    return row_sums, row_nnz
+
+
+def _create_backed_csr_group_from_row_nnz(
+    parent,
+    *,
+    name: str,
+    source: MatrixSource,
+    source_grp,
+    row_nnz: np.ndarray,
+    dtype_out: np.dtype,
+):
+    """Create one CSR sparse HDF5 group sized from row nnz counts."""
+    total_nnz = int(row_nnz.sum())
+    indptr_dtype = np.dtype(source_grp["indptr"].dtype)
+    indices_dtype = np.dtype(source_grp["indices"].dtype)
+
+    if np.issubdtype(indptr_dtype, np.integer):
+        max_value = np.iinfo(indptr_dtype).max
+        if total_nnz > max_value:
+            raise OverflowError(
+                f"Normalized sparse output needs {total_nnz} entries, which exceeds {indptr_dtype}."
+            )
+
+    if name in parent:
+        del parent[name]
+    dest_grp = parent.create_group(name)
+
+    indptr = np.empty(source.n_obs + 1, dtype=indptr_dtype)
+    indptr[0] = 0
+    np.cumsum(row_nnz, dtype=indptr_dtype, out=indptr[1:])
+
+    data_kwargs = _dataset_create_kwargs_like(
+        source_grp["data"],
+        shape=(total_nnz,),
+        dtype=dtype_out,
+    )
+    indices_kwargs = _dataset_create_kwargs_like(
+        source_grp["indices"],
+        shape=(total_nnz,),
+        dtype=indices_dtype,
+    )
+    indptr_kwargs = _dataset_create_kwargs_like(
+        source_grp["indptr"],
+        shape=(source.n_obs + 1,),
+        dtype=indptr_dtype,
+    )
+
+    dest_grp.create_dataset("data", **data_kwargs)
+    dest_grp.create_dataset("indices", **indices_kwargs)
+    dest_grp.create_dataset("indptr", data=indptr, **indptr_kwargs)
+
+    _copy_h5_attrs(source_grp, dest_grp)
+    dest_grp.attrs["encoding-type"] = "csr_matrix"
+    dest_grp.attrs["shape"] = np.asarray([source.n_obs, source.n_vars], dtype=np.int64)
+    return dest_grp
+
+
+def _write_normalized_chunks_to_csr_group(
+    source: MatrixSource,
+    *,
+    dest_grp,
+    scaling: np.ndarray,
+    log_transform: bool,
+    log_scale: Optional[float],
+    chunk_size: int,
+    dtype_out: np.dtype,
+) -> None:
+    """Stream normalized row chunks into one CSR sparse destination group."""
+    dest_indptr_ds = dest_grp["indptr"]
+    dest_indices_ds = dest_grp["indices"]
+    dest_data_ds = dest_grp["data"]
+
+    for chunk in source.iter_row_chunks(chunk_size=chunk_size):
+        scale = scaling[chunk.start:chunk.end]
+        block_csr = _normalize_sparse_block(
+            chunk.block,
+            scale,
+            log_transform=log_transform,
+            log_scale=log_scale,
+            dtype_out=dtype_out,
+        )
+
+        ip_start = int(dest_indptr_ds[chunk.start])
+        ip_end = int(dest_indptr_ds[chunk.end])
+        expected_nnz = ip_end - ip_start
+        if block_csr.nnz != expected_nnz:
+            raise ValueError(
+                f"CSR destination nnz mismatch for rows [{chunk.start}, {chunk.end}): "
+                f"expected {expected_nnz}, observed {block_csr.nnz}."
+            )
+
+        if expected_nnz == 0:
+            continue
+
+        dest_indices_ds[ip_start:ip_end] = block_csr.indices.astype(dest_indices_ds.dtype, copy=False)
+        dest_data_ds[ip_start:ip_end] = block_csr.data.astype(dtype_out, copy=False)
+
+
+def _normalize_backed_csc_via_csr_rewrite(
+    source: MatrixSource,
+    *,
+    target_sum: float,
+    log_transform: bool,
+    log_base: Optional[float],
+    chunk_size: int,
+    dtype_out: np.dtype,
+    layer_added: str | None,
+) -> None:
+    """Normalize one backed CSC source by rewriting the destination as CSR."""
+    adata = source.adata
+    h5file = adata.file._file
+    source_grp = source._resolve_h5_group()
+
+    if layer_added is None:
+        parent = h5file if source.layer is None else h5file["layers"]
+        target_name = "X" if source.layer is None else source.layer
+    else:
+        parent = h5file["layers"] if "layers" in h5file else h5file.create_group("layers")
+        target_name = layer_added
+
+    temp_name = f"__actionet_normalize_tmp_{target_name}"
+    row_sums, row_nnz = _compute_backed_sparse_row_stats(source, chunk_size=chunk_size)
+    scaling = np.divide(
+        target_sum,
+        row_sums,
+        out=np.zeros_like(row_sums, dtype=np.float64),
+        where=row_sums > 0,
+    )
+    log_scale = None if not log_transform else (1.0 if log_base is None else 1.0 / np.log(log_base))
+
+    try:
+        dest_grp = _create_backed_csr_group_from_row_nnz(
+            parent,
+            name=temp_name,
+            source=source,
+            source_grp=source_grp,
+            row_nnz=row_nnz,
+            dtype_out=dtype_out,
+        )
+        _write_normalized_chunks_to_csr_group(
+            source,
+            dest_grp=dest_grp,
+            scaling=scaling,
+            log_transform=log_transform,
+            log_scale=log_scale,
+            chunk_size=chunk_size,
+            dtype_out=dtype_out,
+        )
+        h5file.flush()
+
+        if target_name in parent:
+            del parent[target_name]
+        parent.move(temp_name, target_name)
+        h5file.flush()
+    except Exception:
+        if temp_name in parent:
+            del parent[temp_name]
+            h5file.flush()
+        raise
+
+    _refresh_backed_handle(adata, str(adata.filename), mode="r+")
 
 
 def _compute_filter_stats(

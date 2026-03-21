@@ -3,6 +3,7 @@
 
 #include "wp_utils.h"
 #include "libactionet.hpp"
+#include "io/backed_h5ad/create_backed_operator.hpp"
 
 namespace py = pybind11;
 
@@ -267,6 +268,110 @@ py::dict run_svd_operator(py::object op, int k = 30, int max_it = 0, int seed = 
 
 // =====================================================================================================================
 
+py::dict orthogonalize_batch_effect_operator(
+    std::shared_ptr<actionet::MatrixOperator> op,
+    py::array_t<double> old_S_r,
+    py::array_t<double> old_U, py::array_t<double> old_A,
+    py::array_t<double> old_B, py::array_t<double> old_sigma,
+    py::array_t<double> design) {
+
+    if (!op) {
+        throw std::runtime_error("orthogonalize_batch_effect_operator: operator is null");
+    }
+
+    arma::mat S_r_mat = numpy_to_arma_mat(old_S_r);
+    arma::mat U_mat = numpy_to_arma_mat(old_U);
+    arma::mat A_mat = numpy_to_arma_mat(old_A);
+    arma::mat B_mat = numpy_to_arma_mat(old_B);
+    arma::vec sigma_vec = numpy_to_arma_vec(old_sigma);
+    arma::mat design_mat = numpy_to_arma_mat(design);
+
+    actionet::SVDResult svd;
+    svd.U = U_mat;
+    svd.sigma = sigma_vec;
+    svd.V = S_r_mat;
+    for (size_t i = 0; i < sigma_vec.n_elem; i++) {
+        svd.V.col(i) /= sigma_vec(i);
+    }
+
+    actionet::PerturbedSVDResult prior;
+    const actionet::PerturbedSVDResult* prior_ptr = nullptr;
+    if (A_mat.n_elem > 0 && B_mat.n_elem > 0) {
+        prior.A = A_mat;
+        prior.B = B_mat;
+        prior_ptr = &prior;
+    }
+
+    actionet::PerturbedSVDResult result = actionet::orthogonalizeBatchEffect_Operator(
+        *op, svd, prior_ptr, design_mat);
+
+    arma::mat V = result.V;
+    for (size_t i = 0; i < result.sigma.n_elem; i++) {
+        V.col(i) *= result.sigma(i);
+    }
+
+    py::dict out;
+    out["U"] = arma_mat_to_numpy(result.U);
+    out["sigma"] = arma_vec_to_numpy(result.sigma);
+    out["S_r"] = arma_mat_to_numpy(V.t());
+    out["A"] = arma_mat_to_numpy(result.A);
+    out["B"] = arma_mat_to_numpy(result.B);
+    return out;
+}
+
+py::dict orthogonalize_basal_operator(
+    std::shared_ptr<actionet::MatrixOperator> op,
+    py::array_t<double> old_S_r,
+    py::array_t<double> old_U, py::array_t<double> old_A,
+    py::array_t<double> old_B, py::array_t<double> old_sigma,
+    py::array_t<double> basal) {
+
+    if (!op) {
+        throw std::runtime_error("orthogonalize_basal_operator: operator is null");
+    }
+
+    arma::mat S_r_mat = numpy_to_arma_mat(old_S_r);
+    arma::mat U_mat = numpy_to_arma_mat(old_U);
+    arma::mat A_mat = numpy_to_arma_mat(old_A);
+    arma::mat B_mat = numpy_to_arma_mat(old_B);
+    arma::vec sigma_vec = numpy_to_arma_vec(old_sigma);
+    arma::mat basal_mat = numpy_to_arma_mat(basal);
+
+    actionet::SVDResult svd;
+    svd.U = U_mat;
+    svd.sigma = sigma_vec;
+    svd.V = S_r_mat;
+    for (size_t i = 0; i < sigma_vec.n_elem; i++) {
+        svd.V.col(i) /= sigma_vec(i);
+    }
+
+    actionet::PerturbedSVDResult prior;
+    const actionet::PerturbedSVDResult* prior_ptr = nullptr;
+    if (A_mat.n_elem > 0 && B_mat.n_elem > 0) {
+        prior.A = A_mat;
+        prior.B = B_mat;
+        prior_ptr = &prior;
+    }
+
+    actionet::PerturbedSVDResult result = actionet::orthogonalizeBasal_Operator(
+        *op, svd, prior_ptr, basal_mat);
+
+    arma::mat V = result.V;
+    for (size_t i = 0; i < result.sigma.n_elem; i++) {
+        V.col(i) *= result.sigma(i);
+    }
+
+    py::dict out;
+    out["U"] = arma_mat_to_numpy(result.U);
+    out["sigma"] = arma_vec_to_numpy(result.sigma);
+    out["S_r"] = arma_mat_to_numpy(V.t());
+    out["A"] = arma_mat_to_numpy(result.A);
+    out["B"] = arma_mat_to_numpy(result.B);
+    return out;
+}
+
+// =====================================================================================================================
+
 void init_decomposition(py::module_ &m) {
     // orthogonalization
     m.def("orthogonalize_batch_effect_sparse", &orthogonalize_batch_effect_sparse,
@@ -310,4 +415,14 @@ void init_decomposition(py::module_ &m) {
     m.def("run_svd_operator", &run_svd_operator, "Run SVD (generic operator)",
           py::arg("op"), py::arg("k") = 30, py::arg("max_it") = 0, py::arg("seed") = 0,
           py::arg("algorithm") = ALG_HALKO, py::arg("verbose") = true);
+
+    m.def("orthogonalize_batch_effect_operator", &orthogonalize_batch_effect_operator,
+          "Orthogonalize batch effects (operator-backed)",
+          py::arg("op"), py::arg("old_S_r"), py::arg("old_U"), py::arg("old_A"),
+          py::arg("old_B"), py::arg("old_sigma"), py::arg("design"));
+
+    m.def("orthogonalize_basal_operator", &orthogonalize_basal_operator,
+          "Orthogonalize basal expression (operator-backed)",
+          py::arg("op"), py::arg("old_S_r"), py::arg("old_U"), py::arg("old_A"),
+          py::arg("old_B"), py::arg("old_sigma"), py::arg("basal"));
 }

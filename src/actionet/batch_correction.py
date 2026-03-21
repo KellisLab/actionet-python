@@ -35,125 +35,8 @@ def _load_reduction_state(adata: AnnData, reduction_key: str) -> tuple[np.ndarra
     return old_S_r, old_U, old_A, old_B, old_sigma
 
 
-def _orthonormalize_columns(X: np.ndarray, eps: float = 1e-12) -> np.ndarray:
-    """QR-orthonormalise the columns of *X*, dropping near-zero-norm columns."""
-    if X.size == 0:
-        return np.zeros((X.shape[0], 0), dtype=np.float64)
-
-    Q, R = np.linalg.qr(np.asarray(X, dtype=np.float64), mode="reduced")
-    keep = np.abs(np.diag(R)) > eps
-    if np.any(keep):
-        return Q[:, keep]
-    return np.zeros((X.shape[0], 0), dtype=np.float64)
-
-
-def _deflate_terms(A: np.ndarray, B: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-    """Augment perturbation matrices with a mean-deflation column.
-
-    Given perturbation pair ``(A, B)`` representing a rank-*q* additive
-    correction ``A @ B.T``, this prepends a column that removes the column
-    mean of A:
-
-        A_aug = [1, A]          (n_vars, q+1)
-        B_aug = [-B @ mean(A), B]   (n_obs, q+1)
-
-    This ensures that the perturbedSVD call simultaneously centres the
-    correction and applies the orthogonalisation.
-    """
-    mu_A = np.asarray(A.mean(axis=0), dtype=np.float64).reshape(-1)
-    mu = np.asarray(B @ mu_A, dtype=np.float64).reshape(-1, 1)
-    A_aug = np.column_stack([np.ones((A.shape[0], 1), dtype=np.float64), A])
-    B_aug = np.column_stack([-mu, B])
-    return np.ascontiguousarray(A_aug), np.ascontiguousarray(B_aug)
-
-
-def _perturbed_with_prior(
-    old_S_r: np.ndarray,
-    old_U: np.ndarray,
-    old_A: np.ndarray,
-    old_B: np.ndarray,
-    old_sigma: np.ndarray,
-    A_new: np.ndarray,
-    B_new: np.ndarray,
-) -> dict:
-    """Apply a new additive perturbation on top of an existing corrected SVD.
-
-    Reconstructs the right singular vectors ``V`` from ``S_r / sigma``,
-    calls the C++ ``perturbedSVD`` with both the prior perturbation terms
-    ``(old_A, old_B)`` and the new terms ``(A_new, B_new)``, and returns the
-    updated reduction in the same dict format as the in-memory C++ path.
-
-    Returns
-    -------
-    dict with keys ``"U"``, ``"sigma"``, ``"S_r"``, ``"A"``, ``"B"``.
-    ``S_r`` has shape ``(k, n_obs)`` -- the same orientation as the
-    in-memory C++ binding output.
-    """
-    old_V = old_S_r / old_sigma[np.newaxis, :]
-    out = _core.perturbed_svd_with_prior(
-        np.ascontiguousarray(old_U, dtype=np.float64),
-        np.ascontiguousarray(old_sigma, dtype=np.float64),
-        np.ascontiguousarray(old_V, dtype=np.float64),
-        np.ascontiguousarray(old_A, dtype=np.float64),
-        np.ascontiguousarray(old_B, dtype=np.float64),
-        np.ascontiguousarray(A_new, dtype=np.float64),
-        np.ascontiguousarray(B_new, dtype=np.float64),
-    )
-
-    sigma = np.asarray(out["d"], dtype=np.float64).reshape(-1)
-    V = np.asarray(out["v"], dtype=np.float64, order="C")
-    S_r = (V * sigma[np.newaxis, :]).T
-
-    # Orientation contract: S_r is (k, n_obs), matching the in-memory C++ path.
-    assert S_r.shape[0] == sigma.shape[0], (
-        f"S_r orientation mismatch: expected ({sigma.shape[0]}, n_obs), "
-        f"got {S_r.shape}"
-    )
-
-    return {
-        "U": np.asarray(out["u"], dtype=np.float64, order="C"),
-        "sigma": sigma,
-        "S_r": np.asarray(S_r, dtype=np.float64, order="C"),
-        "A": np.asarray(out["A"], dtype=np.float64, order="C"),
-        "B": np.asarray(out["B"], dtype=np.float64, order="C"),
-    }
-
-
-def _streamed_batch_terms(
-    source: MatrixSource, design: np.ndarray, chunk_size: int
-) -> tuple[np.ndarray, np.ndarray]:
-    """Compute batch-correction perturbation terms from a backed matrix.
-
-    Two streaming passes are required:
-      1. ``Z = orth(X.T @ design)``  -- accumulates ``X.T @ design`` row-wise.
-      2. ``B = -X @ Z``              -- needs ``Z`` from pass 1.
-
-    Returns ``(Z, B)`` with shapes ``(n_vars, q)`` and ``(n_obs, q)``
-    where *q* is the rank of the orthonormalised design projection.
-    """
-    Z = source.xt_dot(design, chunk_size=chunk_size)  # genes x covariates
-    Z = _orthonormalize_columns(Z)
-    if Z.shape[1] == 0:
-        raise ValueError("Design matrix is rank-deficient after orthonormalization.")
-    B = -source.x_dot(Z, chunk_size=chunk_size)  # cells x covariates
-    return Z, B
-
-
-def _streamed_basal_terms(
-    source: MatrixSource, basal: np.ndarray, chunk_size: int
-) -> tuple[np.ndarray, np.ndarray]:
-    """Compute basal-correction perturbation terms from a backed matrix.
-
-    Only one streaming pass is needed because ``Z = orth(basal)`` does not
-    require reading the matrix.
-
-    Returns ``(Z, B)`` with shapes ``(n_vars, q)`` and ``(n_obs, q)``.
-    """
-    Z = _orthonormalize_columns(basal)
-    if Z.shape[1] == 0:
-        raise ValueError("Basal state matrix is rank-deficient after orthonormalization.")
-    B = -source.x_dot(Z, chunk_size=chunk_size)
-    return Z, B
+def _backed_group_path(layer: Optional[str]) -> str:
+    return "/X" if layer is None else f"/layers/{layer}"
 
 
 def correct_batch_effect(
@@ -219,9 +102,16 @@ def correct_batch_effect(
 
     source = MatrixSource(adata, layer=layer)
     if source.is_backed:
-        A_new, B_new = _streamed_batch_terms(source, design, chunk_size=backed_chunk_size)
-        A_deflate, B_deflate = _deflate_terms(A_new, B_new)
-        result = _perturbed_with_prior(old_S_r, old_U, old_A, old_B, old_sigma, A_deflate, B_deflate)
+        file_path = str(adata.filename)
+        group_path = _backed_group_path(layer)
+        op = _core.create_backed_operator(
+            file_path=file_path,
+            group_path=group_path,
+            chunk_size=backed_chunk_size,
+        )
+        result = _core.orthogonalize_batch_effect_operator(
+            op, old_S_r, old_U, old_A, old_B, old_sigma, design,
+        )
     else:
         S = anndata_to_matrix(adata, layer=layer, transpose=True)
         if sp.issparse(S):
@@ -300,9 +190,16 @@ def correct_basal_expression(
 
     source = MatrixSource(adata, layer=layer)
     if source.is_backed:
-        A_new, B_new = _streamed_basal_terms(source, basal, chunk_size=backed_chunk_size)
-        A_deflate, B_deflate = _deflate_terms(A_new, B_new)
-        result = _perturbed_with_prior(old_S_r, old_U, old_A, old_B, old_sigma, A_deflate, B_deflate)
+        file_path = str(adata.filename)
+        group_path = _backed_group_path(layer)
+        op = _core.create_backed_operator(
+            file_path=file_path,
+            group_path=group_path,
+            chunk_size=backed_chunk_size,
+        )
+        result = _core.orthogonalize_basal_operator(
+            op, old_S_r, old_U, old_A, old_B, old_sigma, basal,
+        )
     else:
         S = anndata_to_matrix(adata, layer=layer, transpose=True)
         if sp.issparse(S):

@@ -3,6 +3,8 @@
 #include "wp_utils.h"
 #include "libactionet.hpp"
 #include "io/backed_h5ad/backed_sparse_matrix_operator.hpp"
+#include "io/backed_h5ad/backed_dense_matrix_operator.hpp"
+#include "io/backed_h5ad/create_backed_operator.hpp"
 
 #include <algorithm>
 #include <memory>
@@ -46,13 +48,13 @@ namespace {
     }
 } // namespace
 
-std::shared_ptr<actionet::BackedSparseMatrixOperator> create_backed_operator(
+std::shared_ptr<actionet::MatrixOperator> create_backed_operator(
     const std::string& file_path,
     const std::string& group_path,
     int chunk_size,
     py::object row_scale_factors,
     bool apply_log1p) {
-    return std::make_shared<actionet::BackedSparseMatrixOperator>(
+    return actionet::createBackedOperator(
         file_path,
         group_path,
         static_cast<arma::uword>(std::max(1, chunk_size)),
@@ -116,8 +118,25 @@ void init_io(py::module_ &m) {
         .def_property_readonly("file_path", &actionet::BackedSparseMatrixOperator::filePath)
         .def_property_readonly("group_path", &actionet::BackedSparseMatrixOperator::groupPath);
 
+    py::class_<actionet::BackedDenseMatrixOperator, actionet::MatrixOperator,
+               std::shared_ptr<actionet::BackedDenseMatrixOperator>>(m, "BackedDenseMatrixOperator")
+        .def(py::init<const std::string&, const std::string&, arma::uword,
+                      const std::vector<double>&, bool, size_t>(),
+             py::arg("file_path"),
+             py::arg("group_path") = "/X",
+             py::arg("chunk_size") = 4096,
+             py::arg("row_scale_factors") = std::vector<double>{},
+             py::arg("apply_log1p") = false,
+             py::arg("slab_byte_budget") = 256ULL * 1024 * 1024)
+        .def_property_readonly("shape", [](const actionet::BackedDenseMatrixOperator& op) {
+            return py::make_tuple(op.rows(), op.cols());
+        })
+        .def_property_readonly("file_path", &actionet::BackedDenseMatrixOperator::filePath)
+        .def_property_readonly("group_path", &actionet::BackedDenseMatrixOperator::groupPath)
+        .def_property_readonly("effective_chunk_size", &actionet::BackedDenseMatrixOperator::effectiveChunkSize);
+
     m.def("create_backed_operator", &create_backed_operator,
-          "Create an HDF5-backed sparse matrix operator",
+          "Create an HDF5-backed matrix operator (auto-detects sparse vs dense)",
           py::arg("file_path"),
           py::arg("group_path") = "/X",
           py::arg("chunk_size") = 4096,

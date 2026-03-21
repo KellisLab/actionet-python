@@ -126,6 +126,16 @@ def _sparse_codecs(adata: ad.AnnData, *, layer: str | None = None) -> dict[str, 
     }
 
 
+def _sparse_encoding(adata: ad.AnnData, *, layer: str | None = None) -> str:
+    """Return sparse encoding metadata for `.X` or one backed layer."""
+    h5file = adata.file._file
+    grp = h5file["X"] if layer is None else h5file["layers"][layer]
+    enc = grp.attrs.get("encoding-type", "")
+    if isinstance(enc, bytes):
+        enc = enc.decode("utf-8", errors="ignore")
+    return str(enc)
+
+
 def _as_dense(matrix_like) -> np.ndarray:
     """Return a dense ndarray from sparse or dense matrix-like inputs."""
     if sp.issparse(matrix_like):
@@ -302,26 +312,57 @@ def test_backed_chunked_write_preserves_layers(tmp_path):
     assert "Gene" in adata.var.columns
 
 
-def test_backed_preprocessing_csr_and_csc(tmp_path):
-    """normalize_anndata produces correct row sums for CSR and CSC.
+@pytest.mark.parametrize(
+    ("fmt", "target_layer", "seed"),
+    [
+        ("csr", None, 17),
+        ("csc", None, 23),
+        ("csc", "logcounts", 23),
+    ],
+)
+def test_backed_preprocessing_csr_and_csc(tmp_path, fmt, target_layer, seed):
+    """normalize_anndata produces correct row sums for backed CSR and CSC."""
+    adata_mem = make_test_adata(sparse_fmt=fmt, seed=seed)
+    adata = open_backed(tmp_path / f"{fmt}_{target_layer or 'X'}", adata_mem)
+    path = adata.filename
 
-    Note: CSC-backed X triggers h5py 'increasing order' errors on row-slice
-    read, so we test CSC via a layer rather than .X directly.
-    """
-    for fmt in ("csr", "csc"):
-        adata_mem = make_test_adata(sparse_fmt=fmt, seed=17 if fmt == "csr" else 23)
-        adata = open_backed(tmp_path / fmt, adata_mem)
+    an.normalize_anndata(
+        adata,
+        target_sum=1e4,
+        log_transform=False,
+        layer=target_layer,
+        backed_chunk_size=24,
+        inplace=True,
+    )
+    src = MatrixSource(adata, layer=target_layer)
+    row_sums = src.row_sums(chunk_size=24)
+    nonzero_rows = row_sums > 0
+    assert np.allclose(row_sums[nonzero_rows], 1e4, rtol=1e-2, atol=1e-2)
+    if fmt == "csc":
+        assert _sparse_encoding(adata, layer=target_layer) == "csr_matrix"
 
-        target_layer = "logcounts" if fmt == "csc" else None
-        an.normalize_anndata(adata, target_sum=1e4, log_transform=False, layer=target_layer, backed_chunk_size=24, inplace=True)
-        src = MatrixSource(adata, layer=target_layer)
-        row_sums = src.row_sums(chunk_size=24)
-        nonzero_rows = row_sums > 0
-        assert np.allclose(row_sums[nonzero_rows], 1e4, rtol=1e-2, atol=1e-2)
+    # Now apply log_transform via a second call with scaling disabled
+    # (already normalised, just test the combined path works)
+    an.normalize_anndata(
+        adata,
+        target_sum=1e4,
+        log_transform=True,
+        log_base=2,
+        layer=target_layer,
+        backed_chunk_size=24,
+        inplace=True,
+    )
+    if fmt == "csc":
+        assert _sparse_encoding(adata, layer=target_layer) == "csr_matrix"
 
-        # Now apply log_transform via a second call with scaling disabled
-        # (already normalised, just test the combined path works)
-        an.normalize_anndata(adata, target_sum=1e4, log_transform=True, log_base=2, layer=target_layer, backed_chunk_size=24, inplace=True)
+    if hasattr(adata, "file") and adata.file is not None:
+        adata.file.close()
+
+    reopened = ad.read_h5ad(path, backed="r")
+    if fmt == "csc":
+        assert _sparse_encoding(reopened, layer=target_layer) == "csr_matrix"
+    if hasattr(reopened, "file") and reopened.file is not None:
+        reopened.file.close()
 
 
 def test_normalize_layer_added_inmemory_keeps_input_matrix():
@@ -543,6 +584,60 @@ def test_normalize_layer_added_backed_hardlink_and_dtype(tmp_path):
         assert src_indptr_addr != dst_indptr_addr, "indptr should be an independent copy"
 
         np.testing.assert_array_equal(src_grp["indptr"][...], dst_grp["indptr"][...])
+
+
+@pytest.mark.parametrize(
+    ("source_layer", "seed"),
+    [
+        (None, 26),
+        ("logcounts", 27),
+    ],
+)
+def test_normalize_layer_added_backed_csc_rewrites_destination_to_csr(tmp_path, source_layer, seed):
+    """Backed CSC sources write layer_added outputs as CSR and preserve the source."""
+    path = tmp_path / f"csc_layer_added_{source_layer or 'X'}.h5ad"
+    adata_mem = make_test_adata(n_cells=64, n_genes=48, sparse_fmt="csc", seed=seed)
+    source_before = adata_mem.X.copy() if source_layer is None else adata_mem.layers["logcounts"].copy()
+    expected = adata_mem.copy()
+    an.normalize_anndata(
+        expected,
+        target_sum=1e4,
+        log_transform=True,
+        log_base=2,
+        layer=source_layer,
+        inplace=True,
+    )
+    adata_mem.write_h5ad(path)
+
+    adata = ad.read_h5ad(path, backed="r+")
+    an.normalize_anndata(
+        adata,
+        target_sum=1e4,
+        log_transform=True,
+        log_base=2,
+        layer=source_layer,
+        layer_added="normalized",
+        backed_chunk_size=24,
+        inplace=True,
+    )
+
+    source_after = MatrixSource(adata, layer=source_layer).to_memory()
+    norm_after = MatrixSource(adata, layer="normalized").to_memory()
+    expected_norm = expected.X if source_layer is None else expected.layers["logcounts"]
+
+    np.testing.assert_allclose(_as_dense(source_after), _as_dense(source_before), rtol=1e-12, atol=1e-12)
+    np.testing.assert_allclose(_as_dense(norm_after), _as_dense(expected_norm), rtol=1e-5, atol=1e-6)
+    assert _sparse_encoding(adata, layer="normalized") == "csr_matrix"
+
+    if hasattr(adata, "file") and adata.file is not None:
+        adata.file.close()
+
+    reopened = ad.read_h5ad(path, backed="r")
+    reopened_norm = MatrixSource(reopened, layer="normalized").to_memory()
+    np.testing.assert_allclose(_as_dense(reopened_norm), _as_dense(expected_norm), rtol=1e-5, atol=1e-6)
+    assert _sparse_encoding(reopened, layer="normalized") == "csr_matrix"
+    if hasattr(reopened, "file") and reopened.file is not None:
+        reopened.file.close()
 
 
 def test_reduce_kernel_autodecompresses_compressed_backed_matrix(tmp_path):
