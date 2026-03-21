@@ -35,13 +35,22 @@ def _figsize_to_px(figsize: tuple[float, float], dpi: float) -> tuple[float, flo
 
 
 def _classify_color_values(
-    values: Union[np.ndarray, Sequence, pd.Series]
+    values: Union[np.ndarray, Sequence, pd.Series],
+    force: Optional[Literal["categorical", "continuous"]] = None,
 ) -> tuple[Union[np.ndarray, pd.Series], str, Optional[Sequence[str]]]:
     arr = np.asarray(values)
     if arr.ndim == 2 and arr.shape[1] == 3:
         return arr, "rgb", None
 
     series = pd.Series(values)
+
+    if force == "categorical":
+        categorical = series.astype("category")
+        return categorical, "categorical", list(categorical.cat.categories)
+
+    if force == "continuous":
+        return series.to_numpy(), "continuous", None
+
     if series.dtype.name == "category":
         return series, "categorical", list(series.cat.categories)
 
@@ -73,23 +82,26 @@ def _resolve_color_input(
     color: Optional[Union[str, Sequence, np.ndarray, pd.Series]],
     color_source: Optional[Literal["obs", "obsm"]],
     color_slot: Optional[str],
+    color_type: Optional[Literal["auto", "categorical", "continuous"]] = "auto",
+    layer: Optional[str] = None,
 ) -> tuple[Optional[Union[np.ndarray, pd.Series]], str, Optional[Sequence[str]]]:
+    force = None if (color_type is None or color_type == "auto") else color_type
     if isinstance(color, str):
         if color_source is None:
             raise ValueError("color_source must be set when color is a key string.")
         if color_source == "obs":
-            return _classify_color_values(adata.obs[color])
+            return _classify_color_values(adata.obs[color], force=force)
         if color_source == "obsm":
             values = np.asarray(adata.obsm[color])
             if values.ndim == 2 and values.shape[1] == 3:
                 return values, "rgb", None
             if values.ndim == 1:
-                return _classify_color_values(values)
+                return _classify_color_values(values, force=force)
             raise ValueError("Unsupported obsm color shape; expected 1D or Nx3.")
         raise ValueError("color_source must be one of obs or obsm.")
 
     if color is not None:
-        return _classify_color_values(color)
+        return _classify_color_values(color, force=force)
 
     if color_slot and color_slot in adata.obsm:
         slot_vals = np.asarray(adata.obsm[color_slot])
@@ -103,6 +115,7 @@ def plot_umap(
     adata: AnnData,
     color: Optional[Union[str, Sequence, np.ndarray, pd.Series]] = None,
     color_source: Optional[Literal["obs", "var", "obsm"]] = "obs",
+    color_type: Optional[Literal["auto", "categorical", "continuous"]] = "auto",
     basis: str = "umap_2d_actionet",
     cmap: Optional[Union[str, Sequence[str]]] = "magma",
     palette: Optional[Union[str, Sequence[str], dict]] = "tab20",
@@ -135,6 +148,12 @@ def plot_umap(
         Color key string or vector-like values with length ``adata.n_obs``.
     color_source
         When ``color`` is a key string, where to resolve it from: ``"obs"`` or ``"obsm"``.
+    color_type
+        Override the automatic color classification. ``"auto"`` (default) infers the type
+        from the data: numeric arrays become continuous gradients, string/category arrays
+        become discrete. Use ``"categorical"`` to force discrete coloring for numeric
+        labels such as Leiden cluster integers. Use ``"continuous"`` to force gradient
+        coloring regardless of dtype.
     basis
         Key in ``adata.obsm`` containing 2D coordinates (default: ``"X_umap"``).
     cmap
@@ -207,6 +226,7 @@ def plot_umap(
         color=color,
         color_source=color_source,
         color_slot=color_slot,
+        color_type=color_type,
     )
 
     alpha_values = _prepare_alpha(alpha, adata.n_obs)
@@ -323,6 +343,7 @@ def plot_umap_interactive(
     adata: AnnData,
     color: Optional[Union[str, Sequence, np.ndarray, pd.Series]] = None,
     color_source: Optional[Literal["obs", "var", "obsm"]] = None,
+    color_type: Optional[Literal["auto", "categorical", "continuous"]] = "auto",
     layer: Optional[str] = None,
     basis: str = "X_umap",
     palette: Optional[Union[str, Sequence[str], dict]] = "tab20",
@@ -347,6 +368,10 @@ def plot_umap_interactive(
         Color key string or vector-like values with length ``adata.n_obs``.
     color_source
         When ``color`` is a key string, where to resolve it from: ``"obs"``, ``"var"``, or ``"obsm"``.
+    color_type
+        Override the automatic color classification. ``"auto"`` (default) infers the type
+        from the data. Use ``"categorical"`` to force discrete coloring for numeric labels
+        such as Leiden cluster integers. Use ``"continuous"`` to force gradient coloring.
     layer
         Layer to pull expression values from when ``color_source="var"``.
     basis
@@ -389,6 +414,7 @@ def plot_umap_interactive(
         color_source=color_source,
         layer=layer,
         color_slot=None,
+        color_type=color_type,
     )
 
     coords = resolve_embedding(adata, basis)
