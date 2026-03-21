@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import warnings
 from typing import Iterable, Mapping, Optional, Sequence, Tuple, Union
 
 import numpy as np
@@ -265,6 +266,13 @@ def build_discrete_color_map(
         raise TypeError("Unsupported palette specification.")
 
     if len(colors) < len(categories):
+        warnings.warn(
+            f"Palette has {len(colors)} color(s) but {len(categories)} categories were found. "
+            "Colors will be cycled, causing some categories to share the same color. "
+            "Pass a larger palette to avoid ambiguity.",
+            UserWarning,
+            stacklevel=3,
+        )
         repeats = (len(categories) // len(colors)) + 1
         colors = (colors * repeats)[: len(categories)]
 
