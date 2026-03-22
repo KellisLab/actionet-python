@@ -101,12 +101,13 @@ def impute_features(
             chunk_size=backed_chunk_size,
             prefer_sparse=False,
         )
-        X0 = np.asarray(X0_cells, dtype=np.float64).T  # features x cells
+        X0 = np.asarray(X0_cells, dtype=np.float64)  # cells x features
     else:
-        S = anndata_to_matrix(adata, layer=layer, transpose=True)
-        X0 = S[feature_indices, :]
+        S = anndata_to_matrix(adata, layer=layer)  # cells x genes, native
+        X0 = S[:, feature_indices]
         if sp.issparse(X0):
             X0 = X0.toarray()
+        X0 = np.asarray(X0, dtype=np.float64)  # cells x features
 
     G = adata.obsp[network_key]
 
@@ -126,10 +127,10 @@ def impute_features(
         X_imputed = (W @ H.T).T
     else:
         X_imputed = _core.compute_network_diffusion(
-            G, X0.T, alpha, max_iter, n_threads, True, norm_method_code, 1e-8
+            G, X0, alpha, max_iter, n_threads, True, norm_method_code, 1e-8
         )
 
-    original_max = X0.max(axis=1)
+    original_max = X0.max(axis=0)
     imputed_max = X_imputed.max(axis=0)
 
     scale_factors = np.where(imputed_max > 0, original_max / imputed_max, 1.0)

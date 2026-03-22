@@ -114,6 +114,43 @@ py::object arma_sparse_to_scipy_csr_impl(const arma::sp_mat& sp_mat) {
     );
 }
 
+// Directly export Armadillo sp_mat as scipy CSC by reading its internal CSC storage.
+// Armadillo stores sp_mat in CSC format internally, so this avoids any conversion.
+template <typename IndexT>
+py::object arma_sparse_to_scipy_csc_impl(const arma::sp_mat& sp_mat) {
+    py::module_ scipy_sparse = py::module_::import("scipy.sparse");
+
+    const py::ssize_t n_rows = checked_py_size(sp_mat.n_rows, "Sparse matrix row count");
+    const py::ssize_t n_cols = checked_py_size(sp_mat.n_cols, "Sparse matrix column count");
+    const py::ssize_t nnz    = checked_py_size(sp_mat.n_nonzero, "Sparse matrix nnz");
+
+    py::array_t<double>  data(nnz);
+    py::array_t<IndexT>  indices(nnz);            // row indices
+    py::array_t<IndexT>  indptr(n_cols + 1);      // column pointers
+
+    double* data_ptr    = data.mutable_data();
+    IndexT* indices_ptr = indices.mutable_data();
+    IndexT* indptr_ptr  = indptr.mutable_data();
+
+    // Armadillo sp_mat internals are accessible via col_ptrs and row_indices.
+    const arma::uword* arma_col_ptrs   = sp_mat.col_ptrs;
+    const arma::uword* arma_row_ind    = sp_mat.row_indices;
+    const double*      arma_vals       = sp_mat.values;
+
+    for (py::ssize_t j = 0; j <= n_cols; ++j) {
+        indptr_ptr[j] = static_cast<IndexT>(arma_col_ptrs[j]);
+    }
+    for (py::ssize_t i = 0; i < nnz; ++i) {
+        indices_ptr[i] = static_cast<IndexT>(arma_row_ind[i]);
+        data_ptr[i]    = arma_vals[i];
+    }
+
+    return scipy_sparse.attr("csc_matrix")(
+        py::make_tuple(data, indices, indptr),
+        py::make_tuple(n_rows, n_cols)
+    );
+}
+
 template <typename IndexT>
 py::object csr_graph_to_scipy_impl(const actionet::CSRGraph& graph) {
     py::module_ scipy_sparse = py::module_::import("scipy.sparse");
@@ -155,20 +192,20 @@ arma::mat numpy_to_arma_mat(py::array_t<double, py::array::c_style | py::array::
         throw std::runtime_error("Expected 2D array");
     }
 
-    auto ptr = static_cast<double*>(buf.ptr);
-    // Copy data (Armadillo uses column-major, NumPy default is row-major)
-    arma::mat mat(buf.shape[0], buf.shape[1]);
-    for (size_t i = 0; i < buf.shape[0]; ++i) {
-        for (size_t j = 0; j < buf.shape[1]; ++j) {
-            mat(i, j) = ptr[i * buf.shape[1] + j];
-        }
-    }
-    return mat;
+    auto ptr = static_cast<const double*>(buf.ptr);
+    arma::uword n_rows = static_cast<arma::uword>(buf.shape[0]);
+    arma::uword n_cols = static_cast<arma::uword>(buf.shape[1]);
+
+    // C-contiguous row-major (n_rows, n_cols) is equivalent to Fortran-contiguous
+    // column-major (n_cols, n_rows).  Construct the transposed view without copying,
+    // then transpose in Armadillo (optimised for non-square matrices).
+    arma::mat tmp(const_cast<double*>(ptr), n_cols, n_rows, /*copy_aux_mem=*/false, /*strict=*/true);
+    return tmp.t();
 }
 
 // Convert SciPy sparse matrix to Armadillo sparse matrix
 arma::sp_mat scipy_to_arma_sparse(py::object scipy_sparse) {
-    // Convert to CSC format
+    // Ensure CSC format — AnnData typically stores X as CSC, so this is usually a no-op.
     py::object csc = scipy_sparse.attr("tocsc")();
 
     auto data = csc.attr("data").cast<py::array_t<double, py::array::forcecast>>();
@@ -184,11 +221,11 @@ arma::sp_mat scipy_to_arma_sparse(py::object scipy_sparse) {
         throw std::runtime_error("Sparse matrix shape must be non-negative");
     }
 
-    const size_t n_rows = static_cast<size_t>(shape.first);
-    const size_t n_cols = static_cast<size_t>(shape.second);
-    const size_t nnz = static_cast<size_t>(data.size());
+    const arma::uword n_rows = static_cast<arma::uword>(shape.first);
+    const arma::uword n_cols = static_cast<arma::uword>(shape.second);
+    const arma::uword nnz    = static_cast<arma::uword>(data.size());
 
-    if (indptr.size() < 1 || static_cast<size_t>(indptr.size()) != (n_cols + 1)) {
+    if (indptr.size() < 1 || static_cast<arma::uword>(indptr.size()) != (n_cols + 1)) {
         throw std::runtime_error("Invalid CSC indptr length");
     }
     if (indptr_ptr[indptr.size() - 1] != static_cast<py::ssize_t>(nnz)) {
@@ -205,57 +242,60 @@ arma::sp_mat scipy_to_arma_sparse(py::object scipy_sparse) {
         return static_cast<arma::uword>(v);
     };
 
-    arma::umat locations(2, nnz);
-    arma::vec values(nnz);
+    // Build Armadillo CSC arrays directly — no COO intermediary needed.
+    // Armadillo sp_mat internal layout is CSC: row_indices + col_ptrs + values.
+    arma::uvec row_indices(nnz);
+    arma::uvec col_ptrs(n_cols + 1);
+    arma::vec  values(nnz);
 
-    for (py::ssize_t col = 0; col < shape.second; ++col) {
-        const py::ssize_t start = indptr_ptr[col];
-        const py::ssize_t end = indptr_ptr[col + 1];
-        if (start < 0 || end < start) {
-            throw std::runtime_error("Invalid CSC indptr range");
-        }
-        for (py::ssize_t j = start; j < end; ++j) {
-            const size_t idx = static_cast<size_t>(j);
-            const py::ssize_t row = indices_ptr[j];
-            if (static_cast<size_t>(row) >= n_rows) {
-                throw std::runtime_error("Row index out of bounds in sparse matrix");
-            }
-            locations(0, idx) = to_uword(row, "row");
-            locations(1, idx) = to_uword(col, "col");
-            values(idx) = data_ptr[j];
-        }
+    for (arma::uword i = 0; i < nnz; ++i) {
+        row_indices(i) = to_uword(indices_ptr[i], "row");
+        values(i)      = data_ptr[i];
+    }
+    for (arma::uword i = 0; i <= n_cols; ++i) {
+        col_ptrs(i) = to_uword(indptr_ptr[i], "colptr");
     }
 
-    return arma::sp_mat(locations, values, n_rows, n_cols);
+    // Armadillo batch CSC constructor: sp_mat(row_indices, col_ptrs, values, n_rows, n_cols)
+    // The CSC arrays from scipy are already sorted (per-column row indices are sorted),
+    // so sort_locations=false avoids an unnecessary sort pass.
+    return arma::sp_mat(row_indices, col_ptrs, values, n_rows, n_cols, /*sort_locations=*/false);
 }
 
 // Convert Armadillo dense matrix to NumPy array
 py::array_t<double> arma_mat_to_numpy(const arma::mat& mat) {
-    py::array_t<double> arr({mat.n_rows, mat.n_cols});
-    auto buf = arr.request();
-    double* ptr = static_cast<double*>(buf.ptr);
+    // Armadillo is column-major (Fortran order).  Return a Fortran-order NumPy
+    // array with matching strides so the data can be copied with a single memcpy
+    // rather than an element-by-element loop.
+    const py::ssize_t n_rows = static_cast<py::ssize_t>(mat.n_rows);
+    const py::ssize_t n_cols = static_cast<py::ssize_t>(mat.n_cols);
+    const py::ssize_t elem   = static_cast<py::ssize_t>(sizeof(double));
 
-    for (size_t i = 0; i < mat.n_rows; ++i) {
-        for (size_t j = 0; j < mat.n_cols; ++j) {
-            ptr[i * mat.n_cols + j] = mat(i, j);
-        }
-    }
+    // Fortran-order strides: stride[0]=1 element, stride[1]=n_rows elements
+    std::vector<py::ssize_t> shape   = {n_rows, n_cols};
+    std::vector<py::ssize_t> strides = {elem, n_rows * elem};
+
+    py::array_t<double> arr(shape, strides);
+    std::memcpy(arr.mutable_data(), mat.memptr(), mat.n_elem * sizeof(double));
     return arr;
 }
 
-// Convert Armadillo sparse matrix to SciPy sparse matrix
+// Convert Armadillo sparse matrix to SciPy sparse matrix (CSC — matches Armadillo's internal layout)
 py::object arma_sparse_to_scipy(const arma::sp_mat& sp_mat) {
     try {
+        if (fits_sparse_index_type<std::int32_t>(sp_mat)) {
+            return arma_sparse_to_scipy_csc_impl<std::int32_t>(sp_mat);
+        }
+        return arma_sparse_to_scipy_csc_impl<std::int64_t>(sp_mat);
+    } catch (const py::error_already_set&) {
+        throw;
+    } catch (const std::exception&) {
+        // Fall back to the iterator-based CSR path if direct CSC extraction fails
+        // (e.g. on an unexpected Armadillo build where internal arrays differ).
         if (fits_sparse_index_type<std::int32_t>(sp_mat)) {
             return arma_sparse_to_scipy_csr_impl<std::int32_t>(sp_mat);
         }
         return arma_sparse_to_scipy_csr_impl<std::int64_t>(sp_mat);
-    } catch (const py::error_already_set&) {
-        throw;
-    } catch (const std::exception&) {
-        // Preserve the legacy conversion path as a fallback while the direct CSR
-        // builder settles in.
-        return arma_sparse_to_scipy_legacy(sp_mat);
     }
 }
 

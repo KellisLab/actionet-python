@@ -1,5 +1,6 @@
 """Utilities for translating between AnnData and C++ data structures."""
 
+import warnings
 from typing import Optional, Union
 import numpy as np
 import scipy.sparse as sp
@@ -14,7 +15,9 @@ def anndata_to_matrix(
 ) -> Union[np.ndarray, sp.spmatrix]:
     """
     Extract matrix from AnnData for C++ input.
-    
+
+    Returns the expression matrix in cells × genes (obs × var) orientation.
+
     Parameters
     ----------
     adata
@@ -22,23 +25,26 @@ def anndata_to_matrix(
     layer
         Layer name (None uses .X).
     transpose
-        Transpose to genes x cells format.
-        
+        Deprecated. The C++ core now accepts the native cells × genes orientation.
+
     Returns
     -------
-    Matrix (sparse or dense).
+    Matrix (sparse or dense) in cells × genes orientation.
     """
     if layer is None:
         X = adata.X
     else:
         X = adata.layers[layer]
-    
+
     if transpose:
-        if sp.issparse(X):
-            X = X.T.tocsr()
-        else:
-            X = X.T
-    
+        warnings.warn(
+            "transpose=True is deprecated; the C++ core now accepts native "
+            "cells × genes orientation and no transpose is needed.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        X = X.T.tocsr() if sp.issparse(X) else X.T
+
     return X
 
 
@@ -88,9 +94,9 @@ def add_action_results(
     result
         Result dictionary from run_action().
     """
-    # Store archetype matrices
-    adata.obsm["H_stacked"] = result["H_stacked"].T
-    adata.obsm["H_merged"] = result["H_merged"].T
+    # Store archetype matrices (C++ now returns cells × archetypes directly)
+    adata.obsm["H_stacked"] = result["H_stacked"]
+    adata.obsm["H_merged"] = result["H_merged"]
 
     adata.obsm["C_stacked"] = result["C_stacked"]
     adata.obsm["C_merged"] = result["C_merged"]

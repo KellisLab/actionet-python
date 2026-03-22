@@ -21,31 +21,22 @@ py::dict orthogonalize_batch_effect_sparse(py::object S, py::array_t<double> old
     arma::vec sigma_vec = numpy_to_arma_vec(old_sigma);
     arma::mat design_mat = numpy_to_arma_mat(design);
 
-    // Prepare SVD results field
+    // Plan 02 public layout: {S_r (cells x k), sigma, U (genes x k), A, B}
     arma::field<arma::mat> SVD_results(5);
-    SVD_results(0) = U_mat;
+    SVD_results(0) = S_r_mat;
     SVD_results(1) = sigma_vec;
-    SVD_results(2) = S_r_mat;
-    for (size_t i = 0; i < sigma_vec.n_elem; i++) {
-        SVD_results(2).col(i) /= sigma_vec(i);
-    }
+    SVD_results(2) = U_mat;
     SVD_results(3) = A_mat;
     SVD_results(4) = B_mat;
 
     arma::field<arma::mat> orth_reduction = actionet::orthogonalizeBatchEffect(S_sp, SVD_results, design_mat);
 
-    arma::vec sigma = orth_reduction(1).col(0);
-    arma::mat V = orth_reduction(2);
-    for (size_t i = 0; i < V.n_cols; i++) {
-        V.col(i) *= sigma(i);
-    }
-
     py::dict out;
-    out["U"] = arma_mat_to_numpy(orth_reduction(0));
-    out["sigma"] = arma_mat_to_numpy(sigma);
-    out["S_r"] = arma_mat_to_numpy(V.t());
-    out["A"] = arma_mat_to_numpy(orth_reduction(3));
-    out["B"] = arma_mat_to_numpy(orth_reduction(4));
+    out["S_r"]    = arma_mat_to_numpy(orth_reduction(0));
+    out["sigma"]  = arma_vec_to_numpy(arma::vec(orth_reduction(1)));
+    out["U"]      = arma_mat_to_numpy(orth_reduction(2));
+    out["A"]      = arma_mat_to_numpy(orth_reduction(3));
+    out["B"]      = arma_mat_to_numpy(orth_reduction(4));
     return out;
 }
 
@@ -61,31 +52,22 @@ py::dict orthogonalize_batch_effect_dense(py::array_t<double> S, py::array_t<dou
     arma::vec sigma_vec = numpy_to_arma_vec(old_sigma);
     arma::mat design_mat = numpy_to_arma_mat(design);
 
-    // Prepare SVD results field
+    // Plan 02 public layout: {S_r (cells x k), sigma, U (genes x k), A, B}
     arma::field<arma::mat> SVD_results(5);
-    SVD_results(0) = U_mat;
+    SVD_results(0) = S_r_mat;
     SVD_results(1) = sigma_vec;
-    SVD_results(2) = S_r_mat;
-    for (size_t i = 0; i < sigma_vec.n_elem; i++) {
-        SVD_results(2).col(i) /= sigma_vec(i);
-    }
+    SVD_results(2) = U_mat;
     SVD_results(3) = A_mat;
     SVD_results(4) = B_mat;
 
     arma::field<arma::mat> orth_reduction = actionet::orthogonalizeBatchEffect(S_mat, SVD_results, design_mat);
 
-    arma::vec sigma = orth_reduction(1).col(0);
-    arma::mat V = orth_reduction(2);
-    for (size_t i = 0; i < V.n_cols; i++) {
-        V.col(i) *= sigma(i);
-    }
-
     py::dict out;
-    out["U"] = arma_mat_to_numpy(orth_reduction(0));
-    out["sigma"] = arma_mat_to_numpy(sigma);
-    out["S_r"] = arma_mat_to_numpy(V.t());
-    out["A"] = arma_mat_to_numpy(orth_reduction(3));
-    out["B"] = arma_mat_to_numpy(orth_reduction(4));
+    out["S_r"]    = arma_mat_to_numpy(orth_reduction(0));
+    out["sigma"]  = arma_vec_to_numpy(arma::vec(orth_reduction(1)));
+    out["U"]      = arma_mat_to_numpy(orth_reduction(2));
+    out["A"]      = arma_mat_to_numpy(orth_reduction(3));
+    out["B"]      = arma_mat_to_numpy(orth_reduction(4));
     return out;
 }
 
@@ -101,31 +83,22 @@ py::dict orthogonalize_basal_sparse(py::object S, py::array_t<double> old_S_r,
     arma::vec sigma_vec = numpy_to_arma_vec(old_sigma);
     arma::mat basal_mat = numpy_to_arma_mat(basal);
 
-    // Prepare SVD results field
+    // Plan 02 public layout: {S_r (cells x k), sigma, U (genes x k), A, B}
     arma::field<arma::mat> SVD_results(5);
-    SVD_results(0) = U_mat;
+    SVD_results(0) = S_r_mat;
     SVD_results(1) = sigma_vec;
-    SVD_results(2) = S_r_mat;
-    for (size_t i = 0; i < sigma_vec.n_elem; i++) {
-        SVD_results(2).col(i) /= sigma_vec(i);
-    }
+    SVD_results(2) = U_mat;
     SVD_results(3) = A_mat;
     SVD_results(4) = B_mat;
 
     arma::field<arma::mat> orth_reduction = actionet::orthogonalizeBasal(S_sp, SVD_results, basal_mat);
 
-    arma::vec sigma = orth_reduction(1).col(0);
-    arma::mat V = orth_reduction(2);
-    for (size_t i = 0; i < V.n_cols; i++) {
-        V.col(i) *= sigma(i);
-    }
-
     py::dict out;
-    out["U"] = arma_mat_to_numpy(orth_reduction(0));
-    out["sigma"] = arma_mat_to_numpy(sigma);
-    out["S_r"] = arma_mat_to_numpy(V.t());
-    out["A"] = arma_mat_to_numpy(orth_reduction(3));
-    out["B"] = arma_mat_to_numpy(orth_reduction(4));
+    out["S_r"]    = arma_mat_to_numpy(orth_reduction(0));
+    out["sigma"]  = arma_vec_to_numpy(arma::vec(orth_reduction(1)));
+    out["U"]      = arma_mat_to_numpy(orth_reduction(2));
+    out["A"]      = arma_mat_to_numpy(orth_reduction(3));
+    out["B"]      = arma_mat_to_numpy(orth_reduction(4));
     return out;
 }
 
@@ -141,31 +114,22 @@ py::dict orthogonalize_basal_dense(py::array_t<double> S, py::array_t<double> ol
     arma::vec sigma_vec = numpy_to_arma_vec(old_sigma);
     arma::mat basal_mat = numpy_to_arma_mat(basal);
 
-    // Prepare SVD results field
+    // Plan 02 public layout: {S_r (cells x k), sigma, U (genes x k), A, B}
     arma::field<arma::mat> SVD_results(5);
-    SVD_results(0) = U_mat;
+    SVD_results(0) = S_r_mat;
     SVD_results(1) = sigma_vec;
-    SVD_results(2) = S_r_mat;
-    for (size_t i = 0; i < sigma_vec.n_elem; i++) {
-        SVD_results(2).col(i) /= sigma_vec(i);
-    }
+    SVD_results(2) = U_mat;
     SVD_results(3) = A_mat;
     SVD_results(4) = B_mat;
 
     arma::field<arma::mat> orth_reduction = actionet::orthogonalizeBasal(S_mat, SVD_results, basal_mat);
 
-    arma::vec sigma = orth_reduction(1).col(0);
-    arma::mat V = orth_reduction(2);
-    for (size_t i = 0; i < V.n_cols; i++) {
-        V.col(i) *= sigma(i);
-    }
-
     py::dict out;
-    out["U"] = arma_mat_to_numpy(orth_reduction(0));
-    out["sigma"] = arma_mat_to_numpy(sigma);
-    out["S_r"] = arma_mat_to_numpy(V.t());
-    out["A"] = arma_mat_to_numpy(orth_reduction(3));
-    out["B"] = arma_mat_to_numpy(orth_reduction(4));
+    out["S_r"]    = arma_mat_to_numpy(orth_reduction(0));
+    out["sigma"]  = arma_vec_to_numpy(arma::vec(orth_reduction(1)));
+    out["U"]      = arma_mat_to_numpy(orth_reduction(2));
+    out["A"]      = arma_mat_to_numpy(orth_reduction(3));
+    out["B"]      = arma_mat_to_numpy(orth_reduction(4));
     return out;
 }
 
@@ -286,36 +250,23 @@ py::dict orthogonalize_batch_effect_operator(
     arma::vec sigma_vec = numpy_to_arma_vec(old_sigma);
     arma::mat design_mat = numpy_to_arma_mat(design);
 
-    actionet::SVDResult svd;
-    svd.U = U_mat;
-    svd.sigma = sigma_vec;
-    svd.V = S_r_mat;
-    for (size_t i = 0; i < sigma_vec.n_elem; i++) {
-        svd.V.col(i) /= sigma_vec(i);
-    }
+    // Use the typed KernelReductionResult API (Plan 02A).
+    actionet::KernelReductionResult reduction;
+    reduction.S_r   = S_r_mat;
+    reduction.sigma = sigma_vec;
+    reduction.U     = U_mat;
+    reduction.A     = A_mat;
+    reduction.B     = B_mat;
 
-    actionet::PerturbedSVDResult prior;
-    const actionet::PerturbedSVDResult* prior_ptr = nullptr;
-    if (A_mat.n_elem > 0 && B_mat.n_elem > 0) {
-        prior.A = A_mat;
-        prior.B = B_mat;
-        prior_ptr = &prior;
-    }
-
-    actionet::PerturbedSVDResult result = actionet::orthogonalizeBatchEffect_Operator(
-        *op, svd, prior_ptr, design_mat);
-
-    arma::mat V = result.V;
-    for (size_t i = 0; i < result.sigma.n_elem; i++) {
-        V.col(i) *= result.sigma(i);
-    }
+    actionet::KernelReductionResult result = actionet::orthogonalizeBatchEffect_Operator(
+        *op, reduction, design_mat);
 
     py::dict out;
-    out["U"] = arma_mat_to_numpy(result.U);
+    out["S_r"]   = arma_mat_to_numpy(result.S_r);
     out["sigma"] = arma_vec_to_numpy(result.sigma);
-    out["S_r"] = arma_mat_to_numpy(V.t());
-    out["A"] = arma_mat_to_numpy(result.A);
-    out["B"] = arma_mat_to_numpy(result.B);
+    out["U"]     = arma_mat_to_numpy(result.U);
+    out["A"]     = arma_mat_to_numpy(result.A);
+    out["B"]     = arma_mat_to_numpy(result.B);
     return out;
 }
 
@@ -337,36 +288,23 @@ py::dict orthogonalize_basal_operator(
     arma::vec sigma_vec = numpy_to_arma_vec(old_sigma);
     arma::mat basal_mat = numpy_to_arma_mat(basal);
 
-    actionet::SVDResult svd;
-    svd.U = U_mat;
-    svd.sigma = sigma_vec;
-    svd.V = S_r_mat;
-    for (size_t i = 0; i < sigma_vec.n_elem; i++) {
-        svd.V.col(i) /= sigma_vec(i);
-    }
+    // Use the typed KernelReductionResult API (Plan 02A).
+    actionet::KernelReductionResult reduction;
+    reduction.S_r   = S_r_mat;
+    reduction.sigma = sigma_vec;
+    reduction.U     = U_mat;
+    reduction.A     = A_mat;
+    reduction.B     = B_mat;
 
-    actionet::PerturbedSVDResult prior;
-    const actionet::PerturbedSVDResult* prior_ptr = nullptr;
-    if (A_mat.n_elem > 0 && B_mat.n_elem > 0) {
-        prior.A = A_mat;
-        prior.B = B_mat;
-        prior_ptr = &prior;
-    }
-
-    actionet::PerturbedSVDResult result = actionet::orthogonalizeBasal_Operator(
-        *op, svd, prior_ptr, basal_mat);
-
-    arma::mat V = result.V;
-    for (size_t i = 0; i < result.sigma.n_elem; i++) {
-        V.col(i) *= result.sigma(i);
-    }
+    actionet::KernelReductionResult result = actionet::orthogonalizeBasal_Operator(
+        *op, reduction, basal_mat);
 
     py::dict out;
-    out["U"] = arma_mat_to_numpy(result.U);
+    out["S_r"]   = arma_mat_to_numpy(result.S_r);
     out["sigma"] = arma_vec_to_numpy(result.sigma);
-    out["S_r"] = arma_mat_to_numpy(V.t());
-    out["A"] = arma_mat_to_numpy(result.A);
-    out["B"] = arma_mat_to_numpy(result.B);
+    out["U"]     = arma_mat_to_numpy(result.U);
+    out["A"]     = arma_mat_to_numpy(result.A);
+    out["B"]     = arma_mat_to_numpy(result.B);
     return out;
 }
 

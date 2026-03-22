@@ -21,10 +21,10 @@ arma::mat numpy_to_arma_mat(py::array_t<double, py::array::c_style | py::array::
 // Convert SciPy sparse matrix to Armadillo sparse matrix
 arma::sp_mat scipy_to_arma_sparse(py::object scipy_sparse);
 
-// Convert Armadillo dense matrix to NumPy array
+// Convert Armadillo dense matrix to NumPy array (Fortran-order, single memcpy)
 py::array_t<double> arma_mat_to_numpy(const arma::mat& mat);
 
-// Convert Armadillo sparse matrix to SciPy sparse matrix
+// Convert Armadillo sparse matrix to SciPy CSC sparse matrix (direct internal copy)
 py::object arma_sparse_to_scipy(const arma::sp_mat& sp_mat);
 
 // Convert libactionet CSRGraph to SciPy CSR sparse matrix.

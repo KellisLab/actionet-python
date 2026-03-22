@@ -113,7 +113,7 @@ def correct_batch_effect(
             op, old_S_r, old_U, old_A, old_B, old_sigma, design,
         )
     else:
-        S = anndata_to_matrix(adata, layer=layer, transpose=True)
+        S = anndata_to_matrix(adata, layer=layer)  # cells x genes, native
         if sp.issparse(S):
             result = _core.orthogonalize_batch_effect_sparse(
                 S, old_S_r, old_U, old_A, old_B, old_sigma, design
@@ -127,7 +127,7 @@ def correct_batch_effect(
     persist_updates(
         adata,
         obsm={
-            corrected_key: result["S_r"].T,  # cells x components
+            corrected_key: result["S_r"],          # cells x k, direct
             f"{corrected_key}_B": result["B"],
         },
         varm={
@@ -201,7 +201,7 @@ def correct_basal_expression(
             op, old_S_r, old_U, old_A, old_B, old_sigma, basal,
         )
     else:
-        S = anndata_to_matrix(adata, layer=layer, transpose=True)
+        S = anndata_to_matrix(adata, layer=layer)  # cells x genes, native
         if sp.issparse(S):
             result = _core.orthogonalize_basal_sparse(
                 S, old_S_r, old_U, old_A, old_B, old_sigma, basal
@@ -215,7 +215,7 @@ def correct_basal_expression(
     persist_updates(
         adata,
         obsm={
-            corrected_key: result["S_r"].T,
+            corrected_key: result["S_r"],
             f"{corrected_key}_B": result["B"],
         },
         varm={

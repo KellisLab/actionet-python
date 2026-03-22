@@ -276,7 +276,7 @@ def reduce_kernel(
 
         svd_algorithm_id = selected_algorithm
     else:
-        S = anndata_to_matrix(adata, layer=layer, transpose=True)
+        S = anndata_to_matrix(adata, layer=layer)
         svd_algorithm_id = _select_svd_algorithm_inmemory(S, algorithm_name, verbose)
 
         if precomputed_svd is None:
@@ -307,7 +307,7 @@ def reduce_kernel(
     persist_updates(
         adata,
         obsm={
-            key_added: result["S_r"].T,  # cells x components
+            key_added: result["S_r"],              # cells x k, direct
             f"{key_added}_B": result["B"],
         },
         varm={
@@ -427,7 +427,7 @@ def run_action(
     if reduction_key not in adata.obsm:
         raise ValueError(f"Reduction '{reduction_key}' not found. Run reduce_kernel first.")
 
-    S_r = adata.obsm[reduction_key].T  # Transpose to components x cells
+    S_r = adata.obsm[reduction_key]  # cells x k, native orientation
 
     if prenormalize:
         S_r = tools.l1_norm_scale(S_r, axis=0)
@@ -443,8 +443,8 @@ def run_action(
     persist_updates(
         adata,
         obsm={
-            "H_stacked": result["H_stacked"].T,
-            "H_merged": result["H_merged"].T,
+            "H_stacked": result["H_stacked"],    # cells x archetypes, direct
+            "H_merged": result["H_merged"],      # direct
             "C_stacked": result["C_stacked"],
             "C_merged": result["C_merged"],
         },
@@ -653,7 +653,7 @@ def _run_specificity_backed_sparse(
 ) -> dict:
     """Dispatch backed sparse specificity through the C++ ABI.
 
-    Exactly one of *H* (archetype/membership matrix, shape ``(k, n_obs)``) or
+    Exactly one of *H* (archetype/membership matrix, shape ``(n_obs, k)``) or
     *labels_int* (1-based integer labels, shape ``(n_obs,)``) must be supplied.
 
     For backed **dense** matrices this function is never called; those callers
@@ -920,7 +920,7 @@ def compute_feature_specificity(
             H = _labels_to_membership(labels_int, source.n_obs)
             result = _compute_specificity_streamed(source, H, chunk_size=backed_chunk_size)
     else:
-        S = anndata_to_matrix(adata, layer=layer, transpose=True)
+        S = anndata_to_matrix(adata, layer=layer)  # cells x genes, native
         if sp.issparse(S):
             result = _core.compute_feature_specificity_sparse(S, labels_int, n_threads)
         else:
@@ -1017,13 +1017,12 @@ def compute_archetype_feature_specificity(
 
     if source.is_backed:
         if source.is_sparse:
-            # Sparse-backed: H is (n_obs, k); the C++ binding expects (k, n_obs).
-            H_t = np.ascontiguousarray(H.T, dtype=np.float64)
+            # Sparse-backed: H is (n_obs, k); pass directly (C++ now accepts cells × k).
             result = _run_specificity_backed_sparse(
                 adata,
                 layer=layer,
                 chunk_size=backed_chunk_size,
-                H=H_t,
+                H=H,
                 n_threads=n_threads,
             )
         else:
@@ -1037,12 +1036,11 @@ def compute_archetype_feature_specificity(
                 "lower_significance": result_stream["lower_significance"],
             }
     else:
-        S = anndata_to_matrix(adata, layer=layer, transpose=True)
-        H_t = np.ascontiguousarray(H.T, dtype=np.float64)
+        S = anndata_to_matrix(adata, layer=layer)  # cells x genes, native
         if sp.issparse(S):
-            result = _core.archetype_feature_specificity_sparse(S, H_t, n_threads)
+            result = _core.archetype_feature_specificity_sparse(S, H, n_threads)
         else:
-            result = _core.archetype_feature_specificity_dense(S, H_t, n_threads)
+            result = _core.archetype_feature_specificity_dense(S, H, n_threads)
 
     persist_updates(
         adata,
@@ -1148,8 +1146,8 @@ def layout_network(
             return_operator_compatible=True,
         )
 
-        # Get right singular vectors and scale them
-        initial_coords = svd_result["v"]  # Already transposed to cells x components
+        # Get left singular vectors (cells × k) as initial coords
+        initial_coords = svd_result["u"]  # cells x k in new orientation
         # Scale columns to have mean 0 and std 1
         initial_coords = (initial_coords - initial_coords.mean(axis=0)) / initial_coords.std(axis=0)
     elif isinstance(initial_coords, str):
@@ -1251,10 +1249,10 @@ def run_svd(
         if not sp.isspmatrix_csr(matrix):
             matrix = matrix.tocsr()
         algorithm_id = _select_svd_algorithm_inmemory(matrix, algorithm_name, verbose)
-        result = _core.run_svd_sparse(matrix.T, n_components, max_iter, seed, algorithm_id, verbose)
+        result = _core.run_svd_sparse(matrix, n_components, max_iter, seed, algorithm_id, verbose)
     else:
         algorithm_id = _select_svd_algorithm_inmemory(matrix, algorithm_name, verbose)
-        result = _core.run_svd_dense(matrix.T, n_components, max_iter, seed, algorithm_id, verbose)
+        result = _core.run_svd_dense(matrix, n_components, max_iter, seed, algorithm_id, verbose)
 
     if return_operator_compatible:
         result = {"u": result["u"], "d": result["d"], "v": result["v"]}
