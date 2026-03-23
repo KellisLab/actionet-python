@@ -246,4 +246,40 @@ void init_annotation(py::module_ &m) {
           },
           "Compute cluster feature specificity from HDF5-backed dense matrix",
           py::arg("op"), py::arg("labels"), py::arg("thread_no") = 0);
+
+    // backed operator vision marker stats
+    m.def("compute_feature_stats_vision_backed_operator",
+          [](std::shared_ptr<actionet::MatrixOperator> op_base,
+             py::object G_obj, py::object X_obj,
+             int norm_method, double alpha, int max_it,
+             bool approx, int thread_no) -> py::array_t<double> {
+              if (!op_base) {
+                  throw std::runtime_error("compute_feature_stats_vision_backed_operator: operator is null");
+              }
+              arma::sp_mat G_sp = scipy_to_arma_sparse(G_obj);
+              arma::sp_mat X_sp = scipy_to_arma_sparse(X_obj);
+
+              auto* sparse_op = dynamic_cast<actionet::BackedSparseMatrixOperator*>(op_base.get());
+              auto* dense_op = dynamic_cast<actionet::BackedDenseMatrixOperator*>(op_base.get());
+
+              arma::mat result;
+              {
+                  py::gil_scoped_release release;
+                  if (sparse_op) {
+                      result = actionet::computeFeatureStatsVision(
+                          *sparse_op, G_sp, X_sp, norm_method, alpha, max_it, approx, thread_no);
+                  } else if (dense_op) {
+                      result = actionet::computeFeatureStatsVision(
+                          *dense_op, G_sp, X_sp, norm_method, alpha, max_it, approx, thread_no);
+                  } else {
+                      throw std::runtime_error("compute_feature_stats_vision_backed_operator: unsupported operator type");
+                  }
+              }
+              return arma_mat_to_numpy(result);
+          },
+          "Compute VISION marker statistics from HDF5-backed matrix",
+          py::arg("op"), py::arg("G"), py::arg("X"),
+          py::arg("norm_method") = 2, py::arg("alpha") = 0.85,
+          py::arg("max_it") = 5, py::arg("approx") = false,
+          py::arg("thread_no") = 0);
 }

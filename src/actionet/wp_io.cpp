@@ -156,4 +156,71 @@ void init_io(py::module_ &m) {
     m.def("reduce_kernel_from_svd_backed_operator", &reduce_kernel_from_svd_backed_operator,
           "Reduce kernel from precomputed SVD with a MatrixOperator-backed input",
           py::arg("op"), py::arg("u"), py::arg("d"), py::arg("v"), py::arg("verbose") = true);
+
+    m.def("backed_take_columns",
+          [](std::shared_ptr<actionet::MatrixOperator> op,
+             py::array_t<int64_t> col_indices_arr,
+             py::object row_indices_obj,
+             bool prefer_sparse) -> py::object {
+              if (!op) {
+                  throw std::runtime_error("backed_take_columns: operator is null");
+              }
+
+              // Convert col_indices.
+              auto col_buf = col_indices_arr.request();
+              arma::uvec col_indices(static_cast<arma::uword>(col_buf.size));
+              auto* col_ptr = static_cast<int64_t*>(col_buf.ptr);
+              for (size_t i = 0; i < static_cast<size_t>(col_buf.size); ++i) {
+                  col_indices(i) = static_cast<arma::uword>(col_ptr[i]);
+              }
+
+              // Convert optional row_indices.
+              arma::uvec row_indices;
+              if (!row_indices_obj.is_none()) {
+                  py::array_t<int64_t> row_arr = row_indices_obj.cast<py::array_t<int64_t>>();
+                  auto row_buf = row_arr.request();
+                  row_indices.set_size(static_cast<arma::uword>(row_buf.size));
+                  auto* row_ptr = static_cast<int64_t*>(row_buf.ptr);
+                  for (size_t i = 0; i < static_cast<size_t>(row_buf.size); ++i) {
+                      row_indices(i) = static_cast<arma::uword>(row_ptr[i]);
+                  }
+              }
+
+              // Dispatch to the concrete operator type.
+              auto* sparse_op = dynamic_cast<actionet::BackedSparseMatrixOperator*>(op.get());
+              auto* dense_op = dynamic_cast<actionet::BackedDenseMatrixOperator*>(op.get());
+
+              if (prefer_sparse) {
+                  arma::sp_mat result;
+                  {
+                      py::gil_scoped_release release;
+                      if (sparse_op) {
+                          result = sparse_op->takeColumnsSparse(col_indices, row_indices);
+                      } else if (dense_op) {
+                          result = dense_op->takeColumnsSparse(col_indices, row_indices);
+                      } else {
+                          throw std::runtime_error("backed_take_columns: unsupported operator type");
+                      }
+                  }
+                  return arma_sparse_to_scipy(result);
+              } else {
+                  arma::mat result;
+                  {
+                      py::gil_scoped_release release;
+                      if (sparse_op) {
+                          result = sparse_op->takeColumnsDense(col_indices, row_indices);
+                      } else if (dense_op) {
+                          result = dense_op->takeColumnsDense(col_indices, row_indices);
+                      } else {
+                          throw std::runtime_error("backed_take_columns: unsupported operator type");
+                      }
+                  }
+                  return py::cast<py::object>(arma_mat_to_numpy(result));
+              }
+          },
+          "Extract columns from a backed matrix operator",
+          py::arg("op"),
+          py::arg("col_indices"),
+          py::arg("row_indices") = py::none(),
+          py::arg("prefer_sparse") = false);
 }

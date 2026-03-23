@@ -75,24 +75,15 @@ def impute_features(
     if network_key not in adata.obsp:
         raise ValueError(f"Network '{network_key}' not found. Run build_network first.")
 
-    features = np.array(features, dtype=object)
-    if features_use is None:
-        feature_labels = adata.var_names.to_numpy()
-    else:
-        if features_use not in adata.var.columns:
-            raise ValueError(f"Column '{features_use}' not found in adata.var")
-        feature_labels = adata.var[features_use].to_numpy()
+    from ._feature_lookup import resolve_feature_space, resolve_requested_features
+    space = resolve_feature_space(adata, features_use, context="impute_features")
+    resolved = resolve_requested_features(features, space, context="impute_features")
 
-    feature_to_idx = {feat: idx for idx, feat in enumerate(feature_labels)}
-    matched_features = [feat for feat in features.tolist() if feat in feature_to_idx]
-    missing_features = [feat for feat in features.tolist() if feat not in feature_to_idx]
-    if missing_features:
-        print(f"Features missing: {', '.join(map(str, missing_features))}")
-
-    if len(matched_features) == 0:
+    if len(resolved.matched_names) == 0:
         raise ValueError("None of the specified features found in adata.var_names")
 
-    feature_indices = np.array([feature_to_idx[feat] for feat in matched_features], dtype=int)
+    matched_features = resolved.matched_names
+    feature_indices = resolved.matched_indices
 
     source = MatrixSource(adata, layer=layer)
     if source.is_backed:

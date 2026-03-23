@@ -362,40 +362,40 @@ def annotate_cells(
     >>> result = annotate_cells(adata, markers)
     """
     # Get feature labels
-    if features_use is None:
-        feature_set = adata.var_names.values
-    else:
-        if features_use not in adata.var.columns:
-            raise ValueError(f"Column '{features_use}' not found in adata.var")
-        feature_set = adata.var[features_use].values
+    from ._feature_lookup import resolve_feature_space
+    space = resolve_feature_space(adata, features_use, context="annotate_cells")
+    feature_set = space.labels
 
-    # Encode markers into binary/weighted matrix
+    # Encode markers into binary/weighted matrix (sparse CSR, full gene-width)
     X_markers, celltype_names = _encode_markers(markers, feature_set)
 
     source = MatrixSource(adata, layer=layer)
     if source.is_backed:
-        if issparse(X_markers):
-            required_idx = np.where(np.asarray(X_markers.getnnz(axis=1)).ravel() > 0)[0]
+        if method == "vision":
+            # Vision method: use the full-width marker matrix and the backed
+            # operator directly — no column extraction needed.
+            pass  # S is not needed; handled below in the vision backed path
         else:
-            required_idx = np.where(np.any(np.asarray(X_markers) != 0, axis=1))[0]
+            # ACTIONet method: extract marker columns via C++ column-extract,
+            # then pass to the existing in-memory computeFeatureStats binding.
+            required_idx = np.where(np.asarray(X_markers.getnnz(axis=1)).ravel() > 0)[0]
 
-        if required_idx.size == 0:
-            raise ValueError("Marker set does not overlap features in AnnData.")
+            if required_idx.size == 0:
+                raise ValueError("Marker set does not overlap features in AnnData.")
 
-        X_markers = X_markers[required_idx, :]
-        S_cells = source.feature_subset(
-            required_idx,
-            chunk_size=backed_chunk_size,
-            prefer_sparse=True,
-        )
-        if not issparse(S_cells):
-            S_cells = csr_matrix(np.asarray(S_cells))
-        S = S_cells  # cells x features (obs x var, Plan 02 contract)
+            X_markers = X_markers[required_idx, :]
+            S_cells = source.feature_subset(
+                required_idx,
+                chunk_size=backed_chunk_size,
+                prefer_sparse=True,
+            )
+            if not issparse(S_cells):
+                S_cells = csr_matrix(np.asarray(S_cells))
+            S = S_cells
     else:
         S = source.matrix
         if not issparse(S):
             S = csr_matrix(S)
-        # S is cells x genes, no transpose needed
 
     # Get network graph
     if network_key not in adata.obsp:
@@ -408,22 +408,42 @@ def annotate_cells(
     # Convert norm_method to integer code
     norm_method_code = 2 if norm_method == "pagerank_sym" else 0
 
-    # Convert X_markers to sparse matrix
+    # Ensure X_markers is sparse
     if not issparse(X_markers):
         X_markers = csr_matrix(X_markers)
 
     # Compute marker statistics using graph-based imputation
     if method == "vision":
-        marker_stats = _core.compute_feature_stats_vision(
-            G=G,
-            S=S,
-            X=X_markers,
-            norm_method=norm_method_code,
-            alpha=alpha,
-            max_it=max_it,
-            approx=approx,
-            thread_no=n_threads,
-        )
+        if source.is_backed:
+            from .core import _backed_group_path
+            file_path = str(adata.filename)
+            group_path = _backed_group_path(layer)
+            op = _core.create_backed_operator(
+                file_path=file_path,
+                group_path=group_path,
+                chunk_size=backed_chunk_size,
+            )
+            marker_stats = _core.compute_feature_stats_vision_backed_operator(
+                op=op,
+                G=G,
+                X=X_markers,
+                norm_method=norm_method_code,
+                alpha=alpha,
+                max_it=max_it,
+                approx=approx,
+                thread_no=n_threads,
+            )
+        else:
+            marker_stats = _core.compute_feature_stats_vision(
+                G=G,
+                S=S,
+                X=X_markers,
+                norm_method=norm_method_code,
+                alpha=alpha,
+                max_it=max_it,
+                approx=approx,
+                thread_no=n_threads,
+            )
     elif method == "actionet":
         marker_stats = _core.compute_feature_stats(
             G=G,
@@ -652,12 +672,9 @@ def annotate_clusters(
             cluster_names = np.arange(n_clusters)
 
     # Get feature labels
-    if features_use is None:
-        feature_set = adata.var_names.values
-    else:
-        if features_use not in adata.var.columns:
-            raise ValueError(f"Column '{features_use}' not found in adata.var")
-        feature_set = adata.var[features_use].values
+    from ._feature_lookup import resolve_feature_space
+    space = resolve_feature_space(adata, features_use, context="annotate_clusters")
+    feature_set = space.labels
 
     # Encode markers into binary/weighted matrix
     marker_mat, celltype_names = _encode_markers(markers, feature_set)
@@ -703,12 +720,12 @@ def annotate_clusters(
 def _encode_markers(
     markers: Union[Dict[str, List[str]], pd.DataFrame, np.ndarray],
     feature_set: np.ndarray,
-) -> tuple[np.ndarray, List[str]]:
+) -> tuple[csr_matrix, List[str]]:
     """
-    Encode marker genes into a binary feature × celltype matrix.
+    Encode marker genes into a sparse binary feature x celltype matrix.
 
-    Mirrors R .encode_markers: accepts list-like (dict/DataFrame) or a numeric matrix,
-    enforces named labels, and binarizes markers.
+    Uses first-match semantics: when *feature_set* contains duplicate labels,
+    only the first occurrence of each label is marked (matching R behaviour).
 
     Parameters
     ----------
@@ -716,60 +733,89 @@ def _encode_markers(
         Marker specification:
         - dict: keys are labels, values are lists of feature names
         - DataFrame: columns are labels, values are feature names
-        - ndarray: numeric matrix (features × labels)
+        - ndarray: numeric matrix (features x labels)
     feature_set : ndarray
-        Array of feature names.
+        Array of feature names (length n_features).
 
     Returns
     -------
     tuple
-        (X, label_names) where X is a binary matrix of shape (n_features, n_labels)
-        and label_names is a list of label names.
+        (X, label_names) where X is a sparse CSR binary matrix of shape
+        (n_features, n_labels) and label_names is a list of label names.
     """
+    n_features = len(feature_set)
+
     if isinstance(markers, np.ndarray):
         X = np.asarray(markers)
         if not np.isfinite(X).all():
             raise ValueError("'markers' contains non-numeric values")
         if X.ndim != 2:
             raise ValueError("'markers' must be a 2D array")
-        if X.shape[0] != len(feature_set):
+        if X.shape[0] != n_features:
             raise ValueError("Number of rows in 'markers' does not match number of features")
-        X = (X != 0).astype(np.float32)
+        X = csr_matrix((X != 0).astype(np.float32))
         label_names = [f"Label_{i}" for i in range(X.shape[1])]
-    elif isinstance(markers, pd.DataFrame):
-        if markers.columns is None or markers.columns.isnull().any():
-            raise ValueError("'markers' contains unnamed entries")
-        if markers.columns.duplicated().any():
-            raise ValueError("'markers' contains duplicated labels")
-        label_names = markers.columns.tolist()
-        columns = []
-        for col in label_names:
-            values = markers[col].dropna().astype(str).tolist()
-            columns.append(np.isin(feature_set, values).astype(np.float32).reshape(-1, 1))
-        X = np.hstack(columns) if columns else np.zeros((len(feature_set), 0), dtype=np.float32)
-    elif isinstance(markers, dict):
-        label_names = list(markers.keys())
-        if any(name is None for name in label_names):
-            raise ValueError("'markers' contains unnamed entries")
-        if len(set(label_names)) != len(label_names):
-            raise ValueError("'markers' contains duplicated labels")
-        columns = []
-        for name in label_names:
-            vals = markers[name]
-            if isinstance(vals, (list, tuple, np.ndarray, pd.Series)):
-                values = [v for v in vals if v is not None]
-            else:
-                values = [vals] if vals is not None else []
-            values = [str(v) for v in values]
-            columns.append(np.isin(feature_set, values).astype(np.float32).reshape(-1, 1))
-        X = np.hstack(columns) if columns else np.zeros((len(feature_set), 0), dtype=np.float32)
+    elif isinstance(markers, (pd.DataFrame, dict)):
+        # Build first-occurrence lookup
+        lookup: dict = {}
+        for idx, lab in enumerate(feature_set):
+            key = str(lab)
+            if key not in lookup:
+                lookup[key] = idx
+
+        if isinstance(markers, pd.DataFrame):
+            if markers.columns is None or markers.columns.isnull().any():
+                raise ValueError("'markers' contains unnamed entries")
+            if markers.columns.duplicated().any():
+                raise ValueError("'markers' contains duplicated labels")
+            label_names = markers.columns.tolist()
+            marker_lists = [
+                markers[col].dropna().astype(str).tolist() for col in label_names
+            ]
+        else:
+            label_names = list(markers.keys())
+            if any(name is None for name in label_names):
+                raise ValueError("'markers' contains unnamed entries")
+            if len(set(label_names)) != len(label_names):
+                raise ValueError("'markers' contains duplicated labels")
+            marker_lists = []
+            for name in label_names:
+                vals = markers[name]
+                if isinstance(vals, (list, tuple, np.ndarray, pd.Series)):
+                    values = [str(v) for v in vals if v is not None]
+                else:
+                    values = [str(vals)] if vals is not None else []
+                marker_lists.append(values)
+
+        rows: list = []
+        cols: list = []
+        for j, gene_list in enumerate(marker_lists):
+            seen_genes: set = set()
+            for gene in gene_list:
+                if gene in seen_genes:
+                    continue
+                seen_genes.add(gene)
+                idx = lookup.get(gene)
+                if idx is not None:
+                    rows.append(idx)
+                    cols.append(j)
+
+        n_labels = len(label_names)
+        if rows:
+            data = np.ones(len(rows), dtype=np.float32)
+            X = csr_matrix(
+                (data, (np.array(rows, dtype=np.int32), np.array(cols, dtype=np.int32))),
+                shape=(n_features, n_labels),
+            )
+        else:
+            X = csr_matrix((n_features, n_labels), dtype=np.float32)
     else:
         raise ValueError("'markers' must be one of: dict, DataFrame, or ndarray")
 
     if X.shape[1] == 0:
         raise ValueError("No markers provided")
 
-    col_sums = X.sum(axis=0)
+    col_sums = np.asarray(X.sum(axis=0)).ravel()
     zero_cols = np.where(col_sums == 0)[0]
     if len(zero_cols) == X.shape[1]:
         raise ValueError("No markers in 'features_use'")

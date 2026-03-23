@@ -543,6 +543,14 @@ class MatrixSource:
         if feature_indices.ndim != 1:
             raise ValueError("feature_indices must be a 1D sequence")
 
+        if self.is_backed:
+            return self._feature_subset_backed(
+                feature_indices,
+                chunk_size=chunk_size,
+                prefer_sparse=prefer_sparse if prefer_sparse is not None else self.is_sparse,
+                row_indices=row_indices,
+            )
+
         blocks = []
         sparse_seen = False
         if row_indices is None:
@@ -574,6 +582,37 @@ class MatrixSource:
 
         blocks_dense = [b.toarray() if sp.issparse(b) else np.asarray(b) for b in blocks]
         return np.vstack(blocks_dense)
+
+    def _feature_subset_backed(
+        self,
+        feature_indices: np.ndarray,
+        *,
+        chunk_size: int,
+        prefer_sparse: bool,
+        row_indices: Optional[Sequence[int]],
+    ):
+        """Backed fast-path: extract columns via the C++ operator."""
+        from . import _core
+
+        file_path = str(self.adata.filename)
+        group_path = "/X" if self.layer is None else f"/layers/{self.layer}"
+
+        op = _core.create_backed_operator(
+            file_path=file_path,
+            group_path=group_path,
+            chunk_size=chunk_size,
+        )
+
+        row_arr = None
+        if row_indices is not None:
+            row_arr = np.asarray(row_indices, dtype=np.int64)
+
+        return _core.backed_take_columns(
+            op,
+            feature_indices,
+            row_indices=row_arr,
+            prefer_sparse=prefer_sparse,
+        )
 
     # ------------------------------------------------------------------
     # Matrix--vector products
