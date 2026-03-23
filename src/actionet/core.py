@@ -127,19 +127,25 @@ def _select_svd_algorithm_inmemory(S: Any, algorithm: str, verbose: bool = True)
 
 def _select_svd_algorithm_backed(algorithm: str, verbose: bool = True) -> int:
     if algorithm == "auto":
-        # For backed (operator) mode, Halko is unconditionally selected regardless
-        # of matrix size. The backed operator path bypasses Armadillo's in-memory
+        # For backed (operator) mode, Halko is unconditionally selected as the
+        # default.  The backed operator path bypasses Armadillo's in-memory
         # indexing, so the 32-bit overflow concern that triggers PRIMME in the
-        # in-memory path does not apply here. Halko's peak memory usage depends
-        # only on (k+2) * max(n_obs, n_var), not on NNZ, so it scales safely to
-        # atlas-size datasets. PRIMME and Feng are also available for backed
-        # operator mode if specified explicitly.
+        # in-memory path does not apply here.  Halko's peak memory usage depends
+        # only on (k+2) * max(n_obs, n_var), not on NNZ, and its matvec count is
+        # fixed at 2*(iters+1) passes regardless of matrix conditioning, giving a
+        # clean NNZ-proportional I/O cost model at scale.
+        #
+        # IRLB is also supported for backed operator mode and can be requested
+        # explicitly (e.g. for benchmarking), but is not the auto-selected
+        # default.  See docs/svd_algorithm_benchmark.md for the backing rationale.
         if verbose:
             print("Detected backed matrix: selecting Halko operator path")
         return _SVD_ALGORITHM_TO_ID["halko"]
 
-    if algorithm not in {"halko", "feng", "primme"}:
-        raise ValueError("Backed matrices support only 'auto', 'halko', 'feng', or 'primme'")
+    if algorithm not in {"halko", "irlb", "feng", "primme"}:
+        raise ValueError(
+            "Backed matrices support only 'auto', 'halko', 'irlb', 'feng', or 'primme'"
+        )
     return _SVD_ALGORITHM_TO_ID[algorithm]
 
 
