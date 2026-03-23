@@ -338,7 +338,7 @@ def check_cross_language(py_adata: ad.AnnData, r_h5ad_path: str) -> None:
         r_s  = np.asarray(r.uns["action_params"]["sigma"]).ravel()
         cmp_dense("cross-lang sigma", py_s, r_s, atol=ATOL_SIGMA, rtol=RTOL_SIGMA)
 
-    # ACTION archetypes — shape may differ (pruning is stochastic); warn, don't fail
+    # ACTION archetypes — exact parity is expected across front-ends.
     for py_key, r_key, slot in [
         ("H_stacked", "H_stacked", "cross-lang H_stacked"),
         ("H_merged",  "H_merged",  "cross-lang H_merged"),
@@ -360,25 +360,22 @@ def check_cross_language(py_adata: ad.AnnData, r_h5ad_path: str) -> None:
         if py_a.shape[1] != r_a.shape[1]:
             check(slot, False,
                   f"archetype count differs: Python={py_a.shape[1]} "
-                  f"R={r_a.shape[1]} (known stochastic pruning difference)",
-                  warn=True)
+                  f"R={r_a.shape[1]}")
         else:
             cmp_archetype_slots(slot, py_a, r_a)
 
-    # Network — may differ due to different archetype basis; warn if so
+    # Network — exact parity is expected once archetypes align.
     if "actionet" in py_adata.obsp and "actionet" in r.obsp:
         py_G = _to_csr(py_adata.obsp["actionet"])
         r_G_raw = r.obsp["actionet"]
         r_G = _to_csr(r_G_raw.toarray() if sp.issparse(r_G_raw) else r_G_raw)
         if py_G.nnz != r_G.nnz:
             check("cross-lang network", False,
-                  f"nnz differs: Python={py_G.nnz} R={r_G.nnz} "
-                  f"(follows from archetype count difference)",
-                  warn=True)
+                  f"nnz differs: Python={py_G.nnz} R={r_G.nnz}")
         else:
             cmp_sparse("cross-lang network", py_G, r_G)
 
-    # Specificity — shape depends on archetype count; warn on shape mismatch
+    # Specificity — exact parity is expected once archetypes align.
     for py_key, r_key, slot in [
         ("specificity_upper", "cluster_upper", "cross-lang specificity_upper"),
         ("specificity_lower", "cluster_lower", "cross-lang specificity_lower"),
@@ -392,10 +389,7 @@ def check_cross_language(py_adata: ad.AnnData, r_h5ad_path: str) -> None:
         py_a = py_m.toarray() if sp.issparse(py_m) else np.asarray(py_m)
         r_a  = r_m.toarray()  if sp.issparse(r_m)  else np.asarray(r_m)
         if py_a.shape != r_a.shape:
-            check(slot, False,
-                  f"shape mismatch: {py_a.shape} vs {r_a.shape} "
-                  f"(follows from archetype count difference)",
-                  warn=True)
+            check(slot, False, f"shape mismatch: {py_a.shape} vs {r_a.shape}")
         else:
             cmp_dense(slot, py_a, r_a, atol=ATOL_SPEC, rtol=RTOL_SPEC)
 
@@ -414,10 +408,7 @@ def check_cross_language(py_adata: ad.AnnData, r_h5ad_path: str) -> None:
         py_a = py_m.toarray() if sp.issparse(py_m) else np.asarray(py_m)
         r_a  = r_m.toarray()  if sp.issparse(r_m)  else np.asarray(r_m)
         if py_a.shape != r_a.shape:
-            check(slot, False,
-                  f"shape mismatch: {py_a.shape} vs {r_a.shape} "
-                  f"(follows from archetype count difference)",
-                  warn=True)
+            check(slot, False, f"shape mismatch: {py_a.shape} vs {r_a.shape}")
         else:
             cmp_dense(slot, py_a, r_a, atol=ATOL_SPEC, rtol=RTOL_SPEC)
 

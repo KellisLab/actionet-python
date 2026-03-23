@@ -430,7 +430,9 @@ def run_action(
     S_r = adata.obsm[reduction_key]  # cells x k, native orientation
 
     if prenormalize:
-        S_r = tools.l1_norm_scale(S_r, axis=0)
+        # Match the shared AnnData contract and R wrapper: each cell is a row in
+        # ``obsm[reduction_key]``, so prenormalization must scale rows, not columns.
+        S_r = tools.l1_norm_scale(S_r, axis=1)
 
     # Ensure C-contiguous memory layout for C++ compatibility
     S_r = np.ascontiguousarray(S_r)
