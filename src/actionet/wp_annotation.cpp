@@ -4,6 +4,7 @@
 #include "wp_utils.h"
 #include "libactionet.hpp"
 #include "io/backed_h5ad/backed_sparse_matrix_operator.hpp"
+#include "io/backed_h5ad/backed_dense_matrix_operator.hpp"
 
 namespace py = pybind11;
 
@@ -180,12 +181,69 @@ void init_annotation(py::module_ &m) {
           "Compute feature specificity (dense)",
           py::arg("S"), py::arg("labels"), py::arg("thread_no") = 0);
 
-    // backed operator specificity
+    // backed operator specificity (sparse)
     m.def("archetype_feature_specificity_backed_operator", &archetype_feature_specificity_backed_operator,
           "Compute archetype feature specificity from HDF5-backed sparse matrix",
           py::arg("op"), py::arg("H"), py::arg("thread_no") = 0);
 
     m.def("compute_feature_specificity_backed_operator", &compute_feature_specificity_backed_operator,
           "Compute cluster feature specificity from HDF5-backed sparse matrix",
+          py::arg("op"), py::arg("labels"), py::arg("thread_no") = 0);
+
+    // backed operator specificity (dense)
+    m.def("archetype_feature_specificity_backed_dense_operator",
+          [](std::shared_ptr<actionet::MatrixOperator> op_base,
+             py::array_t<double> H, int thread_no) -> py::dict {
+              if (!op_base) {
+                  throw std::runtime_error("archetype_feature_specificity_backed_dense_operator: operator is null");
+              }
+              auto* op = dynamic_cast<actionet::BackedDenseMatrixOperator*>(op_base.get());
+              if (!op) {
+                  throw std::runtime_error("archetype_feature_specificity_backed_dense_operator: operator is not a dense operator");
+              }
+              arma::mat H_mat = numpy_to_arma_mat(H);
+
+              py::gil_scoped_release release;
+              arma::field<arma::mat> res = actionet::computeFeatureSpecificity(*op, H_mat, thread_no);
+              py::gil_scoped_acquire acquire;
+
+              py::dict out;
+              out["archetypes"]         = arma_mat_to_numpy(res(0));
+              out["upper_significance"] = arma_mat_to_numpy(res(1));
+              out["lower_significance"] = arma_mat_to_numpy(res(2));
+              return out;
+          },
+          "Compute archetype feature specificity from HDF5-backed dense matrix",
+          py::arg("op"), py::arg("H"), py::arg("thread_no") = 0);
+
+    m.def("compute_feature_specificity_backed_dense_operator",
+          [](std::shared_ptr<actionet::MatrixOperator> op_base,
+             py::array_t<int> labels, int thread_no) -> py::dict {
+              if (!op_base) {
+                  throw std::runtime_error("compute_feature_specificity_backed_dense_operator: operator is null");
+              }
+              auto* op = dynamic_cast<actionet::BackedDenseMatrixOperator*>(op_base.get());
+              if (!op) {
+                  throw std::runtime_error("compute_feature_specificity_backed_dense_operator: operator is not a dense operator");
+              }
+
+              auto labels_buf = labels.request();
+              auto labels_ptr = static_cast<int*>(labels_buf.ptr);
+              arma::uvec labels_vec(static_cast<size_t>(labels_buf.size));
+              for (size_t i = 0; i < static_cast<size_t>(labels_buf.size); ++i) {
+                  labels_vec(i) = static_cast<arma::uword>(labels_ptr[i]);
+              }
+
+              py::gil_scoped_release release;
+              arma::field<arma::mat> res = actionet::computeFeatureSpecificity(*op, labels_vec, thread_no);
+              py::gil_scoped_acquire acquire;
+
+              py::dict out;
+              out["average_profile"]    = arma_mat_to_numpy(res(0));
+              out["upper_significance"] = arma_mat_to_numpy(res(1));
+              out["lower_significance"] = arma_mat_to_numpy(res(2));
+              return out;
+          },
+          "Compute cluster feature specificity from HDF5-backed dense matrix",
           py::arg("op"), py::arg("labels"), py::arg("thread_no") = 0);
 }

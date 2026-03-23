@@ -7,7 +7,7 @@ from anndata import AnnData
 from scipy.stats import rankdata
 from scipy.sparse import issparse, csr_matrix
 
-from .core import compute_feature_specificity, _compute_specificity_streamed, _labels_to_membership, _run_specificity_backed_sparse
+from .core import compute_feature_specificity, _labels_to_membership, _run_specificity_backed_sparse, _run_specificity_backed_dense
 from . import _core
 from ._matrix_source import MatrixSource
 
@@ -147,13 +147,16 @@ def find_markers(
             upper_sig = raw["upper_significance"]
             lower_sig = raw["lower_significance"]
         else:
-            # Dense-backed: fall back to the Python streamed path, which is
-            # the intended permanent role of _compute_specificity_streamed
-            # for dense backed inputs.
-            H = _labels_to_membership(labels_int, source.n_obs)
-            streamed = _compute_specificity_streamed(source, H, chunk_size=backed_chunk_size)
-            upper_sig = streamed["upper_significance"]
-            lower_sig = streamed["lower_significance"]
+            # Dense-backed: use the C++ ABI path (BackedDenseMatrixOperator).
+            raw = _run_specificity_backed_dense(
+                adata_filtered,
+                layer=layer,
+                chunk_size=backed_chunk_size,
+                labels_int=labels_int,
+                n_threads=0,
+            )
+            upper_sig = raw["upper_significance"]
+            lower_sig = raw["lower_significance"]
     else:
         # compute_feature_specificity internally does np.asarray → Categorical
         # to map labels to integer codes.  Because we already normalised
@@ -387,12 +390,12 @@ def annotate_cells(
         )
         if not issparse(S_cells):
             S_cells = csr_matrix(np.asarray(S_cells))
-        S = S_cells.T.tocsr()
+        S = S_cells  # cells x features (obs x var, Plan 02 contract)
     else:
         S = source.matrix
         if not issparse(S):
             S = csr_matrix(S)
-        S = S.T
+        # S is cells x genes, no transpose needed
 
     # Get network graph
     if network_key not in adata.obsp:

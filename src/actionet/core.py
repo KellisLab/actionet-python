@@ -656,10 +656,6 @@ def _run_specificity_backed_sparse(
     Exactly one of *H* (archetype/membership matrix, shape ``(n_obs, k)``) or
     *labels_int* (1-based integer labels, shape ``(n_obs,)``) must be supplied.
 
-    For backed **dense** matrices this function is never called; those callers
-    retain ``_compute_specificity_streamed`` as their fallback, which is its
-    intended and permanent role for backed inputs that are not sparse.
-
     Returns the raw result dict from the C++ binding.
     """
     file_path = str(adata.filename)
@@ -681,16 +677,54 @@ def _run_specificity_backed_sparse(
         op = None
 
 
+def _run_specificity_backed_dense(
+    adata: AnnData,
+    layer: Optional[str],
+    chunk_size: int,
+    *,
+    H: Optional[np.ndarray] = None,
+    labels_int: Optional[np.ndarray] = None,
+    n_threads: int = 0,
+) -> dict:
+    """Dispatch backed dense specificity through the C++ ABI (BackedDenseMatrixOperator).
+
+    Exactly one of *H* (archetype/membership matrix, shape ``(n_obs, k)``) or
+    *labels_int* (1-based integer labels, shape ``(n_obs,)``) must be supplied.
+
+    Returns the raw result dict from the C++ binding.
+    """
+    file_path = str(adata.filename)
+    group_path = _backed_group_path(layer)
+    op = None
+    try:
+        op = _core.create_backed_operator(
+            file_path=file_path,
+            group_path=group_path,
+            chunk_size=chunk_size,
+            row_scale_factors=None,
+            apply_log1p=False,
+        )
+        if H is not None:
+            return _core.archetype_feature_specificity_backed_dense_operator(op, H, n_threads)
+        else:
+            return _core.compute_feature_specificity_backed_dense_operator(op, labels_int, n_threads)
+    finally:
+        op = None
+
+
 def _compute_specificity_streamed(
     source: MatrixSource,
     H_cells: np.ndarray,
     chunk_size: int = 4096,
 ) -> dict[str, np.ndarray]:
-    """Streamed equivalent of ``libactionet::computeFeatureSpecificity()``.
+    """Pure-Python streamed specificity (kept for reference/debugging only).
 
-    Implements Bernstein-style tail-probability scoring to identify
-    features (genes) whose expression is specifically enriched or depleted
-    in each group defined by *H_cells*.
+    .. deprecated::
+        This function is no longer called by any production path.  Both
+        sparse-backed and dense-backed specificity now route through C++
+        (``BackedSparseMatrixOperator`` and ``BackedDenseMatrixOperator``
+        respectively).  This implementation is retained only as a reference
+        for testing or debugging; it will be removed in a future cleanup.
 
     **Algorithm overview** (mirrors ``specificity.cpp``):
 
@@ -860,9 +894,9 @@ def compute_feature_specificity(
     When *adata* is in backed mode (on-disk), the function dispatches
     through the C++ ABI for sparse-backed matrices, performing a
     single streaming scan over the HDF5 data without loading the full
-    matrix into memory.  Dense-backed matrices fall back to the pure-Python
-    ``_compute_specificity_streamed`` path, which is the intended permanent
-    fallback for that case.
+    matrix into memory.  Dense-backed matrices use
+    ``BackedDenseMatrixOperator`` (chunked hyperslab reads via HDF5)
+    without loading the full matrix into memory.
 
     Updates AnnData (if return_raw=False)
     --------------
@@ -914,11 +948,14 @@ def compute_feature_specificity(
                 n_threads=n_threads,
             )
         else:
-            # Dense-backed: use the Python streamed fallback.  This is the
-            # intended permanent role of _compute_specificity_streamed for backed
-            # inputs; there is no C++ dense-backed specificity path.
-            H = _labels_to_membership(labels_int, source.n_obs)
-            result = _compute_specificity_streamed(source, H, chunk_size=backed_chunk_size)
+            # Dense-backed: dispatch through the C++ ABI (BackedDenseMatrixOperator).
+            result = _run_specificity_backed_dense(
+                adata,
+                layer=layer,
+                chunk_size=backed_chunk_size,
+                labels_int=labels_int,
+                n_threads=n_threads,
+            )
     else:
         S = anndata_to_matrix(adata, layer=layer)  # cells x genes, native
         if sp.issparse(S):
@@ -988,9 +1025,9 @@ def compute_archetype_feature_specificity(
     When *adata* is in backed mode (on-disk), the function dispatches
     through the C++ ABI for sparse-backed matrices, performing a
     single streaming scan over the HDF5 data without loading the full
-    matrix into memory.  Dense-backed matrices fall back to the pure-Python
-    ``_compute_specificity_streamed`` path, which is the intended permanent
-    fallback for that case.
+    matrix into memory.  Dense-backed matrices use
+    ``BackedDenseMatrixOperator`` (chunked hyperslab reads via HDF5)
+    without loading the full matrix into memory.
 
     Updates AnnData
     --------------
@@ -1026,12 +1063,16 @@ def compute_archetype_feature_specificity(
                 n_threads=n_threads,
             )
         else:
-            # Dense-backed: use the Python streamed fallback.  This is the
-            # intended permanent role of _compute_specificity_streamed for backed
-            # inputs; there is no C++ dense-backed specificity path.
-            result_stream = _compute_specificity_streamed(source, H, chunk_size=backed_chunk_size)
+            # Dense-backed: dispatch through the C++ ABI (BackedDenseMatrixOperator).
+            result_stream = _run_specificity_backed_dense(
+                adata,
+                layer=layer,
+                chunk_size=backed_chunk_size,
+                H=H,
+                n_threads=n_threads,
+            )
             result = {
-                "archetypes": result_stream["average_profile"],
+                "archetypes": result_stream["archetypes"],
                 "upper_significance": result_stream["upper_significance"],
                 "lower_significance": result_stream["lower_significance"],
             }
