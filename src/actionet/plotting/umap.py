@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import io
 from dataclasses import dataclass
 from typing import Literal, Optional, Sequence, Union
 
@@ -33,6 +34,18 @@ class _PreparedUmapContext:
     alpha_arg: Optional[float]
     width_px: float
     height_px: float
+
+
+class _ActionetRasterFigureMixin:
+    """Provide a PNG-rich display hook for notebook frontends."""
+
+    def _repr_png_(self):
+        buf = io.BytesIO()
+        self.savefig(buf, format="png", bbox_inches="tight")
+        return buf.getvalue()
+
+    def _repr_mimebundle_(self, include=None, exclude=None):
+        return {"image/png": self._repr_png_()}, {}
 
 
 def _prepare_alpha(alpha: Union[float, Sequence[float]], n_obs: int) -> np.ndarray:
@@ -319,6 +332,25 @@ def _style_raster_axes(ax, *, title: Optional[str]) -> None:
 def _raster_marker_area(size: float) -> float:
     size = max(float(size), 0.1)
     return size * size
+
+
+def _new_raster_figure(
+    *,
+    figsize: tuple[float, float],
+    fig_dpi: float,
+):
+    try:
+        from matplotlib.backends.backend_agg import FigureCanvasAgg
+        from matplotlib.figure import Figure
+    except ImportError as exc:  # pragma: no cover - optional dependency
+        raise ImportError("matplotlib is required for raster UMAP plotting.") from exc
+
+    class _ActionetRasterFigure(_ActionetRasterFigureMixin, Figure):
+        pass
+
+    fig = _ActionetRasterFigure(figsize=figsize, dpi=fig_dpi, facecolor="white")
+    FigureCanvasAgg(fig)
+    return fig
 
 
 def _render_umap_raster(
@@ -775,14 +807,7 @@ def plot_umap_raster(
 ):
     """Plot a rasterized static UMAP embedding using Matplotlib Agg."""
 
-    try:
-        from matplotlib.backends.backend_agg import FigureCanvasAgg
-        from matplotlib.figure import Figure
-    except ImportError as exc:  # pragma: no cover - optional dependency
-        raise ImportError("matplotlib is required for raster UMAP plotting.") from exc
-
-    fig = Figure(figsize=figsize, dpi=fig_dpi, facecolor="white")
-    FigureCanvasAgg(fig)
+    fig = _new_raster_figure(figsize=figsize, fig_dpi=fig_dpi)
     ax = fig.add_subplot(111)
 
     ctx = _prepare_umap_context(

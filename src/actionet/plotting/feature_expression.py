@@ -10,7 +10,13 @@ from anndata import AnnData
 
 from ..anndata_utils import anndata_to_matrix
 from ..imputation import impute_features
-from .umap import plot_umap, plot_umap_raster, _prepare_umap_context, _render_umap_raster
+from .umap import (
+    _new_raster_figure,
+    _prepare_umap_context,
+    _render_umap_raster,
+    plot_umap,
+    plot_umap_raster,
+)
 
 
 def _flatten_features(features: Union[str, Sequence[Union[str, Iterable[str]]]]) -> list[str]:
@@ -275,17 +281,13 @@ def plot_feature_expression_raster(
         )
 
     if single_plot and len(out) > 1:
-        try:
-            from matplotlib.backends.backend_agg import FigureCanvasAgg
-            from matplotlib.figure import Figure
-        except ImportError as exc:  # pragma: no cover - optional dependency
-            raise ImportError("matplotlib is required for raster feature-expression plotting.") from exc
-
         nrow, ncol = _grid_shape(len(out))
         panel_width = 6.0
         panel_height = 5.0
-        fig = Figure(figsize=(panel_width * ncol, panel_height * nrow), dpi=100.0, facecolor="white")
-        FigureCanvasAgg(fig)
+        fig = _new_raster_figure(
+            figsize=(panel_width * ncol, panel_height * nrow),
+            fig_dpi=100.0,
+        )
         axes = np.asarray(fig.subplots(nrow, ncol, squeeze=False))
         scale_size = point_size / max(nrow, 1)
 

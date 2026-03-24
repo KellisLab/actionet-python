@@ -130,6 +130,7 @@ def test_plot_umap_raster_savefig_smoke() -> None:
     fig.savefig(buf, format="png")
 
     assert isinstance(fig, Figure)
+    assert fig._repr_png_()
     assert buf.getbuffer().nbytes > 0
 
 
@@ -142,6 +143,7 @@ def test_plot_feature_expression_raster_returns_figure_for_single_feature() -> N
     )
 
     assert isinstance(fig, Figure)
+    assert fig._repr_png_()
 
 
 def test_plot_feature_expression_raster_single_plot_grid() -> None:
