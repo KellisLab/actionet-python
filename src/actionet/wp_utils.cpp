@@ -262,7 +262,7 @@ arma::sp_mat scipy_to_arma_sparse(py::object scipy_sparse) {
     return arma::sp_mat(row_indices, col_ptrs, values, n_rows, n_cols, /*sort_locations=*/false);
 }
 
-// Convert Armadillo dense matrix to NumPy array
+// Convert Armadillo dense matrix to NumPy array (Fortran-order, single memcpy)
 py::array_t<double> arma_mat_to_numpy(const arma::mat& mat) {
     // Armadillo is column-major (Fortran order).  Return a Fortran-order NumPy
     // array with matching strides so the data can be copied with a single memcpy
@@ -277,6 +277,29 @@ py::array_t<double> arma_mat_to_numpy(const arma::mat& mat) {
 
     py::array_t<double> arr(shape, strides);
     std::memcpy(arr.mutable_data(), mat.memptr(), mat.n_elem * sizeof(double));
+    return arr;
+}
+
+// Convert Armadillo dense matrix to C-contiguous (row-major) NumPy array.
+// Performs a column-major → row-major transpose during the copy.  Slightly
+// costlier than arma_mat_to_numpy, but the returned array is optimal for
+// h5py/HDF5 writes which store data in row-major order.
+py::array_t<double> arma_mat_to_numpy_c(const arma::mat& mat) {
+    const py::ssize_t n_rows = static_cast<py::ssize_t>(mat.n_rows);
+    const py::ssize_t n_cols = static_cast<py::ssize_t>(mat.n_cols);
+    const py::ssize_t elem   = static_cast<py::ssize_t>(sizeof(double));
+
+    std::vector<py::ssize_t> shape   = {n_rows, n_cols};
+    std::vector<py::ssize_t> strides = {n_cols * elem, elem};  // C-order
+
+    py::array_t<double> arr(shape, strides);
+    double* dst       = arr.mutable_data();
+    const double* src = mat.memptr();
+    for (py::ssize_t r = 0; r < n_rows; ++r) {
+        for (py::ssize_t c = 0; c < n_cols; ++c) {
+            dst[r * n_cols + c] = src[c * n_rows + r];
+        }
+    }
     return arr;
 }
 

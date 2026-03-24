@@ -880,9 +880,25 @@ def _write_matrix(f, container_name, key, matrix, verbose):
         grp.attrs['encoding-version'] = '0.1.0'
 
     else:
-        # Dense matrix
-        ds = f.create_dataset(h5_key, data=matrix, compression='gzip')
-        # Add encoding attributes for consistency
+        # Dense matrix — ensure C-contiguous layout before writing.
+        # Armadillo returns Fortran-order arrays; h5py's gzip path is
+        # dramatically slower when it must internally relayout F→C order.
+        matrix = np.ascontiguousarray(matrix)
+
+        _CHUNK_WRITE_BYTES = 50 * 1024 * 1024  # 50 MB
+        if matrix.ndim == 2 and matrix.nbytes > _CHUNK_WRITE_BYTES:
+            chunk_rows = max(
+                1, _CHUNK_WRITE_BYTES // (matrix.shape[1] * matrix.dtype.itemsize)
+            )
+            ds = f.create_dataset(
+                h5_key, shape=matrix.shape, dtype=matrix.dtype,
+                compression='gzip',
+            )
+            for start in range(0, matrix.shape[0], chunk_rows):
+                ds[start:start + chunk_rows] = matrix[start:start + chunk_rows]
+        else:
+            ds = f.create_dataset(h5_key, data=matrix, compression='gzip')
+
         ds.attrs['encoding-type'] = 'array'
         ds.attrs['encoding-version'] = '0.2.0'
 

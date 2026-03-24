@@ -57,10 +57,10 @@ py::dict run_action(py::array_t<double> S_r, int k_min = 2, int k_max = 30,
     );
 
     py::dict out;
-    out["H_stacked"] = arma_mat_to_numpy(res(0));
-    out["C_stacked"] = arma_mat_to_numpy(res(1));
-    out["H_merged"] = arma_mat_to_numpy(res(2));
-    out["C_merged"] = arma_mat_to_numpy(res(3));
+    out["H_stacked"] = arma_mat_to_numpy_c(res(0));
+    out["C_stacked"] = arma_mat_to_numpy_c(res(1));
+    out["H_merged"] = arma_mat_to_numpy_c(res(2));
+    out["C_merged"] = arma_mat_to_numpy_c(res(3));
 
     // Convert assigned_archetypes
     arma::mat assigned_mat = res(4);
@@ -142,11 +142,11 @@ py::dict merge_archetypes(py::array_t<double> S_r, py::array_t<double> C_stacked
 // The output keys use "U" for the left singular vectors (consistent with SVD convention).
 static py::dict kernel_result_to_dict(const actionet::KernelReductionResult& res) {
     py::dict out;
-    out["S_r"]   = arma_mat_to_numpy(res.S_r);
+    out["S_r"]   = arma_mat_to_numpy_c(res.S_r);
     out["sigma"] = arma_vec_to_numpy(res.sigma);
-    out["U"]     = arma_mat_to_numpy(res.U);
-    out["A"]     = arma_mat_to_numpy(res.A);
-    out["B"]     = arma_mat_to_numpy(res.B);
+    out["U"]     = arma_mat_to_numpy_c(res.U);
+    out["A"]     = arma_mat_to_numpy_c(res.A);
+    out["B"]     = arma_mat_to_numpy_c(res.B);
     return out;
 }
 
@@ -156,11 +156,11 @@ py::dict reduce_kernel_sparse(py::object S, int k = 50, int svd_alg = 0,
     arma::field<arma::mat> res = actionet::reduceKernel(S_sp, k, svd_alg, max_it, seed, verbose);
 
     py::dict out;
-    out["S_r"]   = arma_mat_to_numpy(res(0));
+    out["S_r"]   = arma_mat_to_numpy_c(res(0));
     out["sigma"] = arma_mat_to_numpy(res(1));
-    out["U"]     = arma_mat_to_numpy(res(2));
-    out["A"]     = arma_mat_to_numpy(res(3));
-    out["B"]     = arma_mat_to_numpy(res(4));
+    out["U"]     = arma_mat_to_numpy_c(res(2));
+    out["A"]     = arma_mat_to_numpy_c(res(3));
+    out["B"]     = arma_mat_to_numpy_c(res(4));
     return out;
 }
 
@@ -170,11 +170,11 @@ py::dict reduce_kernel_dense(py::array_t<double> S, int k = 50, int svd_alg = 0,
     arma::field<arma::mat> res = actionet::reduceKernel(S_mat, k, svd_alg, max_it, seed, verbose);
 
     py::dict out;
-    out["S_r"]   = arma_mat_to_numpy(res(0));
+    out["S_r"]   = arma_mat_to_numpy_c(res(0));
     out["sigma"] = arma_mat_to_numpy(res(1));
-    out["U"]     = arma_mat_to_numpy(res(2));
-    out["A"]     = arma_mat_to_numpy(res(3));
-    out["B"]     = arma_mat_to_numpy(res(4));
+    out["U"]     = arma_mat_to_numpy_c(res(2));
+    out["A"]     = arma_mat_to_numpy_c(res(3));
+    out["B"]     = arma_mat_to_numpy_c(res(4));
     return out;
 }
 

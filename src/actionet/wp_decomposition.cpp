@@ -32,11 +32,11 @@ py::dict orthogonalize_batch_effect_sparse(py::object S, py::array_t<double> old
     arma::field<arma::mat> orth_reduction = actionet::orthogonalizeBatchEffect(S_sp, SVD_results, design_mat);
 
     py::dict out;
-    out["S_r"]    = arma_mat_to_numpy(orth_reduction(0));
+    out["S_r"]    = arma_mat_to_numpy_c(orth_reduction(0));
     out["sigma"]  = arma_vec_to_numpy(arma::vec(orth_reduction(1)));
-    out["U"]      = arma_mat_to_numpy(orth_reduction(2));
-    out["A"]      = arma_mat_to_numpy(orth_reduction(3));
-    out["B"]      = arma_mat_to_numpy(orth_reduction(4));
+    out["U"]      = arma_mat_to_numpy_c(orth_reduction(2));
+    out["A"]      = arma_mat_to_numpy_c(orth_reduction(3));
+    out["B"]      = arma_mat_to_numpy_c(orth_reduction(4));
     return out;
 }
 
@@ -63,11 +63,11 @@ py::dict orthogonalize_batch_effect_dense(py::array_t<double> S, py::array_t<dou
     arma::field<arma::mat> orth_reduction = actionet::orthogonalizeBatchEffect(S_mat, SVD_results, design_mat);
 
     py::dict out;
-    out["S_r"]    = arma_mat_to_numpy(orth_reduction(0));
+    out["S_r"]    = arma_mat_to_numpy_c(orth_reduction(0));
     out["sigma"]  = arma_vec_to_numpy(arma::vec(orth_reduction(1)));
-    out["U"]      = arma_mat_to_numpy(orth_reduction(2));
-    out["A"]      = arma_mat_to_numpy(orth_reduction(3));
-    out["B"]      = arma_mat_to_numpy(orth_reduction(4));
+    out["U"]      = arma_mat_to_numpy_c(orth_reduction(2));
+    out["A"]      = arma_mat_to_numpy_c(orth_reduction(3));
+    out["B"]      = arma_mat_to_numpy_c(orth_reduction(4));
     return out;
 }
 
@@ -94,11 +94,11 @@ py::dict orthogonalize_basal_sparse(py::object S, py::array_t<double> old_S_r,
     arma::field<arma::mat> orth_reduction = actionet::orthogonalizeBasal(S_sp, SVD_results, basal_mat);
 
     py::dict out;
-    out["S_r"]    = arma_mat_to_numpy(orth_reduction(0));
+    out["S_r"]    = arma_mat_to_numpy_c(orth_reduction(0));
     out["sigma"]  = arma_vec_to_numpy(arma::vec(orth_reduction(1)));
-    out["U"]      = arma_mat_to_numpy(orth_reduction(2));
-    out["A"]      = arma_mat_to_numpy(orth_reduction(3));
-    out["B"]      = arma_mat_to_numpy(orth_reduction(4));
+    out["U"]      = arma_mat_to_numpy_c(orth_reduction(2));
+    out["A"]      = arma_mat_to_numpy_c(orth_reduction(3));
+    out["B"]      = arma_mat_to_numpy_c(orth_reduction(4));
     return out;
 }
 
@@ -125,11 +125,11 @@ py::dict orthogonalize_basal_dense(py::array_t<double> S, py::array_t<double> ol
     arma::field<arma::mat> orth_reduction = actionet::orthogonalizeBasal(S_mat, SVD_results, basal_mat);
 
     py::dict out;
-    out["S_r"]    = arma_mat_to_numpy(orth_reduction(0));
+    out["S_r"]    = arma_mat_to_numpy_c(orth_reduction(0));
     out["sigma"]  = arma_vec_to_numpy(arma::vec(orth_reduction(1)));
-    out["U"]      = arma_mat_to_numpy(orth_reduction(2));
-    out["A"]      = arma_mat_to_numpy(orth_reduction(3));
-    out["B"]      = arma_mat_to_numpy(orth_reduction(4));
+    out["U"]      = arma_mat_to_numpy_c(orth_reduction(2));
+    out["A"]      = arma_mat_to_numpy_c(orth_reduction(3));
+    out["B"]      = arma_mat_to_numpy_c(orth_reduction(4));
     return out;
 }
 
@@ -262,11 +262,11 @@ py::dict orthogonalize_batch_effect_operator(
         *op, reduction, design_mat);
 
     py::dict out;
-    out["S_r"]   = arma_mat_to_numpy(result.S_r);
+    out["S_r"]   = arma_mat_to_numpy_c(result.S_r);
     out["sigma"] = arma_vec_to_numpy(result.sigma);
-    out["U"]     = arma_mat_to_numpy(result.U);
-    out["A"]     = arma_mat_to_numpy(result.A);
-    out["B"]     = arma_mat_to_numpy(result.B);
+    out["U"]     = arma_mat_to_numpy_c(result.U);
+    out["A"]     = arma_mat_to_numpy_c(result.A);
+    out["B"]     = arma_mat_to_numpy_c(result.B);
     return out;
 }
 
@@ -300,11 +300,11 @@ py::dict orthogonalize_basal_operator(
         *op, reduction, basal_mat);
 
     py::dict out;
-    out["S_r"]   = arma_mat_to_numpy(result.S_r);
+    out["S_r"]   = arma_mat_to_numpy_c(result.S_r);
     out["sigma"] = arma_vec_to_numpy(result.sigma);
-    out["U"]     = arma_mat_to_numpy(result.U);
-    out["A"]     = arma_mat_to_numpy(result.A);
-    out["B"]     = arma_mat_to_numpy(result.B);
+    out["U"]     = arma_mat_to_numpy_c(result.U);
+    out["A"]     = arma_mat_to_numpy_c(result.A);
+    out["B"]     = arma_mat_to_numpy_c(result.B);
     return out;
 }
 
