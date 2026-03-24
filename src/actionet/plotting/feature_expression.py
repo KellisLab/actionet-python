@@ -10,7 +10,7 @@ from anndata import AnnData
 
 from ..anndata_utils import anndata_to_matrix
 from ..imputation import impute_features
-from .umap import plot_umap
+from .umap import plot_umap, plot_umap_raster, _prepare_umap_context, _render_umap_raster
 
 
 def _flatten_features(features: Union[str, Sequence[Union[str, Iterable[str]]]]) -> list[str]:
@@ -211,3 +211,124 @@ def plot_feature_expression(
         return next(iter(out.values()))
     return out
 
+
+def plot_feature_expression_raster(
+    adata: AnnData,
+    features: Union[str, Sequence[Union[str, Iterable[str]]]],
+    features_use: Optional[str] = None,
+    alpha: float = 0.9,
+    algorithm: Literal["actionet", "pca"] = "actionet",
+    layer: Optional[str] = "logcounts",
+    trans_attr: Optional[Union[str, Sequence, np.ndarray]] = None,
+    trans_th: float = -0.5,
+    trans_fac: float = 3.0,
+    grad_palette: Union[str, Sequence[str]] = "magma",
+    point_size: float = 1.0,
+    net_slot: str = "actionet",
+    basis: str = "umap_2d_actionet",
+    single_plot: bool = False,
+    show_legend: bool = False,
+    sort_features: bool = True,
+    n_threads: int = 0,
+):
+    """Plot feature expression values on the UMAP embedding using a raster backend."""
+
+    requested = _flatten_features(features)
+    marker_set = _select_features(adata, requested, features_use, sort_features)
+    if len(marker_set) == 0:
+        raise ValueError("No features found in 'features_use'.")
+
+    if len(marker_set) == 1 and alpha != 0:
+        alpha = 0
+
+    if alpha > 0:
+        expr_profile = impute_features(
+            adata,
+            features=requested,
+            algorithm=algorithm,
+            features_use=features_use,
+            network_key=net_slot,
+            layer=layer,
+            alpha=alpha,
+            n_threads=n_threads,
+        )
+        if sort_features:
+            expr_profile = expr_profile.loc[:, [feat for feat in marker_set if feat in expr_profile.columns]]
+    else:
+        expr_profile = _extract_expression(adata, marker_set, features_use, layer)
+
+    out = {}
+    for feat_name in expr_profile.columns:
+        values = expr_profile[feat_name].to_numpy()
+        out[feat_name] = plot_umap_raster(
+            adata,
+            color=values,
+            color_source=None,
+            cmap=grad_palette,
+            size=point_size,
+            trans_attr=trans_attr,
+            trans_fac=trans_fac,
+            trans_th=trans_th,
+            basis=basis,
+            legend=show_legend,
+            title=feat_name,
+        )
+
+    if single_plot and len(out) > 1:
+        try:
+            from matplotlib.backends.backend_agg import FigureCanvasAgg
+            from matplotlib.figure import Figure
+        except ImportError as exc:  # pragma: no cover - optional dependency
+            raise ImportError("matplotlib is required for raster feature-expression plotting.") from exc
+
+        nrow, ncol = _grid_shape(len(out))
+        panel_width = 6.0
+        panel_height = 5.0
+        fig = Figure(figsize=(panel_width * ncol, panel_height * nrow), dpi=100.0, facecolor="white")
+        FigureCanvasAgg(fig)
+        axes = np.asarray(fig.subplots(nrow, ncol, squeeze=False))
+        scale_size = point_size / max(nrow, 1)
+
+        for ax, key in zip(axes.flat, list(expr_profile.columns)):
+            ctx = _prepare_umap_context(
+                adata,
+                color=expr_profile[key].to_numpy(),
+                color_source=None,
+                color_type="continuous",
+                basis=basis,
+                alpha=1.0,
+                fig_dpi=100.0,
+                figsize=(panel_width, panel_height),
+                trans_attr=trans_attr,
+                trans_fac=trans_fac,
+                trans_th=trans_th,
+                color_slot=None,
+            )
+            _render_umap_raster(
+                ax,
+                ctx,
+                cmap=grad_palette,
+                palette="tab20",
+                size=scale_size,
+                legend=show_legend,
+                title=key,
+                vmin=None,
+                vmax=None,
+                order=None,
+                na_color="#cccccc",
+                hide_na=False,
+                add_text_labels=False,
+                label_text_size=9.0,
+                nudge_text_labels=False,
+            )
+
+        total_cells = nrow * ncol
+        if len(expr_profile.columns) < total_cells:
+            for ax in axes.flat[len(expr_profile.columns):]:
+                ax.set_visible(False)
+
+        return fig
+
+    if len(out) == 1:
+        return next(iter(out.values()))
+    return out

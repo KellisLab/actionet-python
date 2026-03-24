@@ -532,9 +532,15 @@ pip install -e ".[plotting]"
 
 ```python
 import actionet as act
+from lets_plot import LetsPlot
+
+# Prefer static notebook rendering for lets-plot UMAPs.
+LetsPlot.setup_html(no_js=True)
 
 # adata.obsm["X_umap"] must exist
 p_static = act.plot_umap(adata, color="cluster")
+p_png = p_static.to_png()
+fig_raster = act.plot_umap_raster(adata, color="cluster")
 fig = act.plot_umap_interactive(adata, color="gene1")
 
 # Feature expression overlays
@@ -545,4 +551,13 @@ plots = act.plot_feature_expression(
     alpha=0,
     layer="logcounts",
 )
+
+plots_raster = act.plot_feature_expression_raster(
+    adata,
+    features=["GeneA", "GeneB"],
+    alpha=0,
+    layer="logcounts",
+)
 ```
+
+`plot_umap()` now disables lets-plot sampling and tooltips by default for fidelity-first static rendering. For very large notebook outputs, prefer `PlotSpec.to_png()` / `to_pdf()` first; move to `plot_umap_raster()` when full lets-plot specs become too heavy.

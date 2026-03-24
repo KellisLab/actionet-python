@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from typing import List, Optional, Sequence
 
 import numpy as np
+import pandas as pd
 from anndata import AnnData
 
 
@@ -61,8 +62,15 @@ def resolve_feature_space(
     lookup: dict = {}
     has_dup = False
     for idx, lab in enumerate(labels):
-        if lab not in lookup:
-            lookup[lab] = idx
+        try:
+            is_null = pd.isna(lab)
+        except (TypeError, ValueError):
+            is_null = False
+        if is_null:
+            continue
+        lab_str = str(lab)
+        if lab_str not in lookup:
+            lookup[lab_str] = idx
         else:
             has_dup = True
 

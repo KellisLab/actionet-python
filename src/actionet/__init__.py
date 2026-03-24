@@ -56,9 +56,11 @@ from .visualization import (
 )
 from .plotting import (
     plot_feature_expression,
+    plot_feature_expression_raster,
     plot_qc_violin,
     plot_umap,
     plot_umap_interactive,
+    plot_umap_raster,
 )
 from .pipeline import (
     run_actionet,
@@ -114,9 +116,11 @@ __all__ = [
     # Visualization
     "compute_node_colors",
     "plot_feature_expression",
+    "plot_feature_expression_raster",
     "plot_qc_violin",
     "plot_umap",
     "plot_umap_interactive",
+    "plot_umap_raster",
     # Pipeline
     "run_actionet",
     # Utilities

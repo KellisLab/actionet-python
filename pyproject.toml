@@ -43,6 +43,7 @@ dev = [
 ]
 plotting = [
     "lets-plot>=4.0.0",
+    "matplotlib>=3.8.0",
     "plotly>=5.18.0",
 ]
 
