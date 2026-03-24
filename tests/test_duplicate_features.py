@@ -28,7 +28,7 @@ class TestDuplicateVarNames:
             space = resolve_feature_space(adata_dup, None, context="test")
         assert space.has_duplicates
         assert space.lookup["A"] == 0  # first occurrence, not 2
-        assert len(w) == 1
+        assert len(w) == 0  # no warning at space-build time
 
     def test_encode_markers_first_match(self, adata_dup):
         feature_set = adata_dup.var_names.to_numpy()
@@ -67,7 +67,7 @@ class TestDuplicateFeaturesUseColumn:
             space = resolve_feature_space(adata_dup_col, "Gene", context="test")
         assert space.has_duplicates
         assert space.lookup["X"] == 0
-        assert len(w) == 1
+        assert len(w) == 0  # no warning at space-build time
 
     def test_encode_markers_custom_col_first_match(self, adata_dup_col):
         feature_set = adata_dup_col.var["Gene"].to_numpy()

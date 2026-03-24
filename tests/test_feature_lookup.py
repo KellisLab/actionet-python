@@ -28,13 +28,24 @@ class TestResolveFeatureSpace:
             X=np.zeros((2, 4)),
             var=pd.DataFrame(index=["X", "Y", "X", "Z"]),
         )
-        with warnings.catch_warnings(record=True) as w:
+        with warnings.catch_warnings(record=True):
             warnings.simplefilter("always")
             space = resolve_feature_space(adata, None, context="test")
         assert space.has_duplicates
         assert space.lookup["X"] == 0  # first occurrence
-        assert len(w) == 1
-        assert "duplicates" in str(w[0].message).lower()
+        assert "X" in space.duplicated_labels
+
+        # Warning only fires when requesting a duplicated feature
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            resolve_requested_features(["Y"], space, context="test")
+        assert len(w) == 0
+
+        with warnings.catch_warnings(record=True) as w2:
+            warnings.simplefilter("always")
+            resolve_requested_features(["X"], space, context="test")
+        assert len(w2) == 1
+        assert "X" in str(w2[0].message)
 
     def test_custom_column(self):
         adata = ad.AnnData(

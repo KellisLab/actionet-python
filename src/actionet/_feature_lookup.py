@@ -30,6 +30,9 @@ class FeatureSpace:
     has_duplicates: bool
     """Whether *labels* contains any duplicated entries."""
 
+    duplicated_labels: frozenset
+    """Set of label strings that appear more than once."""
+
 
 def resolve_feature_space(
     adata: AnnData,
@@ -61,6 +64,7 @@ def resolve_feature_space(
 
     lookup: dict = {}
     has_dup = False
+    dup_set: set = set()
     for idx, lab in enumerate(labels):
         try:
             is_null = pd.isna(lab)
@@ -73,17 +77,12 @@ def resolve_feature_space(
             lookup[lab_str] = idx
         else:
             has_dup = True
+            dup_set.add(lab_str)
 
-    if has_dup:
-        ctx = f" ({context})" if context else ""
-        warnings.warn(
-            f"Feature labels contain duplicates{ctx}; "
-            "only the first occurrence of each label will be used.",
-            UserWarning,
-            stacklevel=3,
-        )
-
-    return FeatureSpace(labels=labels, lookup=lookup, has_duplicates=has_dup)
+    return FeatureSpace(
+        labels=labels, lookup=lookup,
+        has_duplicates=has_dup, duplicated_labels=frozenset(dup_set),
+    )
 
 
 @dataclass(frozen=True)
@@ -143,6 +142,18 @@ def resolve_requested_features(
     if missing_names:
         ctx = f" ({context})" if context else ""
         print(f"Features missing{ctx}: {', '.join(missing_names)}")
+
+    if space.has_duplicates:
+        hit_dups = [n for n in matched_names if n in space.duplicated_labels]
+        if hit_dups:
+            ctx = f" ({context})" if context else ""
+            warnings.warn(
+                f"Requested features have duplicate entries in the feature "
+                f"labels{ctx}; using first occurrence for: "
+                f"{', '.join(hit_dups)}",
+                UserWarning,
+                stacklevel=3,
+            )
 
     return ResolvedFeatures(
         matched_names=matched_names,
