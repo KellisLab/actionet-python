@@ -122,6 +122,19 @@ class ResultRow:
     n_obs: int
     n_vars: int
     nnz: int
+    diffusion_input_shape: Optional[str] = None
+    diffusion_input_nbytes_mb: Optional[float] = None
+    diffusion_input_c_contiguous: Optional[bool] = None
+    diffusion_input_f_contiguous: Optional[bool] = None
+    diffusion_graph_format: Optional[str] = None
+    diffusion_graph_nnz: Optional[int] = None
+    diffusion_graph_data_dtype: Optional[str] = None
+    diffusion_graph_index_dtype: Optional[str] = None
+    diffusion_compute_wall_s: Optional[float] = None
+    diffusion_persist_wall_s: Optional[float] = None
+    diffusion_persist_dense_payload_count: Optional[int] = None
+    diffusion_persist_dense_total_mb: Optional[float] = None
+    diffusion_persist_dense_payloads_json: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -1118,6 +1131,7 @@ def internal_run_case(args: argparse.Namespace) -> int:
     import numpy as np
     import scipy.sparse as sp
     import actionet as an
+    import actionet.core as an_core
     from actionet.tools import scale as scale_coords
     from actionet._backed_compression import get_storage_metadata_from_adata, is_compressed_storage
 
@@ -1153,6 +1167,7 @@ def internal_run_case(args: argparse.Namespace) -> int:
         io_write_mb: float,
         status: str,
         failure_reason: Optional[str] = None,
+        extras: Optional[Dict[str, Any]] = None,
     ) -> None:
         row = ResultRow(
             branch=spec.branch,
@@ -1172,9 +1187,24 @@ def internal_run_case(args: argparse.Namespace) -> int:
             n_vars=int(getattr(adata, "n_vars", 0) or 0),
             nnz=current_nnz(adata) if adata is not None else 0,
         )
+        if extras:
+            for key, value in extras.items():
+                if hasattr(row, key):
+                    setattr(row, key, value)
         worker_append_row(output_jsonl, row)
 
-    def run_stage(stage: str, fn: Any) -> None:
+    def run_stage(stage: str, fn: Any, *, extra_getter: Optional[Any] = None) -> None:
+        def stage_extras() -> Optional[Dict[str, Any]]:
+            if extra_getter is None:
+                return None
+            try:
+                extras = extra_getter()
+            except Exception:
+                return None
+            if not isinstance(extras, dict):
+                return None
+            return extras
+
         io_r0, io_w0 = worker_io_counters_mb()
         try:
             with WorkerStageProfiler() as profiler:
@@ -1189,6 +1219,7 @@ def internal_run_case(args: argparse.Namespace) -> int:
                 io_write_mb=max(0.0, io_w1 - io_w0),
                 status="failed",
                 failure_reason=str(exc),
+                extras=stage_extras(),
             )
             raise
         else:
@@ -1201,6 +1232,7 @@ def internal_run_case(args: argparse.Namespace) -> int:
                 io_write_mb=max(0.0, io_w1 - io_w0),
                 status="ok",
                 failure_reason=None,
+                extras=stage_extras(),
             )
 
     total_io_r0 = 0.0
@@ -1294,14 +1326,108 @@ def internal_run_case(args: argparse.Namespace) -> int:
                 inplace=True,
             ),
         )
+        diffusion_metrics: Dict[str, Any] = {}
+
+        def compute_network_diffusion_stage() -> None:
+            nonlocal diffusion_metrics
+            diffusion_metrics = {}
+
+            if "H_merged" in adata.obsm:
+                X0 = np.asarray(adata.obsm["H_merged"])
+                shape_str = "x".join(str(int(v)) for v in X0.shape)
+                diffusion_metrics["diffusion_input_shape"] = shape_str
+                diffusion_metrics["diffusion_input_nbytes_mb"] = float(getattr(X0, "nbytes", 0)) / 1e6
+                diffusion_metrics["diffusion_input_c_contiguous"] = bool(
+                    getattr(getattr(X0, "flags", None), "c_contiguous", False)
+                )
+                diffusion_metrics["diffusion_input_f_contiguous"] = bool(
+                    getattr(getattr(X0, "flags", None), "f_contiguous", False)
+                )
+
+            if "actionet" in adata.obsp:
+                G = adata.obsp["actionet"]
+                if sp.issparse(G):
+                    diffusion_metrics["diffusion_graph_format"] = str(G.getformat())
+                    diffusion_metrics["diffusion_graph_nnz"] = int(G.nnz)
+                    diffusion_metrics["diffusion_graph_data_dtype"] = str(G.data.dtype)
+                    diffusion_metrics["diffusion_graph_index_dtype"] = str(G.indices.dtype)
+                else:
+                    diffusion_metrics["diffusion_graph_format"] = type(G).__name__
+
+            persist_payloads: List[Dict[str, Any]] = []
+            persist_elapsed_s = 0.0
+
+            def collect_dense_payloads(container_name: str, values: Any) -> None:
+                if values is None:
+                    return
+                try:
+                    iterator = values.items()
+                except Exception:
+                    return
+
+                for key, value in iterator:
+                    if sp.issparse(value):
+                        continue
+                    try:
+                        arr = np.asarray(value)
+                    except Exception:
+                        continue
+                    payload = {
+                        "container": str(container_name),
+                        "key": str(key),
+                        "shape": [int(x) for x in arr.shape],
+                        "dtype": str(arr.dtype),
+                        "nbytes_mb": float(getattr(arr, "nbytes", 0)) / 1e6,
+                        "c_contiguous": bool(getattr(arr.flags, "c_contiguous", False)),
+                        "f_contiguous": bool(getattr(arr.flags, "f_contiguous", False)),
+                    }
+                    persist_payloads.append(payload)
+
+            orig_compute = an_core._core.compute_network_diffusion
+            orig_persist_updates = an_core.persist_updates
+
+            def wrapped_compute_network_diffusion(*c_args: Any, **c_kwargs: Any) -> Any:
+                t0 = time.perf_counter()
+                out = orig_compute(*c_args, **c_kwargs)
+                diffusion_metrics["diffusion_compute_wall_s"] = time.perf_counter() - t0
+                return out
+
+            def wrapped_persist_updates(*p_args: Any, **p_kwargs: Any) -> Any:
+                nonlocal persist_elapsed_s
+                collect_dense_payloads("obsm", p_kwargs.get("obsm"))
+                collect_dense_payloads("varm", p_kwargs.get("varm"))
+                collect_dense_payloads("layers", p_kwargs.get("layers"))
+
+                t0 = time.perf_counter()
+                out = orig_persist_updates(*p_args, **p_kwargs)
+                persist_elapsed_s += time.perf_counter() - t0
+                return out
+
+            an_core._core.compute_network_diffusion = wrapped_compute_network_diffusion
+            an_core.persist_updates = wrapped_persist_updates
+            try:
+                an.compute_network_diffusion(
+                    adata,
+                    scores="H_merged",
+                    key_added="archetype_footprint",
+                    inplace=True,
+                )
+            finally:
+                an_core._core.compute_network_diffusion = orig_compute
+                an_core.persist_updates = orig_persist_updates
+
+            total_payload_mb = sum(float(p["nbytes_mb"]) for p in persist_payloads)
+            diffusion_metrics["diffusion_persist_wall_s"] = persist_elapsed_s
+            diffusion_metrics["diffusion_persist_dense_payload_count"] = int(len(persist_payloads))
+            diffusion_metrics["diffusion_persist_dense_total_mb"] = total_payload_mb
+            diffusion_metrics["diffusion_persist_dense_payloads_json"] = json.dumps(
+                persist_payloads, sort_keys=True
+            )
+
         run_stage(
             "compute_network_diffusion",
-            lambda: an.compute_network_diffusion(
-                adata,
-                scores="H_merged",
-                key_added="archetype_footprint",
-                inplace=True,
-            ),
+            compute_network_diffusion_stage,
+            extra_getter=lambda: dict(diffusion_metrics),
         )
 
         def layout_stage() -> None:
