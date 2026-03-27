@@ -1221,8 +1221,8 @@ def layout_network(
             f"must be >= n_components ({n_components})"
         )
 
-    # Ensure initial_coords is float32 and C-contiguous
-    initial_coords = np.ascontiguousarray(initial_coords, dtype=np.float32)
+    # Ensure initial_coords is float64 and C-contiguous (binding accepts double)
+    initial_coords = np.ascontiguousarray(initial_coords, dtype=np.float64)
 
     coords = _core.layout_network(
         G, initial_coords, method, n_components,
