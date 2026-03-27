@@ -163,8 +163,32 @@ def sanitize_name(value: str) -> str:
     return value.replace("/", "_").replace(" ", "_")
 
 
+def benchmark_root() -> Path:
+    override = os.environ.get("ACTIONET_BENCHMARK_ROOT")
+    candidates = []
+    if override:
+        candidates.append(Path(override).expanduser())
+    candidates.extend([
+        Path("/data/actionet_benchmark"),
+        repo_root() / "tests" / "benchmark_results",
+        Path(tempfile.gettempdir()) / "actionet_benchmark",
+    ])
+    for candidate in candidates:
+        try:
+            candidate.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            continue
+        if os.access(candidate, os.W_OK | os.X_OK):
+            return candidate.resolve()
+    raise RuntimeError("Unable to find a writable benchmark root")
+
+
 def default_output_dir() -> Path:
-    return repo_root() / "tests" / "benchmark_results" / f"branch_compare_{timestamp_id()}"
+    return benchmark_root() / f"branch_compare_{timestamp_id()}"
+
+
+def default_work_root() -> Path:
+    return benchmark_root() / f"branch_compare_work_{timestamp_id()}"
 
 
 def run_command(
@@ -256,17 +280,53 @@ def load_case_total_row(case_jsonl: Path) -> Optional[Dict[str, Any]]:
     return totals[-1] if totals else None
 
 
-def base_python_executable() -> str:
+def default_bootstrap_python() -> str:
+    env_override = os.environ.get("ACTIONET_BENCHMARK_BOOTSTRAP_PYTHON")
+    if env_override:
+        return env_override
+    python3_path = shutil.which("python3")
+    if python3_path:
+        return python3_path
     return sys.executable or "python3"
 
 
-def worker_env() -> Dict[str, str]:
+def worker_env(scratch_root: Optional[Path] = None) -> Dict[str, str]:
     env = os.environ.copy()
     env.update(BENCHMARK_ENV_OVERRIDES)
+    if scratch_root is None:
+        scratch_root = benchmark_root() / ".runtime"
+    scratch_root = scratch_root.resolve()
+    tmp_root = scratch_root / "tmp"
+    cache_root = scratch_root / "cache"
+    pycache_root = scratch_root / "pycache"
+    pip_cache_root = cache_root / "pip"
+    xdg_cache_root = cache_root / "xdg"
+    mpl_cache_root = cache_root / "matplotlib"
+    for path in (
+        scratch_root,
+        tmp_root,
+        cache_root,
+        pycache_root,
+        pip_cache_root,
+        xdg_cache_root,
+        mpl_cache_root,
+    ):
+        path.mkdir(parents=True, exist_ok=True)
+    env.update(
+        {
+            "TMPDIR": str(tmp_root),
+            "TEMP": str(tmp_root),
+            "TMP": str(tmp_root),
+            "PIP_CACHE_DIR": str(pip_cache_root),
+            "XDG_CACHE_HOME": str(xdg_cache_root),
+            "MPLCONFIGDIR": str(mpl_cache_root),
+            "PYTHONPYCACHEPREFIX": str(pycache_root),
+        }
+    )
     return env
 
 
-def create_branch_runtime(branch: str, work_root: Path) -> BranchRuntime:
+def create_branch_runtime(branch: str, work_root: Path, bootstrap_python: str) -> BranchRuntime:
     repo = repo_root()
     branch_dir = work_root / "worktrees" / sanitize_name(branch)
     branch_dir.parent.mkdir(parents=True, exist_ok=True)
@@ -275,10 +335,10 @@ def create_branch_runtime(branch: str, work_root: Path) -> BranchRuntime:
     run_command(["git", "submodule", "update", "--init", "--recursive"], cwd=branch_dir)
 
     venv_dir = branch_dir / ".venv-bench"
-    run_command([base_python_executable(), "-m", "venv", str(venv_dir)], cwd=branch_dir)
+    run_command([bootstrap_python, "-m", "venv", str(venv_dir)], cwd=branch_dir)
     python_path = venv_dir / "bin" / "python"
 
-    env = worker_env()
+    env = worker_env(work_root / ".runtime" / sanitize_name(branch))
     run_command([str(python_path), "-m", "pip", "install", ".", "psutil"], cwd=branch_dir, env=env)
 
     return BranchRuntime(branch=branch, worktree=str(branch_dir), python=str(python_path))
@@ -289,10 +349,11 @@ def run_internal(
     subcommand: str,
     args: Sequence[str],
     *,
+    env_root: Optional[Path] = None,
     timeout_s: Optional[int] = None,
 ) -> int:
     cmd = [python_exe, str(script_path()), subcommand, *args]
-    return stream_subprocess(cmd, env=worker_env(), timeout_s=timeout_s)
+    return stream_subprocess(cmd, env=worker_env(env_root), timeout_s=timeout_s)
 
 
 def prepare_datasets(prepare_python: str, data_root: Path, manifest_path: Path) -> Dict[str, Any]:
@@ -301,7 +362,13 @@ def prepare_datasets(prepare_python: str, data_root: Path, manifest_path: Path) 
         "--data-root", str(data_root),
         "--manifest-path", str(manifest_path),
     ]
-    exit_code = run_internal(prepare_python, "prepare-data", args, timeout_s=DEFAULT_CASE_TIMEOUT_S)
+    exit_code = run_internal(
+        prepare_python,
+        "prepare-data",
+        args,
+        env_root=data_root.parent / ".runtime" / "prepare-data",
+        timeout_s=DEFAULT_CASE_TIMEOUT_S,
+    )
     if exit_code != 0:
         raise RuntimeError(f"Dataset preparation failed with exit code {exit_code}")
     with manifest_path.open("r", encoding="utf-8") as handle:
@@ -313,7 +380,13 @@ def smoke_check(branch_runtime: BranchRuntime, smoke_root: Path) -> None:
         "--branch", branch_runtime.branch,
         "--work-dir", str(smoke_root / sanitize_name(branch_runtime.branch)),
     ]
-    exit_code = run_internal(branch_runtime.python, "smoke-check", args, timeout_s=900)
+    exit_code = run_internal(
+        branch_runtime.python,
+        "smoke-check",
+        args,
+        env_root=smoke_root.parent / ".runtime" / "smoke-check" / sanitize_name(branch_runtime.branch),
+        timeout_s=900,
+    )
     if exit_code != 0:
         raise RuntimeError(f"Smoke check failed for branch {branch_runtime.branch}")
 
@@ -382,6 +455,7 @@ def execute_case(branch_runtime: BranchRuntime, spec: CaseSpec) -> Dict[str, Any
         branch_runtime.python,
         "run-case",
         ["--config", str(config_path)],
+        env_root=Path(spec.work_dir).parent.parent / ".runtime" / "run-case" / spec.case_id,
         timeout_s=spec.timeout_s,
     )
 
@@ -789,7 +863,7 @@ def orchestrate(args: argparse.Namespace) -> int:
     manifest_path = out_dir / "dataset_manifest.json"
 
     branch_runtimes = {
-        branch: create_branch_runtime(branch, work_root)
+        branch: create_branch_runtime(branch, work_root, args.bootstrap_python)
         for branch in args.branches
     }
 
@@ -1029,7 +1103,13 @@ def internal_smoke_check(args: argparse.Namespace) -> int:
     except Exception:
         pass
 
+    backed = ad.read_h5ad(str(path), backed="r+")
     an.reduce_kernel(backed, n_components=8, key_added="action", svd_algorithm="halko", seed=42, backed_chunk_size=32, inplace=True)
+    try:
+        if getattr(backed, "file", None) is not None:
+            backed.file.close()
+    except Exception:
+        pass
     backed = ad.read_h5ad(str(path), backed="r+")
     an.correct_batch_effect(backed, batch_key="UID", reduction_key="action", backed_chunk_size=32, inplace=True)
     an.run_action(backed, reduction_key="action_corrected", k_min=2, k_max=8, inplace=True)
@@ -1206,8 +1286,9 @@ def internal_run_case(args: argparse.Namespace) -> int:
             return extras
 
         io_r0, io_w0 = worker_io_counters_mb()
+        profiler = WorkerStageProfiler()
         try:
-            with WorkerStageProfiler() as profiler:
+            with profiler:
                 fn()
         except Exception as exc:
             io_r1, io_w1 = worker_io_counters_mb()
@@ -1277,12 +1358,6 @@ def internal_run_case(args: argparse.Namespace) -> int:
 
         def reduce_kernel_stage() -> None:
             nonlocal adata
-            if spec.mode == BACKED_MODE and backed_case_path is not None:
-                try:
-                    if getattr(adata, "file", None) is not None:
-                        adata.file.close()
-                except Exception:
-                    pass
             an.reduce_kernel(
                 adata,
                 n_components=30,
@@ -1294,6 +1369,11 @@ def internal_run_case(args: argparse.Namespace) -> int:
                 inplace=True,
             )
             if spec.mode == BACKED_MODE and backed_case_path is not None:
+                try:
+                    if getattr(adata, "file", None) is not None:
+                        adata.file.close()
+                except Exception:
+                    pass
                 adata = ad.read_h5ad(str(backed_case_path), backed="r+")
 
         run_stage("reduce_kernel", reduce_kernel_stage)
@@ -1536,12 +1616,17 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     parser.add_argument(
         "--output-dir",
         default=str(default_output_dir()),
-        help="Directory for raw results, CSVs, and markdown report.",
+        help="Directory for raw results, CSVs, and markdown report. Defaults to /data when available.",
+    )
+    parser.add_argument(
+        "--bootstrap-python",
+        default=default_bootstrap_python(),
+        help="Interpreter used to create fresh branch virtualenvs. Defaults to ACTIONET_BENCHMARK_BOOTSTRAP_PYTHON or python3.",
     )
     parser.add_argument(
         "--work-root",
-        default=str(Path(tempfile.gettempdir()) / f"actionet_branch_compare_{timestamp_id()}"),
-        help="Temporary work root for worktrees, virtualenvs, smoke data, and per-case files.",
+        default=str(default_work_root()),
+        help="Work root for worktrees, virtualenvs, smoke data, and per-case files. Defaults to /data when available.",
     )
     parser.add_argument(
         "--case-timeout-s",
