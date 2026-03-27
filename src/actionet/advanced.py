@@ -186,7 +186,7 @@ def run_spa(
     Returns
     -------
     dict with keys:
-        - selected_cols: Selected column indices (1-indexed)
+        - selected_cols: Selected column indices (0-indexed)
         - norms: Column norms
     """
     result = _core.run_spa(data, k)

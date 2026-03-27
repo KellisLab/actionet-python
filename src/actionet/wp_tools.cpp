@@ -187,14 +187,14 @@ py::array_t<int> mwm_rank1(py::array_t<double> u, py::array_t<double> v,
 
     arma::umat pairs = actionet::MWM_rank1(u_vec, v_vec, u_threshold, v_threshold);
 
-    // Convert to 1-indexed and return as numpy array
+    // Return 0-indexed pairs for Python
     std::vector<py::ssize_t> shape = {static_cast<py::ssize_t>(pairs.n_rows), 2};
     auto result = py::array_t<int>(shape);
     auto buf = result.request();
     int* ptr = static_cast<int*>(buf.ptr);
     for (size_t i = 0; i < pairs.n_rows; ++i) {
-        ptr[i * 2] = static_cast<int>(pairs(i, 0)) + 1;
-        ptr[i * 2 + 1] = static_cast<int>(pairs(i, 1)) + 1;
+        ptr[i * 2] = static_cast<int>(pairs(i, 0));
+        ptr[i * 2 + 1] = static_cast<int>(pairs(i, 1));
     }
 
     return result;

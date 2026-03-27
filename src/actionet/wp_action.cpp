@@ -92,10 +92,10 @@ py::dict collect_archetypes(py::list C_trace, py::list H_trace, double spec_th =
     actionet::ResCollectArch results = actionet::collectArchetypes(C_trace_vec, H_trace_vec, spec_th, min_obs);
 
     py::dict out;
-    // Convert selected_archs to Python list (1-indexed)
+    // Return 0-indexed for Python
     py::list selected_archs_list;
     for (size_t i = 0; i < results.selected_archs.n_elem; i++) {
-        selected_archs_list.append(results.selected_archs(i) + 1);
+        selected_archs_list.append(results.selected_archs(i));
     }
     out["selected_archs"] = selected_archs_list;
     out["C_stacked"] = arma_mat_to_numpy(results.C_stacked);
@@ -113,12 +113,12 @@ py::dict merge_archetypes(py::array_t<double> S_r, py::array_t<double> C_stacked
     actionet::ResMergeArch results = actionet::mergeArchetypes(S_r_mat, C_stacked_mat, H_stacked_mat, thread_no);
 
     py::dict out;
-    // Convert to 1-indexed
+    // Return 0-indexed for Python
     auto selected_arr = py::array_t<int>(results.selected_archetypes.n_elem);
     auto selected_buf = selected_arr.request();
     int* selected_ptr = static_cast<int*>(selected_buf.ptr);
     for (size_t i = 0; i < results.selected_archetypes.n_elem; ++i) {
-        selected_ptr[i] = static_cast<int>(results.selected_archetypes(i)) + 1;
+        selected_ptr[i] = static_cast<int>(results.selected_archetypes(i));
     }
     out["selected_archetypes"] = selected_arr;
 
@@ -129,7 +129,7 @@ py::dict merge_archetypes(py::array_t<double> S_r, py::array_t<double> C_stacked
     auto assigned_buf = assigned_arr.request();
     int* assigned_ptr = static_cast<int*>(assigned_buf.ptr);
     for (size_t i = 0; i < results.assigned_archetypes.n_elem; ++i) {
-        assigned_ptr[i] = static_cast<int>(results.assigned_archetypes(i)) + 1;
+        assigned_ptr[i] = static_cast<int>(results.assigned_archetypes(i));
     }
     out["assigned_archetypes"] = assigned_arr;
 
@@ -244,12 +244,12 @@ py::dict run_spa(py::array_t<double> A, int k) {
 
     actionet::ResSPA res = actionet::runSPA(A_mat, k);
 
-    // Convert to 1-indexed for Python
+    // Convert to 0-indexed for Python
     auto cols_arr = py::array_t<int>(k);
     auto cols_buf = cols_arr.request();
     int* cols_ptr = static_cast<int*>(cols_buf.ptr);
     for (int i = 0; i < k; i++) {
-        cols_ptr[i] = static_cast<int>(res.selected_cols(i)) + 1;
+        cols_ptr[i] = static_cast<int>(res.selected_cols(i));
     }
 
     py::dict out;
