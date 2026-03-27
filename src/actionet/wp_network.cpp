@@ -82,7 +82,7 @@ py::array_t<double> compute_network_diffusion(py::object G, py::array_t<double> 
         G_sp, X0_mat, alpha, max_it, thread_no, approx, norm_method, tol
     );
 
-    return arma_mat_to_numpy_c(X);
+    return arma_mat_to_numpy(X);
 }
 
 // network_measures ====================================================================================================

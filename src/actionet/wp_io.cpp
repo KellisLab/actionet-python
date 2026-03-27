@@ -15,19 +15,19 @@ namespace py = pybind11;
 namespace {
     py::dict svd_to_dict(const actionet::SVDResult& res) {
         py::dict out;
-        out["u"] = arma_mat_to_numpy(res.U);
+        out["u"] = arma_mat_to_numpy_c(res.U);
         out["d"] = arma_vec_to_numpy(res.sigma);
-        out["v"] = arma_mat_to_numpy(res.V);
+        out["v"] = arma_mat_to_numpy_c(res.V);
         return out;
     }
 
     py::dict kernel_to_dict(const actionet::KernelReductionResult& res) {
         py::dict out;
-        out["S_r"] = arma_mat_to_numpy(res.S_r);
+        out["S_r"] = arma_mat_to_numpy_c(res.S_r);
         out["sigma"] = arma_vec_to_numpy(res.sigma);
-        out["U"] = arma_mat_to_numpy(res.U);
-        out["A"] = arma_mat_to_numpy(res.A);
-        out["B"] = arma_mat_to_numpy(res.B);
+        out["U"] = arma_mat_to_numpy_c(res.U);
+        out["A"] = arma_mat_to_numpy_c(res.A);
+        out["B"] = arma_mat_to_numpy_c(res.B);
         return out;
     }
 
