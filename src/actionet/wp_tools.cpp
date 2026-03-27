@@ -70,7 +70,7 @@ py::array_t<double> compute_grouped_sums_sparse(py::object S, py::array_t<double
     arma::sp_mat S_sp = scipy_to_arma_sparse(S);
     arma::vec assignments_vec = numpy_to_arma_vec(sample_assignments);
 
-    arma::mat pb = actionet::computeGroupedSums(S_sp, assignments_vec, axis);
+    arma::mat pb = actionet::computeGroupedSums<arma::sp_mat, arma::mat>(S_sp, assignments_vec, axis);
     return arma_mat_to_numpy(pb);
 }
 
@@ -78,7 +78,7 @@ py::object compute_grouped_sums_sparse2(py::object S, py::array_t<double> sample
     arma::sp_mat S_sp = scipy_to_arma_sparse(S);
     arma::vec assignments_vec = numpy_to_arma_vec(sample_assignments);
 
-    arma::sp_mat pb = actionet::computeGroupedSums2(S_sp, assignments_vec, axis);
+    arma::sp_mat pb = actionet::computeGroupedSums<arma::sp_mat, arma::sp_mat>(S_sp, assignments_vec, axis);
     return arma_sparse_to_scipy(pb);
 }
 
@@ -86,7 +86,7 @@ py::array_t<double> compute_grouped_sums_dense(py::array_t<double> S, py::array_
     arma::mat S_mat = numpy_to_arma_mat(S);
     arma::vec assignments_vec = numpy_to_arma_vec(sample_assignments);
 
-    arma::mat pb = actionet::computeGroupedSums(S_mat, assignments_vec, axis);
+    arma::mat pb = actionet::computeGroupedSums<arma::mat, arma::mat>(S_mat, assignments_vec, axis);
     return arma_mat_to_numpy(pb);
 }
 
@@ -94,7 +94,7 @@ py::array_t<double> compute_grouped_means_sparse(py::object S, py::array_t<doubl
     arma::sp_mat S_sp = scipy_to_arma_sparse(S);
     arma::vec assignments_vec = numpy_to_arma_vec(sample_assignments);
 
-    arma::mat pb = actionet::computeGroupedMeans(S_sp, assignments_vec, axis);
+    arma::mat pb = actionet::computeGroupedMeans<arma::sp_mat, arma::mat>(S_sp, assignments_vec, axis);
     return arma_mat_to_numpy(pb);
 }
 
@@ -102,7 +102,7 @@ py::object compute_grouped_means_sparse2(py::object S, py::array_t<double> sampl
     arma::sp_mat S_sp = scipy_to_arma_sparse(S);
     arma::vec assignments_vec = numpy_to_arma_vec(sample_assignments);
 
-    arma::sp_mat pb = actionet::computeGroupedMeans2(S_sp, assignments_vec, axis);
+    arma::sp_mat pb = actionet::computeGroupedMeans<arma::sp_mat, arma::sp_mat>(S_sp, assignments_vec, axis);
     return arma_sparse_to_scipy(pb);
 }
 
@@ -110,7 +110,7 @@ py::array_t<double> compute_grouped_means_dense(py::array_t<double> S, py::array
     arma::mat S_mat = numpy_to_arma_mat(S);
     arma::vec assignments_vec = numpy_to_arma_vec(sample_assignments);
 
-    arma::mat pb = actionet::computeGroupedMeans(S_mat, assignments_vec, axis);
+    arma::mat pb = actionet::computeGroupedMeans<arma::mat, arma::mat>(S_mat, assignments_vec, axis);
     return arma_mat_to_numpy(pb);
 }
 
@@ -118,7 +118,7 @@ py::array_t<double> compute_grouped_vars_sparse(py::object S, py::array_t<double
     arma::sp_mat S_sp = scipy_to_arma_sparse(S);
     arma::vec assignments_vec = numpy_to_arma_vec(sample_assignments);
 
-    arma::mat pb = actionet::computeGroupedVars(S_sp, assignments_vec, axis);
+    arma::mat pb = actionet::computeGroupedVars<arma::sp_mat, arma::mat>(S_sp, assignments_vec, axis);
     return arma_mat_to_numpy(pb);
 }
 
@@ -126,7 +126,7 @@ py::object compute_grouped_vars_sparse2(py::object S, py::array_t<double> sample
     arma::sp_mat S_sp = scipy_to_arma_sparse(S);
     arma::vec assignments_vec = numpy_to_arma_vec(sample_assignments);
 
-    arma::sp_mat pb = actionet::computeGroupedVars2(S_sp, assignments_vec, axis);
+    arma::sp_mat pb = actionet::computeGroupedVars<arma::sp_mat, arma::sp_mat>(S_sp, assignments_vec, axis);
     return arma_sparse_to_scipy(pb);
 }
 
@@ -134,7 +134,7 @@ py::array_t<double> compute_grouped_vars_dense(py::array_t<double> S, py::array_
     arma::mat S_mat = numpy_to_arma_mat(S);
     arma::vec assignments_vec = numpy_to_arma_vec(sample_assignments);
 
-    arma::mat pb = actionet::computeGroupedVars(S_mat, assignments_vec, axis);
+    arma::mat pb = actionet::computeGroupedVars<arma::mat, arma::mat>(S_mat, assignments_vec, axis);
     return arma_mat_to_numpy(pb);
 }
 

@@ -100,20 +100,17 @@ Rcpp::List C_assess_enrichment(arma::mat& scores, arma::sp_mat& associations, in
 //'
 // [[Rcpp::export]]
 arma::mat C_computeGroupedSumsSparse(arma::sp_mat& S, arma::vec& sample_assignments, int axis = 0) {
-    arma::mat pb = actionet::computeGroupedSums(S, sample_assignments, axis);
-    return pb;
+    return actionet::computeGroupedSums<arma::sp_mat, arma::mat>(S, sample_assignments, axis);
 }
 
 // [[Rcpp::export]]
 arma::sp_mat C_computeGroupedSumsSparse2(arma::sp_mat& S, arma::vec& sample_assignments, int axis = 0) {
-    arma::sp_mat pb = actionet::computeGroupedSums2(S, sample_assignments, axis);
-    return pb;
+    return actionet::computeGroupedSums<arma::sp_mat, arma::sp_mat>(S, sample_assignments, axis);
 }
 
 // [[Rcpp::export]]
 arma::mat C_computeGroupedSumsDense(arma::mat& S, arma::vec& sample_assignments, int axis = 0) {
-    arma::mat pb = actionet::computeGroupedSums(S, sample_assignments, axis);
-    return pb;
+    return actionet::computeGroupedSums<arma::mat, arma::mat>(S, sample_assignments, axis);
 }
 
 //' Average matrix within groups (rowwise or columnwise)
@@ -125,20 +122,17 @@ arma::mat C_computeGroupedSumsDense(arma::mat& S, arma::vec& sample_assignments,
 //'
 // [[Rcpp::export]]
 arma::mat C_computeGroupedMeansSparse(arma::sp_mat& S, arma::vec& sample_assignments, int axis = 0) {
-    arma::mat pb = actionet::computeGroupedMeans(S, sample_assignments, axis);
-    return pb;
+    return actionet::computeGroupedMeans<arma::sp_mat, arma::mat>(S, sample_assignments, axis);
 }
 
 // [[Rcpp::export]]
 arma::sp_mat C_computeGroupedMeansSparse2(arma::sp_mat& S, arma::vec& sample_assignments, int axis = 0) {
-    arma::sp_mat pb = actionet::computeGroupedMeans2(S, sample_assignments, axis);
-    return pb;
+    return actionet::computeGroupedMeans<arma::sp_mat, arma::sp_mat>(S, sample_assignments, axis);
 }
 
 // [[Rcpp::export]]
 arma::mat C_computeGroupedMeansDense(arma::mat& S, arma::vec& sample_assignments, int axis = 0) {
-    arma::mat pb = actionet::computeGroupedMeans(S, sample_assignments, axis);
-    return pb;
+    return actionet::computeGroupedMeans<arma::mat, arma::mat>(S, sample_assignments, axis);
 }
 
 //' Variance matrix within groups (rowwise or columnwise)
@@ -150,20 +144,17 @@ arma::mat C_computeGroupedMeansDense(arma::mat& S, arma::vec& sample_assignments
 //'
 // [[Rcpp::export]]
 arma::mat C_computeGroupedVarsSparse(arma::sp_mat& S, arma::vec& sample_assignments, int axis = 0) {
-    arma::mat pb = actionet::computeGroupedVars(S, sample_assignments, axis);
-    return pb;
+    return actionet::computeGroupedVars<arma::sp_mat, arma::mat>(S, sample_assignments, axis);
 }
 
 // [[Rcpp::export]]
 arma::sp_mat C_computeGroupedVarsSparse2(arma::sp_mat& S, arma::vec& sample_assignments, int axis = 0) {
-    arma::sp_mat pb = actionet::computeGroupedVars2(S, sample_assignments, axis);
-    return pb;
+    return actionet::computeGroupedVars<arma::sp_mat, arma::sp_mat>(S, sample_assignments, axis);
 }
 
 // [[Rcpp::export]]
 arma::mat C_computeGroupedVarsDense(arma::mat& S, arma::vec& sample_assignments, int axis = 0) {
-    arma::mat pb = actionet::computeGroupedVars(S, sample_assignments, axis);
-    return pb;
+    return actionet::computeGroupedVars<arma::mat, arma::mat>(S, sample_assignments, axis);
 }
 
 // matrix_transform =======================================================================================================
