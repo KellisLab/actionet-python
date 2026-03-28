@@ -94,7 +94,7 @@ py::array_t<double> compute_network_diffusion(py::object G, py::array_t<double> 
         );
     }
 
-    return arma_mat_to_numpy(X);
+    return arma_mat_to_numpy_c(X);
 }
 
 // network_measures ====================================================================================================

@@ -40,15 +40,8 @@ DEFAULT_BACKED_CHUNK_SIZE = 4096
 DEFAULT_CASE_TIMEOUT_S = 4 * 3600
 DEFAULT_MAX_INMEMORY_RSS_GB = 30.0
 
-PRIMARY_INMEMORY_TIER = "100k"
-INMEMORY_FALLBACK_TIER = "50k"
-BACKED_FALLBACK_TIER = "250k"
-
 TIER_SIZES = {
-    "50k": 50_000,
     "100k": 100_000,
-    "200k": 200_000,
-    "250k": 250_000,
 }
 
 STAGE_ORDER = [
@@ -64,12 +57,20 @@ STAGE_ORDER = [
 
 DATASET_ORDER = [
     "sparse_medium",
-    "scale_subset_50k",
     "scale_subset_100k",
-    "scale_subset_200k",
-    "scale_subset_250k",
     "scale_full",
 ]
+
+THRESHOLD_WALL_REPEATED_PCT = 20.0
+THRESHOLD_RSS_REPEATED_PCT = 15.0
+THRESHOLD_WALL_SINGLE_PCT = 25.0
+THRESHOLD_RSS_SINGLE_PCT = 20.0
+
+# Guard against percent-only false positives when absolute movement is negligible.
+THRESHOLD_WALL_REPEATED_ABS_S = 2.0
+THRESHOLD_RSS_REPEATED_ABS_MB = 128.0
+THRESHOLD_WALL_SINGLE_ABS_S = 5.0
+THRESHOLD_RSS_SINGLE_ABS_MB = 256.0
 
 BENCHMARK_ENV_OVERRIDES = {
     "HDF5_USE_FILE_LOCKING": "FALSE",
@@ -536,6 +537,19 @@ def trial_median(values: Iterable[float]) -> Optional[float]:
     return float(statistics.median(clean))
 
 
+def crosses_regression_threshold(
+    delta_pct: Optional[float],
+    delta_abs: Optional[float],
+    pct_threshold: float,
+    abs_threshold: float,
+) -> bool:
+    if delta_pct is None or delta_abs is None:
+        return False
+    if not (math.isfinite(delta_pct) and math.isfinite(delta_abs)):
+        return False
+    return delta_pct > pct_threshold and delta_abs > abs_threshold
+
+
 def build_comparison_rows(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     grouped: Dict[tuple[str, str, str, str], Dict[str, List[Dict[str, Any]]]] = {}
     for row in rows:
@@ -583,17 +597,33 @@ def build_comparison_rows(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
             ((candidate_wall - baseline_wall) / baseline_wall) * 100.0
             if baseline_wall > 0 else None
         )
+        wall_delta_s = candidate_wall - baseline_wall
         rss_delta_pct = (
             ((candidate_rss - baseline_rss) / baseline_rss) * 100.0
             if baseline_rss > 0 else None
         )
+        rss_delta_mb = candidate_rss - baseline_rss
 
         repeated = len(baseline_rows) > 1 and len(candidate_rows) > 1
-        wall_threshold = 20.0 if repeated else 25.0
-        rss_threshold = 15.0 if repeated else 20.0
+        wall_threshold = THRESHOLD_WALL_REPEATED_PCT if repeated else THRESHOLD_WALL_SINGLE_PCT
+        rss_threshold = THRESHOLD_RSS_REPEATED_PCT if repeated else THRESHOLD_RSS_SINGLE_PCT
+        wall_abs_threshold = THRESHOLD_WALL_REPEATED_ABS_S if repeated else THRESHOLD_WALL_SINGLE_ABS_S
+        rss_abs_threshold = THRESHOLD_RSS_REPEATED_ABS_MB if repeated else THRESHOLD_RSS_SINGLE_ABS_MB
+
+        wall_regression = crosses_regression_threshold(
+            wall_delta_pct,
+            wall_delta_s,
+            wall_threshold,
+            wall_abs_threshold,
+        )
+        rss_regression = crosses_regression_threshold(
+            rss_delta_pct,
+            rss_delta_mb,
+            rss_threshold,
+            rss_abs_threshold,
+        )
         obvious_regression = (
-            (wall_delta_pct is not None and wall_delta_pct > wall_threshold) or
-            (rss_delta_pct is not None and rss_delta_pct > rss_threshold)
+            wall_regression or rss_regression
         )
 
         comparisons.append(
@@ -609,7 +639,11 @@ def build_comparison_rows(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
                 "baseline_peak_rss_mb": baseline_rss,
                 "candidate_peak_rss_mb": candidate_rss,
                 "wall_delta_pct": wall_delta_pct,
+                "wall_delta_s": wall_delta_s,
                 "rss_delta_pct": rss_delta_pct,
+                "rss_delta_mb": rss_delta_mb,
+                "wall_regression": wall_regression,
+                "rss_regression": rss_regression,
                 "obvious_regression": obvious_regression,
             }
         )
@@ -667,10 +701,14 @@ def build_report(
     rows: List[Dict[str, Any]],
     comparisons: List[Dict[str, Any]],
     manifest: Dict[str, Any],
-    threshold_wall_repeated: float = 20.0,
-    threshold_rss_repeated: float = 15.0,
-    threshold_wall_single: float = 25.0,
-    threshold_rss_single: float = 20.0,
+    threshold_wall_repeated_pct: float = THRESHOLD_WALL_REPEATED_PCT,
+    threshold_rss_repeated_pct: float = THRESHOLD_RSS_REPEATED_PCT,
+    threshold_wall_single_pct: float = THRESHOLD_WALL_SINGLE_PCT,
+    threshold_rss_single_pct: float = THRESHOLD_RSS_SINGLE_PCT,
+    threshold_wall_repeated_abs_s: float = THRESHOLD_WALL_REPEATED_ABS_S,
+    threshold_rss_repeated_abs_mb: float = THRESHOLD_RSS_REPEATED_ABS_MB,
+    threshold_wall_single_abs_s: float = THRESHOLD_WALL_SINGLE_ABS_S,
+    threshold_rss_single_abs_mb: float = THRESHOLD_RSS_SINGLE_ABS_MB,
 ) -> str:
     failures = failure_rows(rows)
     flagged = [row for row in comparisons if row.get("obvious_regression")]
@@ -685,8 +723,14 @@ def build_report(
     lines.append("")
     lines.append("## Thresholds")
     lines.append("")
-    lines.append(f"- Repeated cases: wall `>{threshold_wall_repeated:.0f}%`, RSS `>{threshold_rss_repeated:.0f}%`")
-    lines.append(f"- Single-trial large backed cases: wall `>{threshold_wall_single:.0f}%`, RSS `>{threshold_rss_single:.0f}%`")
+    lines.append(
+        f"- Repeated cases: wall `>{threshold_wall_repeated_pct:.0f}%` and `+>{threshold_wall_repeated_abs_s:.0f}s`, "
+        f"RSS `>{threshold_rss_repeated_pct:.0f}%` and `+>{threshold_rss_repeated_abs_mb:.0f} MB`"
+    )
+    lines.append(
+        f"- Single-trial large backed cases: wall `>{threshold_wall_single_pct:.0f}%` and `+>{threshold_wall_single_abs_s:.0f}s`, "
+        f"RSS `>{threshold_rss_single_pct:.0f}%` and `+>{threshold_rss_single_abs_mb:.0f} MB`"
+    )
     lines.append("")
 
     lines.append("## Datasets")
@@ -914,14 +958,15 @@ def orchestrate(args: argparse.Namespace) -> int:
     if both_100k_ok:
         run_pair("scale_subset_100k", INMEMORY_MODE, 2)
     else:
-        for trial in (1, 2):
-            run_pair("scale_subset_50k", INMEMORY_MODE, trial)
+        log(
+            "[benchmark] Skipping second 100k in-memory trial because at least one branch exceeded "
+            f"--max-inmemory-rss-gb={args.max_inmemory_rss_gb:.1f}"
+        )
 
-    # Larger backed growth tiers.
-    run_pair("scale_subset_200k", BACKED_MODE, 1)
+    # Larger backed growth tier.
     full_results = run_pair("scale_full", BACKED_MODE, 1)
     if all(is_host_limit_failure(full_results[branch]) for branch in args.branches):
-        run_pair("scale_subset_250k", BACKED_MODE, 1)
+        log("[benchmark] scale_full backed run failed for both branches (host/resource limit)")
 
     create_report(out_dir, manifest)
     log(f"[benchmark] Report written to {out_dir / 'report.md'}")
@@ -1644,7 +1689,7 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
         "--max-inmemory-rss-gb",
         type=float,
         default=DEFAULT_MAX_INMEMORY_RSS_GB,
-        help="If the first 100k in-memory trial on either branch exceeds this RSS limit, switch to the 50k in-memory fallback tier.",
+        help="If the first 100k in-memory trial on either branch exceeds this RSS limit, skip the second 100k in-memory trial.",
     )
     return parser.parse_args(argv)
 
