@@ -65,7 +65,7 @@ std::shared_ptr<actionet::MatrixOperator> create_backed_operator(
 
 py::dict run_svd_backed_operator(std::shared_ptr<actionet::MatrixOperator> op,
                                  int k = 30, int max_it = 0, int seed = 0,
-                                 int algorithm = ALG_HALKO, bool verbose = true) {
+                                 int algorithm = actionet::ALG_HALKO, bool verbose = true) {
     if (!op) {
         throw std::runtime_error("run_svd_backed_operator: operator is null");
     }
@@ -74,7 +74,7 @@ py::dict run_svd_backed_operator(std::shared_ptr<actionet::MatrixOperator> op,
 }
 
 py::dict reduce_kernel_backed_operator(std::shared_ptr<actionet::MatrixOperator> op,
-                                       int k = 50, int svd_alg = ALG_HALKO,
+                                       int k = 50, int svd_alg = actionet::ALG_HALKO,
                                        int max_it = 0, int seed = 0, bool verbose = true) {
     if (!op) {
         throw std::runtime_error("reduce_kernel_backed_operator: operator is null");
@@ -146,11 +146,11 @@ void init_io(py::module_ &m) {
     m.def("run_svd_backed_operator", &run_svd_backed_operator,
           "Run SVD with a MatrixOperator-backed input",
           py::arg("op"), py::arg("k") = 30, py::arg("max_it") = 0, py::arg("seed") = 0,
-          py::arg("algorithm") = ALG_HALKO, py::arg("verbose") = true);
+          py::arg("algorithm") = actionet::ALG_HALKO, py::arg("verbose") = true);
 
     m.def("reduce_kernel_backed_operator", &reduce_kernel_backed_operator,
           "Reduce kernel with a MatrixOperator-backed input",
-          py::arg("op"), py::arg("k") = 50, py::arg("svd_alg") = ALG_HALKO,
+          py::arg("op"), py::arg("k") = 50, py::arg("svd_alg") = actionet::ALG_HALKO,
           py::arg("max_it") = 0, py::arg("seed") = 0, py::arg("verbose") = true);
 
     m.def("reduce_kernel_from_svd_backed_operator", &reduce_kernel_from_svd_backed_operator,

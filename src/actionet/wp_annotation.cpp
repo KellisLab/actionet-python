@@ -17,8 +17,12 @@ py::array_t<double> compute_feature_stats(py::object G, py::object S, py::object
     arma::sp_mat S_sp = scipy_to_arma_sparse(S);
     arma::sp_mat X_sp = scipy_to_arma_sparse(X);
 
-    arma::mat stats = actionet::computeFeatureStats(G_sp, S_sp, X_sp, norm_method, alpha, max_it,
-                                                     approx, thread_no, ignore_baseline);
+    arma::mat stats;
+    {
+        py::gil_scoped_release release;
+        stats = actionet::computeFeatureStats(G_sp, S_sp, X_sp, norm_method, alpha, max_it,
+                                               approx, thread_no, ignore_baseline);
+    }
 
     return arma_mat_to_numpy(stats);
 }
@@ -30,8 +34,12 @@ py::array_t<double> compute_feature_stats_vision(py::object G, py::object S, py:
     arma::sp_mat S_sp = scipy_to_arma_sparse(S);
     arma::sp_mat X_sp = scipy_to_arma_sparse(X);
 
-    arma::mat stats = actionet::computeFeatureStatsVision(G_sp, S_sp, X_sp, norm_method,
-                                                           alpha, max_it, approx, thread_no);
+    arma::mat stats;
+    {
+        py::gil_scoped_release release;
+        stats = actionet::computeFeatureStatsVision(G_sp, S_sp, X_sp, norm_method,
+                                                     alpha, max_it, approx, thread_no);
+    }
 
     return arma_mat_to_numpy(stats);
 }
@@ -42,7 +50,11 @@ py::dict archetype_feature_specificity_sparse(py::object S, py::array_t<double> 
     arma::sp_mat S_sp = scipy_to_arma_sparse(S);
     arma::mat H_mat = numpy_to_arma_mat(H);
 
-    arma::field<arma::mat> res = actionet::computeFeatureSpecificity(S_sp, H_mat, thread_no);
+    arma::field<arma::mat> res;
+    {
+        py::gil_scoped_release release;
+        res = actionet::computeFeatureSpecificity(S_sp, H_mat, thread_no);
+    }
 
     py::dict out;
     out["archetypes"] = arma_mat_to_numpy(res(0));
@@ -55,7 +67,11 @@ py::dict archetype_feature_specificity_dense(py::array_t<double> S, py::array_t<
     arma::mat S_mat = numpy_to_arma_mat(S);
     arma::mat H_mat = numpy_to_arma_mat(H);
 
-    arma::field<arma::mat> res = actionet::computeFeatureSpecificity(S_mat, H_mat, thread_no);
+    arma::field<arma::mat> res;
+    {
+        py::gil_scoped_release release;
+        res = actionet::computeFeatureSpecificity(S_mat, H_mat, thread_no);
+    }
 
     py::dict out;
     out["archetypes"] = arma_mat_to_numpy(res(0));
@@ -74,7 +90,11 @@ py::dict compute_feature_specificity_sparse(py::object S, py::array_t<int> label
         labels_vec(i) = labels_ptr[i];
     }
 
-    arma::field<arma::mat> res = actionet::computeFeatureSpecificity(S_sp, labels_vec, thread_no);
+    arma::field<arma::mat> res;
+    {
+        py::gil_scoped_release release;
+        res = actionet::computeFeatureSpecificity(S_sp, labels_vec, thread_no);
+    }
 
     py::dict out;
     out["average_profile"] = arma_mat_to_numpy(res(0));
@@ -93,7 +113,11 @@ py::dict compute_feature_specificity_dense(py::array_t<double> S, py::array_t<in
         labels_vec(i) = labels_ptr[i];
     }
 
-    arma::field<arma::mat> res = actionet::computeFeatureSpecificity(S_mat, labels_vec, thread_no);
+    arma::field<arma::mat> res;
+    {
+        py::gil_scoped_release release;
+        res = actionet::computeFeatureSpecificity(S_mat, labels_vec, thread_no);
+    }
 
     py::dict out;
     out["average_profile"] = arma_mat_to_numpy(res(0));

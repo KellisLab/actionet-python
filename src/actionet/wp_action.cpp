@@ -12,7 +12,11 @@ py::dict run_aa(py::array_t<double> A, py::array_t<double> W0, int max_it = 100,
     arma::mat A_mat = numpy_to_arma_mat(A);
     arma::mat W0_mat = numpy_to_arma_mat(W0);
 
-    arma::field<arma::mat> res = actionet::runAA(A_mat, W0_mat, max_it, tol);
+    arma::field<arma::mat> res;
+    {
+        py::gil_scoped_release release;
+        res = actionet::runAA(A_mat, W0_mat, max_it, tol);
+    }
 
     py::dict out;
     out["C"] = arma_mat_to_numpy(res(0));
@@ -28,7 +32,11 @@ py::dict decomp_action(py::array_t<double> S_r, int k_min = 2, int k_max = 30,
                        int max_it = 100, double tol = 1e-16, int thread_no = 0) {
     arma::mat S_r_mat = numpy_to_arma_mat(S_r);
 
-    actionet::ResACTION trace = actionet::decompACTION(S_r_mat, k_min, k_max, max_it, tol, thread_no);
+    actionet::ResACTION trace;
+    {
+        py::gil_scoped_release release;
+        trace = actionet::decompACTION(S_r_mat, k_min, k_max, max_it, tol, thread_no);
+    }
 
     py::dict res;
     py::list C_list;
@@ -52,9 +60,13 @@ py::dict run_action(py::array_t<double> S_r, int k_min = 2, int k_max = 30,
                     double spec_th = -3.0, int min_obs = 3, int thread_no = 0) {
     arma::mat S_r_mat = numpy_to_arma_mat(S_r);
 
-    arma::field<arma::mat> res = actionet::runACTION(
-        S_r_mat, k_min, k_max, max_it, tol, spec_th, min_obs, thread_no
-    );
+    arma::field<arma::mat> res;
+    {
+        py::gil_scoped_release release;
+        res = actionet::runACTION(
+            S_r_mat, k_min, k_max, max_it, tol, spec_th, min_obs, thread_no
+        );
+    }
 
     py::dict out;
     out["H_stacked"] = arma_mat_to_numpy_c(res(0));
@@ -89,7 +101,11 @@ py::dict collect_archetypes(py::list C_trace, py::list H_trace, double spec_th =
         }
     }
 
-    actionet::ResCollectArch results = actionet::collectArchetypes(C_trace_vec, H_trace_vec, spec_th, min_obs);
+    actionet::ResCollectArch results;
+    {
+        py::gil_scoped_release release;
+        results = actionet::collectArchetypes(C_trace_vec, H_trace_vec, spec_th, min_obs);
+    }
 
     py::dict out;
     // Return 0-indexed for Python
@@ -110,7 +126,11 @@ py::dict merge_archetypes(py::array_t<double> S_r, py::array_t<double> C_stacked
     arma::mat C_stacked_mat = numpy_to_arma_mat(C_stacked);
     arma::mat H_stacked_mat = numpy_to_arma_mat(H_stacked);
 
-    actionet::ResMergeArch results = actionet::mergeArchetypes(S_r_mat, C_stacked_mat, H_stacked_mat, thread_no);
+    actionet::ResMergeArch results;
+    {
+        py::gil_scoped_release release;
+        results = actionet::mergeArchetypes(S_r_mat, C_stacked_mat, H_stacked_mat, thread_no);
+    }
 
     py::dict out;
     // Return 0-indexed for Python
@@ -153,7 +173,11 @@ static py::dict kernel_result_to_dict(const actionet::KernelReductionResult& res
 py::dict reduce_kernel_sparse(py::object S, int k = 50, int svd_alg = 0,
                                int max_it = 0, int seed = 0, bool verbose = true) {
     arma::sp_mat S_sp = scipy_to_arma_sparse(S);
-    arma::field<arma::mat> res = actionet::reduceKernel(S_sp, k, svd_alg, max_it, seed, verbose);
+    arma::field<arma::mat> res;
+    {
+        py::gil_scoped_release release;
+        res = actionet::reduceKernel(S_sp, k, svd_alg, max_it, seed, verbose);
+    }
 
     py::dict out;
     out["S_r"]   = arma_mat_to_numpy_c(res(0));
@@ -167,7 +191,11 @@ py::dict reduce_kernel_sparse(py::object S, int k = 50, int svd_alg = 0,
 py::dict reduce_kernel_dense(py::array_t<double> S, int k = 50, int svd_alg = 0,
                               int max_it = 0, int seed = 0, bool verbose = true) {
     arma::mat S_mat = numpy_to_arma_mat(S);
-    arma::field<arma::mat> res = actionet::reduceKernel(S_mat, k, svd_alg, max_it, seed, verbose);
+    arma::field<arma::mat> res;
+    {
+        py::gil_scoped_release release;
+        res = actionet::reduceKernel(S_mat, k, svd_alg, max_it, seed, verbose);
+    }
 
     py::dict out;
     out["S_r"]   = arma_mat_to_numpy_c(res(0));
@@ -178,7 +206,7 @@ py::dict reduce_kernel_dense(py::array_t<double> S, int k = 50, int svd_alg = 0,
     return out;
 }
 
-py::dict reduce_kernel_operator(py::object op, int k = 50, int svd_alg = ALG_HALKO,
+py::dict reduce_kernel_operator(py::object op, int k = 50, int svd_alg = actionet::ALG_HALKO,
                                 int max_it = 0, int seed = 0, bool verbose = true) {
     PythonMatrixOperator mat_op(std::move(op));
     actionet::KernelReductionResult res = actionet::reduceKernel_Operator(
@@ -209,7 +237,11 @@ py::dict reduce_kernel_from_svd_sparse(py::object S, py::array_t<double> u, py::
     svd.V     = numpy_to_arma_mat(v);
     svd.sigma = parse_sigma(d);
 
-    actionet::KernelReductionResult res = actionet::reduceKernelFromSVD_InMemory(S_sp, svd, verbose);
+    actionet::KernelReductionResult res;
+    {
+        py::gil_scoped_release release;
+        res = actionet::reduceKernelFromSVD_InMemory(S_sp, svd, verbose);
+    }
     return kernel_result_to_dict(res);
 }
 
@@ -222,7 +254,11 @@ py::dict reduce_kernel_from_svd_dense(py::array_t<double> S, py::array_t<double>
     svd.V     = numpy_to_arma_mat(v);
     svd.sigma = parse_sigma(d);
 
-    actionet::KernelReductionResult res = actionet::reduceKernelFromSVD_InMemory(S_mat, svd, verbose);
+    actionet::KernelReductionResult res;
+    {
+        py::gil_scoped_release release;
+        res = actionet::reduceKernelFromSVD_InMemory(S_mat, svd, verbose);
+    }
     return kernel_result_to_dict(res);
 }
 
@@ -232,7 +268,11 @@ py::array_t<double> run_simplex_regression(py::array_t<double> A, py::array_t<do
     arma::mat A_mat = numpy_to_arma_mat(A);
     arma::mat B_mat = numpy_to_arma_mat(B);
 
-    arma::mat X = actionet::runSimplexRegression(A_mat, B_mat, computeXtX);
+    arma::mat X;
+    {
+        py::gil_scoped_release release;
+        X = actionet::runSimplexRegression(A_mat, B_mat, computeXtX);
+    }
 
     return arma_mat_to_numpy(X);
 }
@@ -242,7 +282,11 @@ py::array_t<double> run_simplex_regression(py::array_t<double> A, py::array_t<do
 py::dict run_spa(py::array_t<double> A, int k) {
     arma::mat A_mat = numpy_to_arma_mat(A);
 
-    actionet::ResSPA res = actionet::runSPA(A_mat, k);
+    actionet::ResSPA res;
+    {
+        py::gil_scoped_release release;
+        res = actionet::runSPA(A_mat, k);
+    }
 
     // Convert to 0-indexed for Python
     auto cols_arr = py::array_t<int>(k);
@@ -293,7 +337,7 @@ void init_action(py::module_ &m) {
           py::arg("max_it") = 0, py::arg("seed") = 0, py::arg("verbose") = true);
 
     m.def("reduce_kernel_operator", &reduce_kernel_operator, "Reduce kernel (generic operator)",
-          py::arg("op"), py::arg("k") = 50, py::arg("svd_alg") = ALG_HALKO,
+          py::arg("op"), py::arg("k") = 50, py::arg("svd_alg") = actionet::ALG_HALKO,
           py::arg("max_it") = 0, py::arg("seed") = 0, py::arg("verbose") = true);
 
     m.def("reduce_kernel_from_svd_operator", &reduce_kernel_from_svd_operator,

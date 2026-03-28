@@ -16,18 +16,26 @@ py::array_t<double> layout_network(py::object G, py::array_t<double> initial_coo
     arma::sp_mat G_sp = scipy_to_arma_sparse(G);
     arma::mat init_mat = numpy_to_arma_mat(initial_coords);
 
-    arma::mat coords = actionet::layoutNetwork(
-        G_sp, init_mat, method, n_components, spread, min_dist,
-        n_epochs, 1.0f, 1.0f, 5.0f, false, true, true, 1,
-        seed, thread_no, verbose, 0.0f, 0.0f, "adam", -1.0f, 0.5f, 0.9f, 1e-7f
-    );
+    arma::mat coords;
+    {
+        py::gil_scoped_release release;
+        coords = actionet::layoutNetwork(
+            G_sp, init_mat, method, n_components, spread, min_dist,
+            n_epochs, 1.0f, 1.0f, 5.0f, false, true, true, 1,
+            seed, thread_no, verbose, 0.0f, 0.0f, "adam", -1.0f, 0.5f, 0.9f, 1e-7f
+        );
+    }
 
     return arma_mat_to_numpy(coords);
 }
 
 py::array_t<double> compute_node_colors(py::array_t<double> coordinates, int thread_no = 1) {
     arma::mat coords_mat = numpy_to_arma_mat(coordinates);
-    arma::mat colors = actionet::computeNodeColors(coords_mat, thread_no);
+    arma::mat colors;
+    {
+        py::gil_scoped_release release;
+        colors = actionet::computeNodeColors(coords_mat, thread_no);
+    }
     return arma_mat_to_numpy(colors);
 }
 

@@ -29,7 +29,11 @@ py::dict orthogonalize_batch_effect_sparse(py::object S, py::array_t<double> old
     SVD_results(3) = A_mat;
     SVD_results(4) = B_mat;
 
-    arma::field<arma::mat> orth_reduction = actionet::orthogonalizeBatchEffect(S_sp, SVD_results, design_mat);
+    arma::field<arma::mat> orth_reduction;
+    {
+        py::gil_scoped_release release;
+        orth_reduction = actionet::orthogonalizeBatchEffect(S_sp, SVD_results, design_mat);
+    }
 
     py::dict out;
     out["S_r"]    = arma_mat_to_numpy_c(orth_reduction(0));
@@ -60,7 +64,11 @@ py::dict orthogonalize_batch_effect_dense(py::array_t<double> S, py::array_t<dou
     SVD_results(3) = A_mat;
     SVD_results(4) = B_mat;
 
-    arma::field<arma::mat> orth_reduction = actionet::orthogonalizeBatchEffect(S_mat, SVD_results, design_mat);
+    arma::field<arma::mat> orth_reduction;
+    {
+        py::gil_scoped_release release;
+        orth_reduction = actionet::orthogonalizeBatchEffect(S_mat, SVD_results, design_mat);
+    }
 
     py::dict out;
     out["S_r"]    = arma_mat_to_numpy_c(orth_reduction(0));
@@ -91,7 +99,11 @@ py::dict orthogonalize_basal_sparse(py::object S, py::array_t<double> old_S_r,
     SVD_results(3) = A_mat;
     SVD_results(4) = B_mat;
 
-    arma::field<arma::mat> orth_reduction = actionet::orthogonalizeBasal(S_sp, SVD_results, basal_mat);
+    arma::field<arma::mat> orth_reduction;
+    {
+        py::gil_scoped_release release;
+        orth_reduction = actionet::orthogonalizeBasal(S_sp, SVD_results, basal_mat);
+    }
 
     py::dict out;
     out["S_r"]    = arma_mat_to_numpy_c(orth_reduction(0));
@@ -122,7 +134,11 @@ py::dict orthogonalize_basal_dense(py::array_t<double> S, py::array_t<double> ol
     SVD_results(3) = A_mat;
     SVD_results(4) = B_mat;
 
-    arma::field<arma::mat> orth_reduction = actionet::orthogonalizeBasal(S_mat, SVD_results, basal_mat);
+    arma::field<arma::mat> orth_reduction;
+    {
+        py::gil_scoped_release release;
+        orth_reduction = actionet::orthogonalizeBasal(S_mat, SVD_results, basal_mat);
+    }
 
     py::dict out;
     out["S_r"]    = arma_mat_to_numpy_c(orth_reduction(0));
@@ -148,7 +164,11 @@ py::dict perturbed_svd(py::array_t<double> u, py::array_t<double> d, py::array_t
     SVD_results(1) = d_vec;
     SVD_results(2) = v_mat;
 
-    arma::field<arma::mat> perturbed = actionet::perturbedSVD(SVD_results, A_mat, B_mat);
+    arma::field<arma::mat> perturbed;
+    {
+        py::gil_scoped_release release;
+        perturbed = actionet::perturbedSVD(SVD_results, A_mat, B_mat);
+    }
 
     py::dict out;
     out["u"] = arma_mat_to_numpy(perturbed(0));
@@ -181,7 +201,11 @@ py::dict perturbed_svd_with_prior(py::array_t<double> u, py::array_t<double> d, 
         prior_ptr = &prior;
     }
 
-    actionet::PerturbedSVDResult perturbed = actionet::perturbedSVD(svd, A_new_mat, B_new_mat, prior_ptr);
+    actionet::PerturbedSVDResult perturbed;
+    {
+        py::gil_scoped_release release;
+        perturbed = actionet::perturbedSVD(svd, A_new_mat, B_new_mat, prior_ptr);
+    }
 
     py::dict out;
     out["u"] = arma_mat_to_numpy(perturbed.U);
@@ -197,7 +221,11 @@ py::dict perturbed_svd_with_prior(py::array_t<double> u, py::array_t<double> d, 
 py::dict run_svd_sparse(py::object A, int k = 30, int max_it = 0, int seed = 0,
                         int algorithm = 0, bool verbose = true) {
     arma::sp_mat A_sp = scipy_to_arma_sparse(A);
-    arma::field<arma::mat> res = actionet::runSVD(A_sp, k, max_it, seed, algorithm, verbose);
+    arma::field<arma::mat> res;
+    {
+        py::gil_scoped_release release;
+        res = actionet::runSVD(A_sp, k, max_it, seed, algorithm, verbose);
+    }
 
     py::dict out;
     out["u"] = arma_mat_to_numpy(res(0));
@@ -209,7 +237,11 @@ py::dict run_svd_sparse(py::object A, int k = 30, int max_it = 0, int seed = 0,
 py::dict run_svd_dense(py::object A, int k = 30, int max_it = 0, int seed = 0,
                        int algorithm = 0, bool verbose = true) {
     arma::mat A_mat = numpy_to_arma_mat(A);
-    arma::field<arma::mat> res = actionet::runSVD(A_mat, k, max_it, seed, algorithm, verbose);
+    arma::field<arma::mat> res;
+    {
+        py::gil_scoped_release release;
+        res = actionet::runSVD(A_mat, k, max_it, seed, algorithm, verbose);
+    }
 
     py::dict out;
     out["u"] = arma_mat_to_numpy(res(0));
@@ -219,7 +251,7 @@ py::dict run_svd_dense(py::object A, int k = 30, int max_it = 0, int seed = 0,
 }
 
 py::dict run_svd_operator(py::object op, int k = 30, int max_it = 0, int seed = 0,
-                          int algorithm = ALG_HALKO, bool verbose = true) {
+                          int algorithm = actionet::ALG_HALKO, bool verbose = true) {
     PythonMatrixOperator mat_op(std::move(op));
     actionet::SVDResult res = actionet::runSVD_Operator(mat_op, k, max_it, seed, algorithm, verbose);
 
@@ -352,7 +384,7 @@ void init_decomposition(py::module_ &m) {
 
     m.def("run_svd_operator", &run_svd_operator, "Run SVD (generic operator)",
           py::arg("op"), py::arg("k") = 30, py::arg("max_it") = 0, py::arg("seed") = 0,
-          py::arg("algorithm") = ALG_HALKO, py::arg("verbose") = true);
+          py::arg("algorithm") = actionet::ALG_HALKO, py::arg("verbose") = true);
 
     m.def("orthogonalize_batch_effect_operator", &orthogonalize_batch_effect_operator,
           "Orthogonalize batch effects (operator-backed)",

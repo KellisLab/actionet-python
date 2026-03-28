@@ -30,12 +30,16 @@ py::object build_network(py::array_t<float, py::array::c_style | py::array::forc
     params.k = k;
 
     const auto* ptr = static_cast<const float*>(buf.ptr);
-    const auto graph = actionet::buildNetworkCore(
-        ptr,
-        static_cast<std::size_t>(buf.shape[0]),
-        static_cast<std::size_t>(buf.shape[1]),
-        params
-    );
+    actionet::CSRGraph graph;
+    {
+        py::gil_scoped_release release;
+        graph = actionet::buildNetworkCore(
+            ptr,
+            static_cast<std::size_t>(buf.shape[0]),
+            static_cast<std::size_t>(buf.shape[1]),
+            params
+        );
+    }
     return csr_graph_to_scipy(graph);
 }
 
@@ -64,7 +68,11 @@ py::array_t<double> run_lpa(py::object G, py::array_t<double> labels, double lam
         }
     }
 
-    arma::vec new_labels = actionet::runLPA(G_sp, labels_vec, lambda_param, iters, sig_threshold, fixed_labels_vec, thread_no);
+    arma::vec new_labels;
+    {
+        py::gil_scoped_release release;
+        new_labels = actionet::runLPA(G_sp, labels_vec, lambda_param, iters, sig_threshold, fixed_labels_vec, thread_no);
+    }
 
     return arma_vec_to_numpy(new_labels);
 }
@@ -78,9 +86,13 @@ py::array_t<double> compute_network_diffusion(py::object G, py::array_t<double> 
     arma::sp_mat G_sp = scipy_to_arma_sparse(G);
     arma::mat X0_mat = numpy_to_arma_mat(X0);
 
-    arma::mat X = actionet::computeNetworkDiffusion(
-        G_sp, X0_mat, alpha, max_it, thread_no, approx, norm_method, tol
-    );
+    arma::mat X;
+    {
+        py::gil_scoped_release release;
+        X = actionet::computeNetworkDiffusion(
+            G_sp, X0_mat, alpha, max_it, thread_no, approx, norm_method, tol
+        );
+    }
 
     return arma_mat_to_numpy(X);
 }
@@ -90,7 +102,11 @@ py::array_t<double> compute_network_diffusion(py::object G, py::array_t<double> 
 py::array_t<int> compute_coreness(py::object G) {
     arma::sp_mat G_sp = scipy_to_arma_sparse(G);
 
-    arma::uvec core_num = actionet::computeCoreness(G_sp);
+    arma::uvec core_num;
+    {
+        py::gil_scoped_release release;
+        core_num = actionet::computeCoreness(G_sp);
+    }
 
     auto result = py::array_t<int>(core_num.n_elem);
     auto buf = result.request();
@@ -112,7 +128,11 @@ py::array_t<double> compute_archetype_centrality(py::object G, py::array_t<int> 
         assignments_vec(i) = assignments_ptr[i];
     }
 
-    arma::vec conn = actionet::computeArchetypeCentrality(G_sp, assignments_vec);
+    arma::vec conn;
+    {
+        py::gil_scoped_release release;
+        conn = actionet::computeArchetypeCentrality(G_sp, assignments_vec);
+    }
 
     return arma_vec_to_numpy(conn);
 }

@@ -13,7 +13,11 @@ py::dict autocorrelation_moran(py::object G, py::array_t<double> scores, int nor
     arma::sp_mat G_sp = scipy_to_arma_sparse(G);
     arma::mat scores_mat = numpy_to_arma_mat(scores);
 
-    arma::field<arma::vec> out = actionet::autocorrelation_Moran(G_sp, scores_mat, normalization_method, perm_no, thread_no);
+    arma::field<arma::vec> out;
+    {
+        py::gil_scoped_release release;
+        out = actionet::autocorrelation_Moran(G_sp, scores_mat, normalization_method, perm_no, thread_no);
+    }
 
     py::dict res;
     res["Moran_I"] = arma_vec_to_numpy(out[0]);
@@ -29,7 +33,11 @@ py::dict autocorrelation_geary(py::object G, py::array_t<double> scores, int nor
     arma::sp_mat G_sp = scipy_to_arma_sparse(G);
     arma::mat scores_mat = numpy_to_arma_mat(scores);
 
-    arma::field<arma::vec> out = actionet::autocorrelation_Geary(G_sp, scores_mat, normalization_method, perm_no, thread_no);
+    arma::field<arma::vec> out;
+    {
+        py::gil_scoped_release release;
+        out = actionet::autocorrelation_Geary(G_sp, scores_mat, normalization_method, perm_no, thread_no);
+    }
 
     py::dict res;
     res["Geary_C"] = arma_vec_to_numpy(out[0]);
@@ -46,7 +54,11 @@ py::array_t<double> compute_graph_label_enrichment(py::object G, py::array_t<dou
     arma::sp_mat G_sp = scipy_to_arma_sparse(G);
     arma::mat scores_mat = numpy_to_arma_mat(scores);
 
-    arma::mat logPvals = actionet::computeGraphLabelEnrichment(G_sp, scores_mat, thread_no);
+    arma::mat logPvals;
+    {
+        py::gil_scoped_release release;
+        logPvals = actionet::computeGraphLabelEnrichment(G_sp, scores_mat, thread_no);
+    }
 
     return arma_mat_to_numpy(logPvals);
 }
@@ -55,7 +67,11 @@ py::dict assess_enrichment(py::array_t<double> scores, py::object associations, 
     arma::mat scores_mat = numpy_to_arma_mat(scores);
     arma::sp_mat assoc_sp = scipy_to_arma_sparse(associations);
 
-    arma::field<arma::mat> res = actionet::assess_enrichment(scores_mat, assoc_sp, thread_no);
+    arma::field<arma::mat> res;
+    {
+        py::gil_scoped_release release;
+        res = actionet::assess_enrichment(scores_mat, assoc_sp, thread_no);
+    }
 
     py::dict out;
     out["logPvals"] = arma_mat_to_numpy(res(0));
@@ -70,7 +86,11 @@ py::array_t<double> compute_grouped_sums_sparse(py::object S, py::array_t<double
     arma::sp_mat S_sp = scipy_to_arma_sparse(S);
     arma::vec assignments_vec = numpy_to_arma_vec(sample_assignments);
 
-    arma::mat pb = actionet::computeGroupedSums<arma::sp_mat, arma::mat>(S_sp, assignments_vec, axis);
+    arma::mat pb;
+    {
+        py::gil_scoped_release release;
+        pb = actionet::computeGroupedSums<arma::sp_mat, arma::mat>(S_sp, assignments_vec, axis);
+    }
     return arma_mat_to_numpy(pb);
 }
 
@@ -78,7 +98,11 @@ py::object compute_grouped_sums_sparse2(py::object S, py::array_t<double> sample
     arma::sp_mat S_sp = scipy_to_arma_sparse(S);
     arma::vec assignments_vec = numpy_to_arma_vec(sample_assignments);
 
-    arma::sp_mat pb = actionet::computeGroupedSums<arma::sp_mat, arma::sp_mat>(S_sp, assignments_vec, axis);
+    arma::sp_mat pb;
+    {
+        py::gil_scoped_release release;
+        pb = actionet::computeGroupedSums<arma::sp_mat, arma::sp_mat>(S_sp, assignments_vec, axis);
+    }
     return arma_sparse_to_scipy(pb);
 }
 
@@ -86,7 +110,11 @@ py::array_t<double> compute_grouped_sums_dense(py::array_t<double> S, py::array_
     arma::mat S_mat = numpy_to_arma_mat(S);
     arma::vec assignments_vec = numpy_to_arma_vec(sample_assignments);
 
-    arma::mat pb = actionet::computeGroupedSums<arma::mat, arma::mat>(S_mat, assignments_vec, axis);
+    arma::mat pb;
+    {
+        py::gil_scoped_release release;
+        pb = actionet::computeGroupedSums<arma::mat, arma::mat>(S_mat, assignments_vec, axis);
+    }
     return arma_mat_to_numpy(pb);
 }
 
@@ -94,7 +122,11 @@ py::array_t<double> compute_grouped_means_sparse(py::object S, py::array_t<doubl
     arma::sp_mat S_sp = scipy_to_arma_sparse(S);
     arma::vec assignments_vec = numpy_to_arma_vec(sample_assignments);
 
-    arma::mat pb = actionet::computeGroupedMeans<arma::sp_mat, arma::mat>(S_sp, assignments_vec, axis);
+    arma::mat pb;
+    {
+        py::gil_scoped_release release;
+        pb = actionet::computeGroupedMeans<arma::sp_mat, arma::mat>(S_sp, assignments_vec, axis);
+    }
     return arma_mat_to_numpy(pb);
 }
 
@@ -102,7 +134,11 @@ py::object compute_grouped_means_sparse2(py::object S, py::array_t<double> sampl
     arma::sp_mat S_sp = scipy_to_arma_sparse(S);
     arma::vec assignments_vec = numpy_to_arma_vec(sample_assignments);
 
-    arma::sp_mat pb = actionet::computeGroupedMeans<arma::sp_mat, arma::sp_mat>(S_sp, assignments_vec, axis);
+    arma::sp_mat pb;
+    {
+        py::gil_scoped_release release;
+        pb = actionet::computeGroupedMeans<arma::sp_mat, arma::sp_mat>(S_sp, assignments_vec, axis);
+    }
     return arma_sparse_to_scipy(pb);
 }
 
@@ -110,7 +146,11 @@ py::array_t<double> compute_grouped_means_dense(py::array_t<double> S, py::array
     arma::mat S_mat = numpy_to_arma_mat(S);
     arma::vec assignments_vec = numpy_to_arma_vec(sample_assignments);
 
-    arma::mat pb = actionet::computeGroupedMeans<arma::mat, arma::mat>(S_mat, assignments_vec, axis);
+    arma::mat pb;
+    {
+        py::gil_scoped_release release;
+        pb = actionet::computeGroupedMeans<arma::mat, arma::mat>(S_mat, assignments_vec, axis);
+    }
     return arma_mat_to_numpy(pb);
 }
 
@@ -118,7 +158,11 @@ py::array_t<double> compute_grouped_vars_sparse(py::object S, py::array_t<double
     arma::sp_mat S_sp = scipy_to_arma_sparse(S);
     arma::vec assignments_vec = numpy_to_arma_vec(sample_assignments);
 
-    arma::mat pb = actionet::computeGroupedVars<arma::sp_mat, arma::mat>(S_sp, assignments_vec, axis);
+    arma::mat pb;
+    {
+        py::gil_scoped_release release;
+        pb = actionet::computeGroupedVars<arma::sp_mat, arma::mat>(S_sp, assignments_vec, axis);
+    }
     return arma_mat_to_numpy(pb);
 }
 
@@ -126,7 +170,11 @@ py::object compute_grouped_vars_sparse2(py::object S, py::array_t<double> sample
     arma::sp_mat S_sp = scipy_to_arma_sparse(S);
     arma::vec assignments_vec = numpy_to_arma_vec(sample_assignments);
 
-    arma::sp_mat pb = actionet::computeGroupedVars<arma::sp_mat, arma::sp_mat>(S_sp, assignments_vec, axis);
+    arma::sp_mat pb;
+    {
+        py::gil_scoped_release release;
+        pb = actionet::computeGroupedVars<arma::sp_mat, arma::sp_mat>(S_sp, assignments_vec, axis);
+    }
     return arma_sparse_to_scipy(pb);
 }
 
@@ -134,7 +182,11 @@ py::array_t<double> compute_grouped_vars_dense(py::array_t<double> S, py::array_
     arma::mat S_mat = numpy_to_arma_mat(S);
     arma::vec assignments_vec = numpy_to_arma_vec(sample_assignments);
 
-    arma::mat pb = actionet::computeGroupedVars<arma::mat, arma::mat>(S_mat, assignments_vec, axis);
+    arma::mat pb;
+    {
+        py::gil_scoped_release release;
+        pb = actionet::computeGroupedVars<arma::mat, arma::mat>(S_mat, assignments_vec, axis);
+    }
     return arma_mat_to_numpy(pb);
 }
 
@@ -142,33 +194,53 @@ py::array_t<double> compute_grouped_vars_dense(py::array_t<double> S, py::array_
 
 py::object normalize_matrix_sparse(py::object X, unsigned int p = 1, unsigned int dim = 0) {
     arma::sp_mat X_sp = scipy_to_arma_sparse(X);
-    arma::sp_mat Xn = actionet::normalizeMatrix(X_sp, p, dim);
+    arma::sp_mat Xn;
+    {
+        py::gil_scoped_release release;
+        Xn = actionet::normalizeMatrix(X_sp, p, dim);
+    }
     return arma_sparse_to_scipy(Xn);
 }
 
 py::array_t<double> normalize_matrix_dense(py::array_t<double> X, unsigned int p = 1, unsigned int dim = 0) {
     arma::mat X_mat = numpy_to_arma_mat(X);
-    arma::mat Xn = actionet::normalizeMatrix(X_mat, p, dim);
+    arma::mat Xn;
+    {
+        py::gil_scoped_release release;
+        Xn = actionet::normalizeMatrix(X_mat, p, dim);
+    }
     return arma_mat_to_numpy(Xn);
 }
 
 py::array_t<double> scale_matrix_dense(py::array_t<double> X, py::array_t<double> v, unsigned int dim = 0) {
     arma::mat X_mat = numpy_to_arma_mat(X);
     arma::vec v_vec = numpy_to_arma_vec(v);
-    arma::mat Xs = actionet::scaleMatrix(X_mat, v_vec, dim);
+    arma::mat Xs;
+    {
+        py::gil_scoped_release release;
+        Xs = actionet::scaleMatrix(X_mat, v_vec, dim);
+    }
     return arma_mat_to_numpy(Xs);
 }
 
 py::object scale_matrix_sparse(py::object X, py::array_t<double> v, unsigned int dim = 0) {
     arma::sp_mat X_sp = scipy_to_arma_sparse(X);
     arma::vec v_vec = numpy_to_arma_vec(v);
-    arma::sp_mat Xs = actionet::scaleMatrix(X_sp, v_vec, dim);
+    arma::sp_mat Xs;
+    {
+        py::gil_scoped_release release;
+        Xs = actionet::scaleMatrix(X_sp, v_vec, dim);
+    }
     return arma_sparse_to_scipy(Xs);
 }
 
 py::object normalize_graph(py::object G, int norm_method = 0) {
     arma::sp_mat G_sp = scipy_to_arma_sparse(G);
-    arma::sp_mat Gn = actionet::normalizeGraph(G_sp, norm_method);
+    arma::sp_mat Gn;
+    {
+        py::gil_scoped_release release;
+        Gn = actionet::normalizeGraph(G_sp, norm_method);
+    }
     return arma_sparse_to_scipy(Gn);
 }
 
@@ -176,7 +248,11 @@ py::object normalize_graph(py::object G, int norm_method = 0) {
 
 py::array_t<double> mwm_hungarian(py::array_t<double> G) {
     arma::mat G_mat = numpy_to_arma_mat(G);
-    arma::mat G_matched = actionet::MWM_hungarian(G_mat);
+    arma::mat G_matched;
+    {
+        py::gil_scoped_release release;
+        G_matched = actionet::MWM_hungarian(G_mat);
+    }
     return arma_mat_to_numpy(G_matched);
 }
 
@@ -185,7 +261,11 @@ py::array_t<int> mwm_rank1(py::array_t<double> u, py::array_t<double> v,
     arma::vec u_vec = numpy_to_arma_vec(u);
     arma::vec v_vec = numpy_to_arma_vec(v);
 
-    arma::umat pairs = actionet::MWM_rank1(u_vec, v_vec, u_threshold, v_threshold);
+    arma::umat pairs;
+    {
+        py::gil_scoped_release release;
+        pairs = actionet::MWM_rank1(u_vec, v_vec, u_threshold, v_threshold);
+    }
 
     // Return 0-indexed pairs for Python
     std::vector<py::ssize_t> shape = {static_cast<py::ssize_t>(pairs.n_rows), 2};
@@ -208,7 +288,11 @@ py::array_t<double> xicor(py::array_t<double> xvec, py::array_t<double> yvec,
     arma::vec x_vec = numpy_to_arma_vec(xvec);
     arma::vec y_vec = numpy_to_arma_vec(yvec);
 
-    arma::vec res = actionet::xicor(std::move(x_vec), std::move(y_vec), compute_pval, seed);
+    arma::vec res;
+    {
+        py::gil_scoped_release release;
+        res = actionet::xicor(std::move(x_vec), std::move(y_vec), compute_pval, seed);
+    }
 
     return arma_vec_to_numpy(res);
 }
@@ -218,7 +302,11 @@ py::dict xicor_matrix(py::array_t<double> X, py::array_t<double> Y,
     arma::mat X_mat = numpy_to_arma_mat(X);
     arma::mat Y_mat = numpy_to_arma_mat(Y);
 
-    arma::field<arma::mat> out = actionet::XICOR(X_mat, Y_mat, compute_pval, seed, thread_no);
+    arma::field<arma::mat> out;
+    {
+        py::gil_scoped_release release;
+        out = actionet::XICOR(X_mat, Y_mat, compute_pval, seed, thread_no);
+    }
 
     py::dict res;
     res["XI"] = arma_mat_to_numpy(out(0));
