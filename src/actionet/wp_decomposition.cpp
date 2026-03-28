@@ -151,47 +151,46 @@ py::dict orthogonalize_basal_dense(py::array_t<double> S, py::array_t<double> ol
 
 // svd_main ============================================================================================================
 
+static py::dict perturbed_svd_result_to_dict(const actionet::PerturbedSVDResult& res) {
+    py::dict out;
+    out["u"] = arma_mat_to_numpy(res.U);
+    out["d"] = arma_vec_to_numpy(res.sigma);
+    out["v"] = arma_mat_to_numpy(res.V);
+    out["A"] = arma_mat_to_numpy(res.A);
+    out["B"] = arma_mat_to_numpy(res.B);
+    return out;
+}
+
 py::dict perturbed_svd(py::array_t<double> u, py::array_t<double> d, py::array_t<double> v,
                        py::array_t<double> A, py::array_t<double> B) {
-    arma::mat u_mat = numpy_to_arma_mat(u);
-    arma::vec d_vec = numpy_to_arma_vec(d);
-    arma::mat v_mat = numpy_to_arma_mat(v);
+    actionet::SVDResult svd;
+    svd.U     = numpy_to_arma_mat(u);
+    svd.sigma = numpy_to_arma_vec(d);
+    svd.V     = numpy_to_arma_mat(v);
+
     arma::mat A_mat = numpy_to_arma_mat(A);
     arma::mat B_mat = numpy_to_arma_mat(B);
 
-    arma::field<arma::mat> SVD_results(3);
-    SVD_results(0) = u_mat;
-    SVD_results(1) = d_vec;
-    SVD_results(2) = v_mat;
-
-    arma::field<arma::mat> perturbed;
+    actionet::PerturbedSVDResult perturbed;
     {
         py::gil_scoped_release release;
-        perturbed = actionet::perturbedSVD(SVD_results, A_mat, B_mat);
+        perturbed = actionet::perturbedSVD(svd, A_mat, B_mat);
     }
-
-    py::dict out;
-    out["u"] = arma_mat_to_numpy(perturbed(0));
-    out["d"] = arma_vec_to_numpy(perturbed(1).col(0));
-    out["v"] = arma_mat_to_numpy(perturbed(2));
-    return out;
+    return perturbed_svd_result_to_dict(perturbed);
 }
 
 py::dict perturbed_svd_with_prior(py::array_t<double> u, py::array_t<double> d, py::array_t<double> v,
                                   py::array_t<double> old_A, py::array_t<double> old_B,
                                   py::array_t<double> A_new, py::array_t<double> B_new) {
-    arma::mat u_mat = numpy_to_arma_mat(u);
-    arma::vec d_vec = numpy_to_arma_vec(d);
-    arma::mat v_mat = numpy_to_arma_mat(v);
+    actionet::SVDResult svd;
+    svd.U     = numpy_to_arma_mat(u);
+    svd.sigma = numpy_to_arma_vec(d);
+    svd.V     = numpy_to_arma_mat(v);
+
     arma::mat old_A_mat = numpy_to_arma_mat(old_A);
     arma::mat old_B_mat = numpy_to_arma_mat(old_B);
     arma::mat A_new_mat = numpy_to_arma_mat(A_new);
     arma::mat B_new_mat = numpy_to_arma_mat(B_new);
-
-    actionet::SVDResult svd;
-    svd.U = u_mat;
-    svd.sigma = d_vec;
-    svd.V = v_mat;
 
     actionet::PerturbedSVDResult prior;
     const actionet::PerturbedSVDResult* prior_ptr = nullptr;
@@ -206,14 +205,7 @@ py::dict perturbed_svd_with_prior(py::array_t<double> u, py::array_t<double> d, 
         py::gil_scoped_release release;
         perturbed = actionet::perturbedSVD(svd, A_new_mat, B_new_mat, prior_ptr);
     }
-
-    py::dict out;
-    out["u"] = arma_mat_to_numpy(perturbed.U);
-    out["d"] = arma_vec_to_numpy(perturbed.sigma);
-    out["v"] = arma_mat_to_numpy(perturbed.V);
-    out["A"] = arma_mat_to_numpy(perturbed.A);
-    out["B"] = arma_mat_to_numpy(perturbed.B);
-    return out;
+    return perturbed_svd_result_to_dict(perturbed);
 }
 
 // svd_main ============================================================================================================

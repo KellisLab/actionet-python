@@ -31,11 +31,12 @@ py::dict run_aa(py::array_t<double> A, py::array_t<double> W0, int max_it = 100,
 py::dict decomp_action(py::array_t<double> S_r, int k_min = 2, int k_max = 30,
                        int max_it = 100, double tol = 1e-16, int thread_no = 0) {
     arma::mat S_r_mat = numpy_to_arma_mat(S_r);
+    arma::mat S_r_internal = S_r_mat.t();  // cells x k -> k x cells for internal API
 
     actionet::ResACTION trace;
     {
         py::gil_scoped_release release;
-        trace = actionet::decompACTION(S_r_mat, k_min, k_max, max_it, tol, thread_no);
+        trace = actionet::decompACTION(S_r_internal, k_min, k_max, max_it, tol, thread_no);
     }
 
     py::dict res;
@@ -123,13 +124,14 @@ py::dict collect_archetypes(py::list C_trace, py::list H_trace, double spec_th =
 py::dict merge_archetypes(py::array_t<double> S_r, py::array_t<double> C_stacked,
                           py::array_t<double> H_stacked, int thread_no = 0) {
     arma::mat S_r_mat = numpy_to_arma_mat(S_r);
+    arma::mat S_r_internal = S_r_mat.t();  // cells x k -> k x cells for internal API
     arma::mat C_stacked_mat = numpy_to_arma_mat(C_stacked);
     arma::mat H_stacked_mat = numpy_to_arma_mat(H_stacked);
 
     actionet::ResMergeArch results;
     {
         py::gil_scoped_release release;
-        results = actionet::mergeArchetypes(S_r_mat, C_stacked_mat, H_stacked_mat, thread_no);
+        results = actionet::mergeArchetypes(S_r_internal, C_stacked_mat, H_stacked_mat, thread_no);
     }
 
     py::dict out;
@@ -181,7 +183,7 @@ py::dict reduce_kernel_sparse(py::object S, int k = 50, int svd_alg = 0,
 
     py::dict out;
     out["S_r"]   = arma_mat_to_numpy_c(res(0));
-    out["sigma"] = arma_mat_to_numpy(res(1));
+    out["sigma"] = arma_vec_to_numpy(arma::vec(res(1)));
     out["U"]     = arma_mat_to_numpy_c(res(2));
     out["A"]     = arma_mat_to_numpy_c(res(3));
     out["B"]     = arma_mat_to_numpy_c(res(4));
@@ -199,7 +201,7 @@ py::dict reduce_kernel_dense(py::array_t<double> S, int k = 50, int svd_alg = 0,
 
     py::dict out;
     out["S_r"]   = arma_mat_to_numpy_c(res(0));
-    out["sigma"] = arma_mat_to_numpy(res(1));
+    out["sigma"] = arma_vec_to_numpy(arma::vec(res(1)));
     out["U"]     = arma_mat_to_numpy_c(res(2));
     out["A"]     = arma_mat_to_numpy_c(res(3));
     out["B"]     = arma_mat_to_numpy_c(res(4));

@@ -56,7 +56,7 @@ def decompose_action(
     Parameters
     ----------
     S_r
-        Reduced kernel matrix (components x cells).
+        Reduced kernel matrix (cells x components).
     k_min
         Minimum number of archetypes.
     k_max
@@ -123,7 +123,7 @@ def merge_archetypes(
     Parameters
     ----------
     S_r
-        Reduced kernel matrix.
+        Reduced kernel matrix (cells x components).
     C_stacked
         Stacked C matrix from collect_archetypes.
     H_stacked
