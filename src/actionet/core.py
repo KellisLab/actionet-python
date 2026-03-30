@@ -166,6 +166,17 @@ def _resolve_backed_handle(X: Any, layer: Optional[str] = None) -> tuple[str, st
     return str(group.file.filename), str(group.name)
 
 
+def _chunk_target_bytes(backed_target_chunk_mb: Optional[float]) -> int:
+    if backed_target_chunk_mb is None:
+        # 0 delegates to the C++ backed-operator auto heuristic that scales with
+        # chunk_size and sparse structure.
+        return 0
+    target = float(backed_target_chunk_mb)
+    if target <= 0:
+        raise ValueError("`backed_target_chunk_mb` must be > 0 when provided")
+    return int(target * 1024 * 1024)
+
+
 def _maybe_decompress_backed_path(
     adata: AnnData,
     *,
@@ -227,7 +238,8 @@ def reduce_kernel(
     precomputed_svd: Optional[dict] = None,
     backed_chunk_size: int = 4096,
     allow_compressed: bool = False,
-    inplace: bool = True
+    inplace: bool = True,
+    backed_target_chunk_mb: Optional[float] = None,
 ) -> Optional[AnnData]:
     """Compute low-rank kernel reduction and persist outputs to AnnData."""
     if not inplace:
@@ -240,6 +252,7 @@ def reduce_kernel(
 
     if use_operator:
         selected_algorithm = _select_svd_algorithm_backed(algorithm_name, verbose)
+        io_target_chunk_bytes = _chunk_target_bytes(backed_target_chunk_mb)
         temp_path: Optional[str] = None
         op = None
         file_path = str(adata.filename)
@@ -261,6 +274,7 @@ def reduce_kernel(
                 chunk_size=backed_chunk_size,
                 row_scale_factors=None,
                 apply_log1p=False,
+                io_target_chunk_bytes=io_target_chunk_bytes,
             )
 
             if precomputed_svd is None:
@@ -1246,6 +1260,7 @@ def run_svd(
     backed_chunk_size: int = 4096,
     layer: Optional[str] = None,
     allow_compressed: bool = False,
+    backed_target_chunk_mb: Optional[float] = None,
 ) -> dict:
     """Compute truncated SVD decomposition."""
     algorithm_name = _normalize_algorithm(algorithm, context="algorithm")
@@ -1255,6 +1270,7 @@ def run_svd(
 
     if _is_backed_matrix(matrix):
         selected_algorithm = _select_svd_algorithm_backed(algorithm_name, verbose)
+        io_target_chunk_bytes = _chunk_target_bytes(backed_target_chunk_mb)
 
         temp_path: Optional[str] = None
         op = None
@@ -1286,6 +1302,7 @@ def run_svd(
                 chunk_size=backed_chunk_size,
                 row_scale_factors=None,
                 apply_log1p=False,
+                io_target_chunk_bytes=io_target_chunk_bytes,
             )
             result = _core.run_svd_backed_operator(
                 op, n_components, max_iter, seed, selected_algorithm, verbose

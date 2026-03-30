@@ -90,6 +90,15 @@ def _check_group_vec_missing(group_vec: np.ndarray) -> None:
             raise ValueError("NA values in group_vec.")
 
 
+def _as_csr_sorted(X: sp.spmatrix) -> sp.csr_matrix:
+    """Return sparse matrix in canonical CSR form with sorted indices."""
+    if not sp.isspmatrix_csr(X):
+        X = X.tocsr()
+    if not X.has_sorted_indices:
+        X.sort_indices()
+    return X
+
+
 def aggregate_matrix(
     X: Union[np.ndarray, sp.spmatrix],
     group_vec: Union[np.ndarray, list],
@@ -149,12 +158,12 @@ def aggregate_matrix(
     if sp.issparse(X):
         if return_sparse:
             if method == "sum":
-                result = _core.compute_grouped_sums_sparse2(X, labels, axis)
+                result = _as_csr_sorted(_core.compute_grouped_sums_sparse2(X, labels, axis))
                 return (result, inverse, unique_labels) if return_inverse else result
             if method == "mean":
-                result = _core.compute_grouped_means_sparse2(X, labels, axis)
+                result = _as_csr_sorted(_core.compute_grouped_means_sparse2(X, labels, axis))
                 return (result, inverse, unique_labels) if return_inverse else result
-            result = _core.compute_grouped_vars_sparse2(X, labels, axis)
+            result = _as_csr_sorted(_core.compute_grouped_vars_sparse2(X, labels, axis))
             return (result, inverse, unique_labels) if return_inverse else result
 
         if method == "sum":
