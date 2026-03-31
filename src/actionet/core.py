@@ -166,6 +166,28 @@ def _resolve_backed_handle(X: Any, layer: Optional[str] = None) -> tuple[str, st
     return str(group.file.filename), str(group.name)
 
 
+def _flush_backed_handle(adata: AnnData, *, context: str) -> None:
+    """Best-effort flush for backed AnnData before opening a second HDF5 handle."""
+    if not bool(getattr(adata, "isbacked", False)):
+        return
+
+    file_obj = getattr(getattr(adata, "file", None), "_file", None)
+    if file_obj is None:
+        return
+
+    try:
+        file_obj.flush()
+    except Exception as exc:  # pragma: no cover - depends on h5py backend state
+        warnings.warn(
+            (
+                f"{context}: failed to flush backed AnnData handle before "
+                f"operator read ({type(exc).__name__}: {exc})."
+            ),
+            UserWarning,
+            stacklevel=3,
+        )
+
+
 def _chunk_target_bytes(backed_target_chunk_mb: Optional[float]) -> int:
     if backed_target_chunk_mb is None:
         # 0 delegates to the C++ backed-operator auto heuristic that scales with
@@ -240,8 +262,18 @@ def reduce_kernel(
     allow_compressed: bool = False,
     inplace: bool = True,
     backed_target_chunk_mb: Optional[float] = None,
+    backed_n_threads: int = 0,
 ) -> Optional[AnnData]:
-    """Compute low-rank kernel reduction and persist outputs to AnnData."""
+    """Compute low-rank kernel reduction and persist outputs to AnnData.
+
+    Notes
+    -----
+    `backed_n_threads` is used only for backed (operator) execution paths.
+    In-memory dense/sparse paths continue to use existing BLAS/library threading.
+    """
+    if backed_n_threads < 0:
+        raise ValueError("`backed_n_threads` must be >= 0")
+
     if not inplace:
         adata = adata.copy()
 
@@ -251,6 +283,7 @@ def reduce_kernel(
     algorithm_name = _normalize_algorithm(svd_algorithm, context="svd_algorithm")
 
     if use_operator:
+        _flush_backed_handle(adata, context="reduce_kernel")
         selected_algorithm = _select_svd_algorithm_backed(algorithm_name, verbose)
         io_target_chunk_bytes = _chunk_target_bytes(backed_target_chunk_mb)
         temp_path: Optional[str] = None
@@ -275,6 +308,7 @@ def reduce_kernel(
                 row_scale_factors=None,
                 apply_log1p=False,
                 io_target_chunk_bytes=io_target_chunk_bytes,
+                n_threads=backed_n_threads,
             )
 
             if precomputed_svd is None:
@@ -1261,14 +1295,26 @@ def run_svd(
     layer: Optional[str] = None,
     allow_compressed: bool = False,
     backed_target_chunk_mb: Optional[float] = None,
+    backed_n_threads: int = 0,
 ) -> dict:
-    """Compute truncated SVD decomposition."""
+    """Compute truncated SVD decomposition.
+
+    Notes
+    -----
+    `backed_n_threads` is used only for backed (operator) execution paths.
+    In-memory dense/sparse paths continue to use existing BLAS/library threading.
+    """
+    if backed_n_threads < 0:
+        raise ValueError("`backed_n_threads` must be >= 0")
+
     algorithm_name = _normalize_algorithm(algorithm, context="algorithm")
 
     adata_ctx: Optional[AnnData] = X if isinstance(X, AnnData) else None
     matrix = MatrixSource(X, layer=layer).matrix if isinstance(X, AnnData) else X
 
     if _is_backed_matrix(matrix):
+        if adata_ctx is not None:
+            _flush_backed_handle(adata_ctx, context="run_svd")
         selected_algorithm = _select_svd_algorithm_backed(algorithm_name, verbose)
         io_target_chunk_bytes = _chunk_target_bytes(backed_target_chunk_mb)
 
@@ -1303,6 +1349,7 @@ def run_svd(
                 row_scale_factors=None,
                 apply_log1p=False,
                 io_target_chunk_bytes=io_target_chunk_bytes,
+                n_threads=backed_n_threads,
             )
             result = _core.run_svd_backed_operator(
                 op, n_components, max_iter, seed, selected_algorithm, verbose

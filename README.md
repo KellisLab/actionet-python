@@ -227,6 +227,10 @@ New in OOM v1:
 - You can reuse an external SVD via `precomputed_svd`:
   `an.reduce_kernel(adata, precomputed_svd=an.run_svd(adata.X, n_components=50))`
 - Explicit helper for this workflow: `an.reduce_kernel_from_svd(...)`.
+- Backed SVD/reduction paths expose `backed_n_threads`:
+  `an.run_svd(adata_backed, n_components=50, backed_n_threads=8)`
+  `an.reduce_kernel(adata_backed, n_components=50, backed_n_threads=8)`
+  (`0` = auto, `1` = serial debug path).
 
 Available algorithms:
 - **IRLB** (default for sparse): Implicitly Restarted Lanczos Bidiagonalization

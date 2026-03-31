@@ -18,6 +18,7 @@ import json
 import math
 import multiprocessing as mp
 import os
+import resource
 import shutil
 import subprocess
 import sys
@@ -40,8 +41,15 @@ import scipy.sparse
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DATA_DIR = REPO_ROOT / "data"
-BENCHMARK_DATA_DIR = Path("/data/actionet_benchmark")
-BENCHMARK_DATA_DIR.mkdir(parents=True, exist_ok=True)
+_BENCHMARK_DATA_DIR_ENV = os.environ.get("ACTIONET_BENCHMARK_DATA_DIR", "").strip()
+BENCHMARK_DATA_DIR = Path(_BENCHMARK_DATA_DIR_ENV) if _BENCHMARK_DATA_DIR_ENV else Path("/data/actionet_benchmark")
+try:
+    BENCHMARK_DATA_DIR.mkdir(parents=True, exist_ok=True)
+except OSError:
+    # Fall back to a workspace-local location when /data is unavailable
+    # (e.g., local development sandboxes without root-level write access).
+    BENCHMARK_DATA_DIR = REPO_ROOT / "data" / "actionet_benchmark"
+    BENCHMARK_DATA_DIR.mkdir(parents=True, exist_ok=True)
 
 # Results go inside the workspace (per spec: tests/benchmark_results/<run_id>/)
 BENCHMARK_RESULTS_DIR = REPO_ROOT / "tests" / "benchmark_results"
@@ -283,11 +291,16 @@ def generate_all_subsets(tiers: Optional[List[int]] = None, overwrite: bool = Fa
 
 
 # ---------------------------------------------------------------------------
-# Profiler: per-stage wall time + peak RSS delta
+# Profiler: per-stage wall time + peak RSS metrics
 # ---------------------------------------------------------------------------
 
 class StageProfiler:
-    """Context manager: records wall time and peak RSS increase for one stage."""
+    """Context manager for wall time and RSS metrics for one stage.
+
+    Exposes:
+    - `peak_rss_mb`: increase from stage start to stage-local peak
+    - `peak_rss_abs_mb`: absolute process RSS peak observed during the stage
+    """
 
     def __init__(self, label: str = "", sample_interval: float = 0.05):
         self.label = label
@@ -295,6 +308,7 @@ class StageProfiler:
         self.elapsed: float = 0.0
         self.peak_rss_mb: float = 0.0
         self._peak_abs: float = 0.0
+        self.peak_rss_abs_mb: float = 0.0
 
     def _sampler(self) -> None:
         while not self._stop.is_set():
@@ -327,6 +341,7 @@ class StageProfiler:
         except Exception:
             pass
         self.peak_rss_mb = max(0.0, self._peak_abs - self._rss0)
+        self.peak_rss_abs_mb = self._peak_abs
         return False  # do not suppress exceptions
 
 
@@ -367,9 +382,31 @@ def _io_counters_mb() -> tuple[float, float]:
     """Return (read_mb, write_mb) for current process since process start."""
     try:
         c = psutil.Process().io_counters()
-        return c.read_bytes / 1e6, c.write_bytes / 1e6
+        read_b = float(getattr(c, "read_bytes", 0.0) or 0.0)
+        write_b = float(getattr(c, "write_bytes", 0.0) or 0.0)
+        if read_b > 0.0 or write_b > 0.0:
+            return read_b / 1e6, write_b / 1e6
     except Exception:
-        return 0.0, 0.0
+        pass
+
+    # Fallback for platforms where psutil I/O byte counters are unavailable
+    # or always zero (commonly macOS): use block I/O counters from rusage.
+    try:
+        self_usage = resource.getrusage(resource.RUSAGE_SELF)
+        child_usage = resource.getrusage(resource.RUSAGE_CHILDREN)
+        # ru_inblock / ru_oublock are measured in blocks. POSIX does not
+        # mandate block size, but 512-byte accounting is the common default.
+        block_bytes = 512.0
+        read_b = (float(self_usage.ru_inblock) + float(child_usage.ru_inblock)) * block_bytes
+        write_b = (float(self_usage.ru_oublock) + float(child_usage.ru_oublock)) * block_bytes
+        if read_b > 0.0 or write_b > 0.0:
+            return read_b / 1e6, write_b / 1e6
+    except Exception:
+        pass
+
+    # When counters are unsupported/unobservable, return NaN rather than
+    # silently reporting 0 MB and implying "no I/O happened."
+    return float("nan"), float("nan")
 
 
 def _get_n_batches(adata: ad.AnnData, batch_key: Optional[str]) -> int:

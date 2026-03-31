@@ -60,8 +60,8 @@ class TestDenseBackedSVD:
         """run_svd runs on dense-backed AnnData without error."""
         adata = _open_backed_dense(tmp_path, _make_dense_adata(seed=10))
         result = an.run_svd(adata, n_components=10, backed_chunk_size=32)
-        assert result["u"].shape == (adata.n_vars, 10)
-        assert result["v"].shape == (adata.n_obs, 10)
+        assert result["u"].shape == (adata.n_obs, 10)
+        assert result["v"].shape == (adata.n_vars, 10)
         assert result["d"].shape == (10,)
         assert not np.any(np.isnan(result["u"]))
         assert not np.any(np.isnan(result["v"]))
@@ -79,6 +79,21 @@ class TestDenseBackedSVD:
         np.testing.assert_allclose(
             np.sort(np.asarray(res_backed["d"]).reshape(-1))[::-1],
             np.sort(np.asarray(res_mem["d"]).reshape(-1))[::-1],
+            rtol=1e-4,
+        )
+
+    def test_svd_parity_dense_backed_thread_counts(self, tmp_path):
+        """Dense-backed SVD is numerically stable across backed thread settings."""
+        adata_t1 = _open_backed_dense(tmp_path / "t1", _make_dense_adata(seed=25))
+        adata_t4 = _open_backed_dense(tmp_path / "t4", _make_dense_adata(seed=25))
+
+        k = 10
+        res_t1 = an.run_svd(adata_t1, n_components=k, backed_chunk_size=32, backed_n_threads=1)
+        res_t4 = an.run_svd(adata_t4, n_components=k, backed_chunk_size=32, backed_n_threads=4)
+
+        np.testing.assert_allclose(
+            np.sort(np.asarray(res_t4["d"]).reshape(-1))[::-1],
+            np.sort(np.asarray(res_t1["d"]).reshape(-1))[::-1],
             rtol=1e-4,
         )
 
@@ -110,6 +125,35 @@ class TestDenseBackedReduceKernel:
 
         assert adata_backed.obsm["action"].shape == adata_mem.obsm["action"].shape
         assert adata_backed.varm["action_U"].shape == adata_mem.varm["action_U"].shape
+
+    def test_reduce_kernel_parity_dense_backed_thread_counts(self, tmp_path):
+        """Dense-backed reduce_kernel sigma is stable across backed thread settings."""
+        adata_t1 = _open_backed_dense(tmp_path / "t1", _make_dense_adata(seed=45))
+        adata_t4 = _open_backed_dense(tmp_path / "t4", _make_dense_adata(seed=45))
+
+        k = 10
+        an.reduce_kernel(adata_t1, n_components=k, backed_chunk_size=32, backed_n_threads=1, inplace=True)
+        an.reduce_kernel(adata_t4, n_components=k, backed_chunk_size=32, backed_n_threads=4, inplace=True)
+
+        sigma_t1 = np.asarray(adata_t1.uns["action_params"]["sigma"]).reshape(-1)
+        sigma_t4 = np.asarray(adata_t4.uns["action_params"]["sigma"]).reshape(-1)
+        np.testing.assert_allclose(
+            np.sort(sigma_t4)[::-1],
+            np.sort(sigma_t1)[::-1],
+            rtol=1e-4,
+        )
+
+
+class TestBackedThreadArgValidation:
+    def test_run_svd_rejects_negative_backed_n_threads(self):
+        adata = _make_dense_adata(seed=80)
+        with pytest.raises(ValueError, match="backed_n_threads"):
+            an.run_svd(adata, n_components=5, backed_n_threads=-1)
+
+    def test_reduce_kernel_rejects_negative_backed_n_threads(self):
+        adata = _make_dense_adata(seed=81)
+        with pytest.raises(ValueError, match="backed_n_threads"):
+            an.reduce_kernel(adata, n_components=5, backed_n_threads=-1, inplace=True)
 
 
 # ---------------------------------------------------------------------------
@@ -188,7 +232,7 @@ class TestDenseBackedLayers:
         """run_svd works on a dense-backed layer."""
         adata = _open_backed_dense(tmp_path, _make_dense_adata(seed=71))
         result = an.run_svd(adata, n_components=10, layer="logcounts", backed_chunk_size=32)
-        assert result["u"].shape == (adata.n_vars, 10)
+        assert result["u"].shape == (adata.n_obs, 10)
         assert not np.any(np.isnan(result["d"]))
 
 
