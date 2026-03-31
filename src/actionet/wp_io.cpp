@@ -54,6 +54,7 @@ std::shared_ptr<actionet::MatrixOperator> create_backed_operator(
     int chunk_size,
     py::object row_scale_factors,
     bool apply_log1p,
+    double log_scale,
     size_t io_target_chunk_bytes,
     double io_target_chunk_fraction_of_cap,
     int n_threads) {
@@ -63,6 +64,7 @@ std::shared_ptr<actionet::MatrixOperator> create_backed_operator(
         static_cast<arma::uword>(std::max(1, chunk_size)),
         optional_row_scale(std::move(row_scale_factors)),
         apply_log1p,
+        log_scale,
         io_target_chunk_bytes,
         io_target_chunk_fraction_of_cap,
         n_threads
@@ -111,12 +113,13 @@ void init_io(py::module_ &m) {
     py::class_<actionet::BackedSparseMatrixOperator, actionet::MatrixOperator,
                std::shared_ptr<actionet::BackedSparseMatrixOperator>>(m, "BackedSparseMatrixOperator")
         .def(py::init<const std::string&, const std::string&, arma::uword,
-                      const std::vector<double>&, bool, size_t, double, int>(),
+                      const std::vector<double>&, bool, double, size_t, double, int>(),
              py::arg("file_path"),
              py::arg("group_path") = "/X",
              py::arg("chunk_size") = 4096,
              py::arg("row_scale_factors") = std::vector<double>{},
              py::arg("apply_log1p") = false,
+             py::arg("log_scale") = 1.0,
              py::arg("io_target_chunk_bytes") = 0,
              py::arg("io_target_chunk_fraction_of_cap") = 0.5,
              py::arg("n_threads") = 0)
@@ -130,12 +133,13 @@ void init_io(py::module_ &m) {
     py::class_<actionet::BackedDenseMatrixOperator, actionet::MatrixOperator,
                std::shared_ptr<actionet::BackedDenseMatrixOperator>>(m, "BackedDenseMatrixOperator")
         .def(py::init<const std::string&, const std::string&, arma::uword,
-                      const std::vector<double>&, bool, size_t, int>(),
+                      const std::vector<double>&, bool, double, size_t, int>(),
              py::arg("file_path"),
              py::arg("group_path") = "/X",
              py::arg("chunk_size") = 4096,
              py::arg("row_scale_factors") = std::vector<double>{},
              py::arg("apply_log1p") = false,
+             py::arg("log_scale") = 1.0,
              py::arg("slab_byte_budget") = 256ULL * 1024 * 1024,
              py::arg("n_threads") = 0)
         .def_property_readonly("shape", [](const actionet::BackedDenseMatrixOperator& op) {
@@ -152,6 +156,7 @@ void init_io(py::module_ &m) {
           py::arg("chunk_size") = 4096,
           py::arg("row_scale_factors") = py::none(),
           py::arg("apply_log1p") = false,
+          py::arg("log_scale") = 1.0,
           py::arg("io_target_chunk_bytes") = 0,
           py::arg("io_target_chunk_fraction_of_cap") = 0.5,
           py::arg("n_threads") = 0);

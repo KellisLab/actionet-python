@@ -201,6 +201,60 @@ def _chunk_target_bytes(backed_target_chunk_mb: Optional[float]) -> int:
     return int(target * 1024 * 1024)
 
 
+def _validate_lazy_logcounts_params(
+    *,
+    lazy_logcounts: bool,
+    lazy_target_sum: float,
+    lazy_log_base: Optional[float],
+    lazy_pseudocount: float,
+) -> None:
+    if not lazy_logcounts:
+        return
+
+    if lazy_target_sum <= 0:
+        raise ValueError("`lazy_target_sum` must be > 0 when `lazy_logcounts=True`.")
+    if lazy_log_base is not None:
+        if lazy_log_base <= 0:
+            raise ValueError("`lazy_log_base` must be > 0 when provided.")
+        if np.isclose(lazy_log_base, 1.0):
+            raise ValueError("`lazy_log_base` cannot be 1.0.")
+    if lazy_pseudocount <= 0:
+        raise ValueError("`lazy_pseudocount` must be > 0 when `lazy_logcounts=True`.")
+    if not np.isclose(lazy_pseudocount, 1.0):
+        raise ValueError(
+            "Stage-1 lazy logcounts currently supports only `lazy_pseudocount=1.0`."
+        )
+
+
+def _build_lazy_backed_transform(
+    source: MatrixSource,
+    *,
+    lazy_logcounts: bool,
+    lazy_target_sum: float,
+    lazy_log_base: Optional[float],
+    lazy_pseudocount: float,
+    backed_chunk_size: int,
+) -> tuple[Optional[np.ndarray], bool, float]:
+    _validate_lazy_logcounts_params(
+        lazy_logcounts=lazy_logcounts,
+        lazy_target_sum=lazy_target_sum,
+        lazy_log_base=lazy_log_base,
+        lazy_pseudocount=lazy_pseudocount,
+    )
+    if not lazy_logcounts:
+        return None, False, 1.0
+
+    row_sums = source.row_sums(chunk_size=backed_chunk_size)
+    row_scale_factors = np.divide(
+        lazy_target_sum,
+        row_sums,
+        out=np.zeros_like(row_sums, dtype=np.float64),
+        where=row_sums > 0,
+    )
+    log_scale = 1.0 if lazy_log_base is None else float(1.0 / np.log(lazy_log_base))
+    return row_scale_factors, True, log_scale
+
+
 def _maybe_decompress_backed_path(
     adata: AnnData,
     *,
@@ -265,6 +319,10 @@ def reduce_kernel(
     inplace: bool = True,
     backed_target_chunk_mb: Optional[float] = None,
     backed_n_threads: int = 0,
+    lazy_logcounts: bool = False,
+    lazy_target_sum: float = 1e4,
+    lazy_log_base: Optional[float] = None,
+    lazy_pseudocount: float = 1.0,
 ) -> Optional[AnnData]:
     """Compute low-rank kernel reduction and persist outputs to AnnData.
 
@@ -275,16 +333,31 @@ def reduce_kernel(
     """
     if backed_n_threads < 0:
         raise ValueError("`backed_n_threads` must be >= 0")
+    _validate_lazy_logcounts_params(
+        lazy_logcounts=lazy_logcounts,
+        lazy_target_sum=lazy_target_sum,
+        lazy_log_base=lazy_log_base,
+        lazy_pseudocount=lazy_pseudocount,
+    )
 
     if not inplace:
         adata = adata.copy()
 
     source = MatrixSource(adata, layer=layer)
-    X = source.matrix
     use_operator = source.is_backed
+    if lazy_logcounts and not use_operator:
+        raise ValueError("`lazy_logcounts=True` is supported only for backed AnnData inputs.")
     algorithm_name = _normalize_algorithm(svd_algorithm, context="svd_algorithm")
 
     if use_operator:
+        row_scale_factors, apply_log1p, log_scale = _build_lazy_backed_transform(
+            source,
+            lazy_logcounts=lazy_logcounts,
+            lazy_target_sum=lazy_target_sum,
+            lazy_log_base=lazy_log_base,
+            lazy_pseudocount=lazy_pseudocount,
+            backed_chunk_size=backed_chunk_size,
+        )
         _flush_backed_handle(adata, context="reduce_kernel")
         selected_algorithm = _select_svd_algorithm_backed(algorithm_name, verbose)
         io_target_chunk_bytes = _chunk_target_bytes(backed_target_chunk_mb)
@@ -307,8 +380,9 @@ def reduce_kernel(
                 file_path=file_path,
                 group_path=_backed_group_path(layer),
                 chunk_size=backed_chunk_size,
-                row_scale_factors=None,
-                apply_log1p=False,
+                row_scale_factors=row_scale_factors,
+                apply_log1p=apply_log1p,
+                log_scale=log_scale,
                 io_target_chunk_bytes=io_target_chunk_bytes,
                 n_threads=backed_n_threads,
             )
@@ -359,6 +433,10 @@ def reduce_kernel(
         "svd_algorithm_name": _SVD_ID_TO_ALGORITHM.get(svd_algorithm_id, f"unknown({svd_algorithm_id})"),
         "used_precomputed_svd": precomputed_svd is not None,
         "operator_mode": use_operator,
+        "lazy_logcounts": bool(lazy_logcounts and use_operator),
+        "lazy_target_sum": float(lazy_target_sum),
+        "lazy_log_base": None if lazy_log_base is None else float(lazy_log_base),
+        "lazy_pseudocount": float(lazy_pseudocount),
     }
     persist_updates(
         adata,
@@ -386,6 +464,10 @@ def reduce_kernel_from_svd(
     verbose: bool = True,
     backed_chunk_size: int = 4096,
     inplace: bool = True,
+    lazy_logcounts: bool = False,
+    lazy_target_sum: float = 1e4,
+    lazy_log_base: Optional[float] = None,
+    lazy_pseudocount: float = 1.0,
 ) -> Optional[AnnData]:
     """Compute reduced kernel using a precomputed SVD result.
 
@@ -422,6 +504,10 @@ def reduce_kernel_from_svd(
         precomputed_svd=svd_result,
         backed_chunk_size=backed_chunk_size,
         inplace=inplace,
+        lazy_logcounts=lazy_logcounts,
+        lazy_target_sum=lazy_target_sum,
+        lazy_log_base=lazy_log_base,
+        lazy_pseudocount=lazy_pseudocount,
     )
 
 
@@ -1298,6 +1384,10 @@ def run_svd(
     allow_compressed: bool = False,
     backed_target_chunk_mb: Optional[float] = None,
     backed_n_threads: int = 0,
+    lazy_logcounts: bool = False,
+    lazy_target_sum: float = 1e4,
+    lazy_log_base: Optional[float] = None,
+    lazy_pseudocount: float = 1.0,
 ) -> dict:
     """Compute truncated SVD decomposition.
 
@@ -1308,13 +1398,33 @@ def run_svd(
     """
     if backed_n_threads < 0:
         raise ValueError("`backed_n_threads` must be >= 0")
+    _validate_lazy_logcounts_params(
+        lazy_logcounts=lazy_logcounts,
+        lazy_target_sum=lazy_target_sum,
+        lazy_log_base=lazy_log_base,
+        lazy_pseudocount=lazy_pseudocount,
+    )
 
     algorithm_name = _normalize_algorithm(algorithm, context="algorithm")
 
+    source_ctx: Optional[MatrixSource] = MatrixSource(X, layer=layer) if isinstance(X, AnnData) else None
     adata_ctx: Optional[AnnData] = X if isinstance(X, AnnData) else None
-    matrix = MatrixSource(X, layer=layer).matrix if isinstance(X, AnnData) else X
+    matrix = source_ctx.matrix if source_ctx is not None else X
 
     if _is_backed_matrix(matrix):
+        if lazy_logcounts and source_ctx is None:
+            raise ValueError(
+                "`lazy_logcounts=True` in `run_svd` requires a backed AnnData input "
+                "so row-sum scaling factors can be streamed from the source matrix."
+            )
+        row_scale_factors, apply_log1p, log_scale = _build_lazy_backed_transform(
+            source_ctx,
+            lazy_logcounts=lazy_logcounts,
+            lazy_target_sum=lazy_target_sum,
+            lazy_log_base=lazy_log_base,
+            lazy_pseudocount=lazy_pseudocount,
+            backed_chunk_size=backed_chunk_size,
+        ) if source_ctx is not None else (None, False, 1.0)
         if adata_ctx is not None:
             _flush_backed_handle(adata_ctx, context="run_svd")
         selected_algorithm = _select_svd_algorithm_backed(algorithm_name, verbose)
@@ -1348,8 +1458,9 @@ def run_svd(
                 file_path=file_path,
                 group_path=group_path,
                 chunk_size=backed_chunk_size,
-                row_scale_factors=None,
-                apply_log1p=False,
+                row_scale_factors=row_scale_factors,
+                apply_log1p=apply_log1p,
+                log_scale=log_scale,
                 io_target_chunk_bytes=io_target_chunk_bytes,
                 n_threads=backed_n_threads,
             )
@@ -1361,11 +1472,15 @@ def run_svd(
             if temp_path is not None and os.path.exists(temp_path):
                 os.remove(temp_path)
     elif sp.issparse(matrix):
+        if lazy_logcounts:
+            raise ValueError("`lazy_logcounts=True` is supported only for backed matrix inputs.")
         if not sp.isspmatrix_csr(matrix):
             matrix = matrix.tocsr()
         algorithm_id = _select_svd_algorithm_inmemory(matrix, algorithm_name, verbose)
         result = _core.run_svd_sparse(matrix, n_components, max_iter, seed, algorithm_id, verbose)
     else:
+        if lazy_logcounts:
+            raise ValueError("`lazy_logcounts=True` is supported only for backed matrix inputs.")
         algorithm_id = _select_svd_algorithm_inmemory(matrix, algorithm_name, verbose)
         result = _core.run_svd_dense(matrix, n_components, max_iter, seed, algorithm_id, verbose)
 

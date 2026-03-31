@@ -156,3 +156,183 @@ def test_backed_reduce_kernel_first_pass_matches_second_pass_after_backed_normal
 
     assert sigma_rel < 1e-10
     assert action_rel < 1e-10
+
+
+@pytest.mark.parametrize("sparse_fmt", ["csr", "csc", "dense"])
+def test_run_svd_backed_lazy_logcounts_matches_eager_normalized(tmp_path, sparse_fmt):
+    """Lazy-backed run_svd should match eager-normalized reference SVD."""
+    n_components = 10
+    seed = 11
+
+    adata_ref = make_test_adata(n_cells=96, n_genes=72, sparse_fmt=sparse_fmt, seed=321)
+    an.normalize_anndata(
+        adata_ref,
+        target_sum=1e4,
+        log_transform=True,
+        log_base=2,
+        inplace=True,
+    )
+    svd_ref = an.run_svd(
+        adata_ref,
+        n_components=n_components,
+        algorithm="halko",
+        seed=seed,
+        verbose=False,
+    )
+
+    adata_backed = open_backed(
+        tmp_path / f"lazy_svd_{sparse_fmt}",
+        make_test_adata(n_cells=96, n_genes=72, sparse_fmt=sparse_fmt, seed=321),
+    )
+    svd_lazy = an.run_svd(
+        adata_backed,
+        n_components=n_components,
+        algorithm="halko",
+        seed=seed,
+        verbose=False,
+        backed_chunk_size=24,
+        lazy_logcounts=True,
+        lazy_target_sum=1e4,
+        lazy_log_base=2.0,
+    )
+
+    if hasattr(adata_backed, "file") and adata_backed.file is not None:
+        adata_backed.file.close()
+
+    sigma_ref = np.asarray(svd_ref["d"], dtype=float).reshape(-1)
+    sigma_lazy = np.asarray(svd_lazy["d"], dtype=float).reshape(-1)
+    sigma_rel = np.linalg.norm(sigma_lazy - sigma_ref) / (np.linalg.norm(sigma_ref) + 1e-12)
+    assert sigma_rel < 1e-4
+
+
+@pytest.mark.parametrize("sparse_fmt", ["csr", "csc", "dense"])
+def test_reduce_kernel_backed_lazy_logcounts_matches_eager_normalized(tmp_path, sparse_fmt):
+    """Lazy-backed reduce_kernel should match eager-normalized reference results."""
+    n_components = 12
+    seed = 5
+
+    adata_ref = make_test_adata(n_cells=96, n_genes=72, sparse_fmt=sparse_fmt, seed=456)
+    an.normalize_anndata(
+        adata_ref,
+        target_sum=1e4,
+        log_transform=True,
+        log_base=2,
+        inplace=True,
+    )
+    an.reduce_kernel(
+        adata_ref,
+        n_components=n_components,
+        key_added="action_ref",
+        svd_algorithm="halko",
+        seed=seed,
+        verbose=False,
+        inplace=True,
+    )
+    action_ref = np.asarray(adata_ref.obsm["action_ref"], dtype=float)
+    sigma_ref = np.asarray(adata_ref.uns["action_ref_params"]["sigma"], dtype=float).reshape(-1)
+
+    adata_backed = open_backed(
+        tmp_path / f"lazy_reduce_{sparse_fmt}",
+        make_test_adata(n_cells=96, n_genes=72, sparse_fmt=sparse_fmt, seed=456),
+    )
+    an.reduce_kernel(
+        adata_backed,
+        n_components=n_components,
+        key_added="action_lazy",
+        svd_algorithm="halko",
+        seed=seed,
+        verbose=False,
+        backed_chunk_size=24,
+        lazy_logcounts=True,
+        lazy_target_sum=1e4,
+        lazy_log_base=2.0,
+        inplace=True,
+    )
+    action_lazy = np.asarray(adata_backed.obsm["action_lazy"], dtype=float)
+    sigma_lazy = np.asarray(adata_backed.uns["action_lazy_params"]["sigma"], dtype=float).reshape(-1)
+    params = adata_backed.uns["action_lazy_params"]
+
+    if hasattr(adata_backed, "file") and adata_backed.file is not None:
+        adata_backed.file.close()
+
+    sigma_rel = np.linalg.norm(sigma_lazy - sigma_ref) / (np.linalg.norm(sigma_ref) + 1e-12)
+    action_rel = _procrustes_rel_error(action_ref, action_lazy)
+    assert sigma_rel < 1e-4
+    assert action_rel < 1e-3
+    assert params["lazy_logcounts"] is True
+    assert np.isclose(float(params["lazy_target_sum"]), 1e4)
+    assert np.isclose(float(params["lazy_log_base"]), 2.0)
+    assert np.isclose(float(params["lazy_pseudocount"]), 1.0)
+
+
+def test_reduce_kernel_from_svd_backed_lazy_logcounts_matches_eager(tmp_path):
+    """Lazy-backed reduce_kernel_from_svd matches eager-normalized reference."""
+    n_components = 12
+
+    adata_ref = make_test_adata(n_cells=96, n_genes=72, sparse_fmt="csr", seed=999)
+    an.normalize_anndata(
+        adata_ref,
+        target_sum=1e4,
+        log_transform=True,
+        log_base=2,
+        inplace=True,
+    )
+    svd_ref = an.run_svd(
+        adata_ref,
+        n_components=n_components,
+        algorithm="halko",
+        seed=3,
+        verbose=False,
+    )
+    an.reduce_kernel_from_svd(
+        adata_ref,
+        svd_result=svd_ref,
+        key_added="action_ref",
+        verbose=False,
+        inplace=True,
+    )
+    action_ref = np.asarray(adata_ref.obsm["action_ref"], dtype=float)
+    sigma_ref = np.asarray(adata_ref.uns["action_ref_params"]["sigma"], dtype=float).reshape(-1)
+
+    adata_backed = open_backed(
+        tmp_path / "lazy_reduce_from_svd",
+        make_test_adata(n_cells=96, n_genes=72, sparse_fmt="csr", seed=999),
+    )
+    an.reduce_kernel_from_svd(
+        adata_backed,
+        svd_result=svd_ref,
+        key_added="action_lazy",
+        verbose=False,
+        backed_chunk_size=24,
+        lazy_logcounts=True,
+        lazy_target_sum=1e4,
+        lazy_log_base=2.0,
+        inplace=True,
+    )
+    action_lazy = np.asarray(adata_backed.obsm["action_lazy"], dtype=float)
+    sigma_lazy = np.asarray(adata_backed.uns["action_lazy_params"]["sigma"], dtype=float).reshape(-1)
+
+    if hasattr(adata_backed, "file") and adata_backed.file is not None:
+        adata_backed.file.close()
+
+    sigma_rel = np.linalg.norm(sigma_lazy - sigma_ref) / (np.linalg.norm(sigma_ref) + 1e-12)
+    action_rel = _procrustes_rel_error(action_ref, action_lazy)
+    assert sigma_rel < 1e-4
+    assert action_rel < 1e-3
+
+
+def test_lazy_logcounts_validation_errors():
+    """Invalid lazy settings should raise informative errors."""
+    adata = make_test_adata(n_cells=24, n_genes=20, sparse_fmt="csr", seed=7)
+
+    with pytest.raises(ValueError, match="lazy_target_sum"):
+        an.run_svd(adata, n_components=5, lazy_logcounts=True, lazy_target_sum=0)
+
+    with pytest.raises(ValueError, match="lazy_log_base"):
+        an.run_svd(adata, n_components=5, lazy_logcounts=True, lazy_log_base=1.0)
+
+    with pytest.raises(ValueError, match="lazy_pseudocount"):
+        an.run_svd(adata, n_components=5, lazy_logcounts=True, lazy_pseudocount=0.5)
+
+    with pytest.raises(ValueError, match="supported only for backed"):
+        an.reduce_kernel(adata, n_components=5, lazy_logcounts=True, inplace=False)
