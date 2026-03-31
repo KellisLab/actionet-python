@@ -167,7 +167,13 @@ def _resolve_backed_handle(X: Any, layer: Optional[str] = None) -> tuple[str, st
 
 
 def _flush_backed_handle(adata: AnnData, *, context: str) -> None:
-    """Best-effort flush for backed AnnData before opening a second HDF5 handle."""
+    """Flush backed AnnData before opening a second HDF5 handle.
+
+    Raises
+    ------
+    RuntimeError
+        If the underlying backed handle flush fails.
+    """
     if not bool(getattr(adata, "isbacked", False)):
         return
 
@@ -177,14 +183,10 @@ def _flush_backed_handle(adata: AnnData, *, context: str) -> None:
 
     try:
         file_obj.flush()
-    except Exception as exc:  # pragma: no cover - depends on h5py backend state
-        warnings.warn(
-            (
-                f"{context}: failed to flush backed AnnData handle before "
-                f"operator read ({type(exc).__name__}: {exc})."
-            ),
-            UserWarning,
-            stacklevel=3,
+    except Exception as exc:
+        raise RuntimeError(
+            f"{context}: failed to flush backed AnnData handle before operator read "
+            f"({type(exc).__name__}: {exc})"
         )
 
 

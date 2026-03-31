@@ -3,6 +3,7 @@
 import numpy as np
 import pytest
 import actionet as an
+import actionet.core as actionet_core
 
 from .conftest import make_test_adata, open_backed
 
@@ -33,6 +34,23 @@ def _procrustes_rel_error(X_ref: np.ndarray, X_test: np.ndarray) -> float:
     Q = U @ VT
     denom = np.linalg.norm(X_ref, ord="fro") + 1e-12
     return float(np.linalg.norm(X_test @ Q - X_ref, ord="fro") / denom)
+
+
+def test_flush_backed_handle_raises_on_flush_failure():
+    """Flush failures should fail fast to avoid stale operator reads."""
+    class _BrokenHandle:
+        def flush(self):
+            raise OSError("simulated flush failure")
+
+    class _DummyFile:
+        _file = _BrokenHandle()
+
+    class _DummyAdata:
+        isbacked = True
+        file = _DummyFile()
+
+    with pytest.raises(RuntimeError, match="failed to flush backed AnnData handle"):
+        actionet_core._flush_backed_handle(_DummyAdata(), context="reduce_kernel")
 
 
 @pytest.mark.parametrize("sparse_fmt", ["csr", "csc"])
