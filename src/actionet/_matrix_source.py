@@ -593,9 +593,10 @@ class MatrixSource:
     ):
         """Backed fast-path: extract columns via the C++ operator."""
         from . import _core
+        from .backed_io import _backed_group_path
 
         file_path = str(self.adata.filename)
-        group_path = "/X" if self.layer is None else f"/layers/{self.layer}"
+        group_path = _backed_group_path(self.layer)
 
         op = _core.create_backed_operator(
             file_path=file_path,

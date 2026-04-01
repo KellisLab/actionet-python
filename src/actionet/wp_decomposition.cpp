@@ -3,7 +3,6 @@
 
 #include "wp_utils.h"
 #include "libactionet.hpp"
-#include "io/backed_h5ad/create_backed_operator.hpp"
 
 namespace py = pybind11;
 
@@ -149,6 +148,80 @@ py::dict orthogonalize_basal_dense(py::array_t<double> S, py::array_t<double> ol
     return out;
 }
 
+py::dict orthogonalize_batch_effect_operator(
+    std::shared_ptr<actionet::MatrixOperator> op,
+    py::array_t<double> old_S_r,
+    py::array_t<double> old_U, py::array_t<double> old_A,
+    py::array_t<double> old_B, py::array_t<double> old_sigma,
+    py::array_t<double> design) {
+
+    if (!op) {
+        throw std::runtime_error("orthogonalize_batch_effect_operator: operator is null");
+    }
+
+    arma::mat S_r_mat = numpy_to_arma_mat(old_S_r);
+    arma::mat U_mat = numpy_to_arma_mat(old_U);
+    arma::mat A_mat = numpy_to_arma_mat(old_A);
+    arma::mat B_mat = numpy_to_arma_mat(old_B);
+    arma::vec sigma_vec = numpy_to_arma_vec(old_sigma);
+    arma::mat design_mat = numpy_to_arma_mat(design);
+
+    actionet::KernelReductionResult reduction;
+    reduction.S_r   = S_r_mat;
+    reduction.sigma = sigma_vec;
+    reduction.U     = U_mat;
+    reduction.A     = A_mat;
+    reduction.B     = B_mat;
+
+    actionet::KernelReductionResult result = actionet::orthogonalizeBatchEffect_Operator(
+        *op, reduction, design_mat);
+
+    py::dict out;
+    out["S_r"]   = arma_mat_to_numpy_c(result.S_r);
+    out["sigma"] = arma_vec_to_numpy(result.sigma);
+    out["U"]     = arma_mat_to_numpy_c(result.U);
+    out["A"]     = arma_mat_to_numpy_c(result.A);
+    out["B"]     = arma_mat_to_numpy_c(result.B);
+    return out;
+}
+
+py::dict orthogonalize_basal_operator(
+    std::shared_ptr<actionet::MatrixOperator> op,
+    py::array_t<double> old_S_r,
+    py::array_t<double> old_U, py::array_t<double> old_A,
+    py::array_t<double> old_B, py::array_t<double> old_sigma,
+    py::array_t<double> basal) {
+
+    if (!op) {
+        throw std::runtime_error("orthogonalize_basal_operator: operator is null");
+    }
+
+    arma::mat S_r_mat = numpy_to_arma_mat(old_S_r);
+    arma::mat U_mat = numpy_to_arma_mat(old_U);
+    arma::mat A_mat = numpy_to_arma_mat(old_A);
+    arma::mat B_mat = numpy_to_arma_mat(old_B);
+    arma::vec sigma_vec = numpy_to_arma_vec(old_sigma);
+    arma::mat basal_mat = numpy_to_arma_mat(basal);
+
+    actionet::KernelReductionResult reduction;
+    reduction.S_r   = S_r_mat;
+    reduction.sigma = sigma_vec;
+    reduction.U     = U_mat;
+    reduction.A     = A_mat;
+    reduction.B     = B_mat;
+
+    actionet::KernelReductionResult result = actionet::orthogonalizeBasal_Operator(
+        *op, reduction, basal_mat);
+
+    py::dict out;
+    out["S_r"]   = arma_mat_to_numpy_c(result.S_r);
+    out["sigma"] = arma_vec_to_numpy(result.sigma);
+    out["U"]     = arma_mat_to_numpy_c(result.U);
+    out["A"]     = arma_mat_to_numpy_c(result.A);
+    out["B"]     = arma_mat_to_numpy_c(result.B);
+    return out;
+}
+
 // svd_main ============================================================================================================
 
 static py::dict perturbed_svd_result_to_dict(const actionet::PerturbedSVDResult& res) {
@@ -256,84 +329,6 @@ py::dict run_svd_operator(py::object op, int k = 30, int max_it = 0, int seed = 
 
 // =====================================================================================================================
 
-py::dict orthogonalize_batch_effect_operator(
-    std::shared_ptr<actionet::MatrixOperator> op,
-    py::array_t<double> old_S_r,
-    py::array_t<double> old_U, py::array_t<double> old_A,
-    py::array_t<double> old_B, py::array_t<double> old_sigma,
-    py::array_t<double> design) {
-
-    if (!op) {
-        throw std::runtime_error("orthogonalize_batch_effect_operator: operator is null");
-    }
-
-    arma::mat S_r_mat = numpy_to_arma_mat(old_S_r);
-    arma::mat U_mat = numpy_to_arma_mat(old_U);
-    arma::mat A_mat = numpy_to_arma_mat(old_A);
-    arma::mat B_mat = numpy_to_arma_mat(old_B);
-    arma::vec sigma_vec = numpy_to_arma_vec(old_sigma);
-    arma::mat design_mat = numpy_to_arma_mat(design);
-
-    // Use the typed KernelReductionResult API (Plan 02A).
-    actionet::KernelReductionResult reduction;
-    reduction.S_r   = S_r_mat;
-    reduction.sigma = sigma_vec;
-    reduction.U     = U_mat;
-    reduction.A     = A_mat;
-    reduction.B     = B_mat;
-
-    actionet::KernelReductionResult result = actionet::orthogonalizeBatchEffect_Operator(
-        *op, reduction, design_mat);
-
-    py::dict out;
-    out["S_r"]   = arma_mat_to_numpy_c(result.S_r);
-    out["sigma"] = arma_vec_to_numpy(result.sigma);
-    out["U"]     = arma_mat_to_numpy_c(result.U);
-    out["A"]     = arma_mat_to_numpy_c(result.A);
-    out["B"]     = arma_mat_to_numpy_c(result.B);
-    return out;
-}
-
-py::dict orthogonalize_basal_operator(
-    std::shared_ptr<actionet::MatrixOperator> op,
-    py::array_t<double> old_S_r,
-    py::array_t<double> old_U, py::array_t<double> old_A,
-    py::array_t<double> old_B, py::array_t<double> old_sigma,
-    py::array_t<double> basal) {
-
-    if (!op) {
-        throw std::runtime_error("orthogonalize_basal_operator: operator is null");
-    }
-
-    arma::mat S_r_mat = numpy_to_arma_mat(old_S_r);
-    arma::mat U_mat = numpy_to_arma_mat(old_U);
-    arma::mat A_mat = numpy_to_arma_mat(old_A);
-    arma::mat B_mat = numpy_to_arma_mat(old_B);
-    arma::vec sigma_vec = numpy_to_arma_vec(old_sigma);
-    arma::mat basal_mat = numpy_to_arma_mat(basal);
-
-    // Use the typed KernelReductionResult API (Plan 02A).
-    actionet::KernelReductionResult reduction;
-    reduction.S_r   = S_r_mat;
-    reduction.sigma = sigma_vec;
-    reduction.U     = U_mat;
-    reduction.A     = A_mat;
-    reduction.B     = B_mat;
-
-    actionet::KernelReductionResult result = actionet::orthogonalizeBasal_Operator(
-        *op, reduction, basal_mat);
-
-    py::dict out;
-    out["S_r"]   = arma_mat_to_numpy_c(result.S_r);
-    out["sigma"] = arma_vec_to_numpy(result.sigma);
-    out["U"]     = arma_mat_to_numpy_c(result.U);
-    out["A"]     = arma_mat_to_numpy_c(result.A);
-    out["B"]     = arma_mat_to_numpy_c(result.B);
-    return out;
-}
-
-// =====================================================================================================================
-
 void init_decomposition(py::module_ &m) {
     // orthogonalization
     m.def("orthogonalize_batch_effect_sparse", &orthogonalize_batch_effect_sparse,
@@ -354,6 +349,16 @@ void init_decomposition(py::module_ &m) {
     m.def("orthogonalize_basal_dense", &orthogonalize_basal_dense,
           "Orthogonalize basal expression (dense)",
           py::arg("S"), py::arg("old_S_r"), py::arg("old_U"), py::arg("old_A"),
+          py::arg("old_B"), py::arg("old_sigma"), py::arg("basal"));
+
+    m.def("orthogonalize_batch_effect_operator", &orthogonalize_batch_effect_operator,
+          "Orthogonalize batch effects (operator-backed)",
+          py::arg("op"), py::arg("old_S_r"), py::arg("old_U"), py::arg("old_A"),
+          py::arg("old_B"), py::arg("old_sigma"), py::arg("design"));
+
+    m.def("orthogonalize_basal_operator", &orthogonalize_basal_operator,
+          "Orthogonalize basal expression (operator-backed)",
+          py::arg("op"), py::arg("old_S_r"), py::arg("old_U"), py::arg("old_A"),
           py::arg("old_B"), py::arg("old_sigma"), py::arg("basal"));
 
     // svd_main
@@ -377,14 +382,4 @@ void init_decomposition(py::module_ &m) {
     m.def("run_svd_operator", &run_svd_operator, "Run SVD (generic operator)",
           py::arg("op"), py::arg("k") = 30, py::arg("max_it") = 0, py::arg("seed") = 0,
           py::arg("algorithm") = actionet::ALG_HALKO, py::arg("verbose") = true);
-
-    m.def("orthogonalize_batch_effect_operator", &orthogonalize_batch_effect_operator,
-          "Orthogonalize batch effects (operator-backed)",
-          py::arg("op"), py::arg("old_S_r"), py::arg("old_U"), py::arg("old_A"),
-          py::arg("old_B"), py::arg("old_sigma"), py::arg("design"));
-
-    m.def("orthogonalize_basal_operator", &orthogonalize_basal_operator,
-          "Orthogonalize basal expression (operator-backed)",
-          py::arg("op"), py::arg("old_S_r"), py::arg("old_U"), py::arg("old_A"),
-          py::arg("old_B"), py::arg("old_sigma"), py::arg("basal"));
 }

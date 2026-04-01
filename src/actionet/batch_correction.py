@@ -10,6 +10,12 @@ from . import _core
 from .anndata_utils import anndata_to_matrix
 from ._backed_persist import persist_updates
 from ._matrix_source import MatrixSource
+from .backed_io import _backed_group_path
+from .lazy_transform import (
+    LazyTransform,
+    _lazy_params_for_metadata,
+    _resolve_lazy_backed_transform,
+)
 
 
 def _load_reduction_state(adata: AnnData, reduction_key: str) -> tuple[np.ndarray, ...]:
@@ -35,10 +41,6 @@ def _load_reduction_state(adata: AnnData, reduction_key: str) -> tuple[np.ndarra
     return old_S_r, old_U, old_A, old_B, old_sigma
 
 
-def _backed_group_path(layer: Optional[str]) -> str:
-    return "/X" if layer is None else f"/layers/{layer}"
-
-
 def correct_batch_effect(
     adata: AnnData,
     batch_key: Optional[str] = None,
@@ -48,6 +50,7 @@ def correct_batch_effect(
     corrected_suffix: str = "corrected",
     inplace: bool = True,
     backed_chunk_size: int = 4096,
+    lazy_transform: Optional[LazyTransform] = None,
 ) -> AnnData:
     """Correct batch effects using orthogonalization.
 
@@ -101,13 +104,28 @@ def correct_batch_effect(
     design = np.ascontiguousarray(design)
 
     source = MatrixSource(adata, layer=layer)
+    row_scale_factors: Optional[np.ndarray] = None
+    apply_log1p = False
+    log_scale = 1.0
+
+    if lazy_transform is not None and not source.is_backed:
+        raise ValueError("Lazy logcount transform is supported only for backed AnnData inputs.")
+
     if source.is_backed:
+        row_scale_factors, apply_log1p, log_scale = _resolve_lazy_backed_transform(
+            source,
+            lazy_transform=lazy_transform,
+            backed_chunk_size=backed_chunk_size,
+        )
         file_path = str(adata.filename)
         group_path = _backed_group_path(layer)
         op = _core.create_backed_operator(
             file_path=file_path,
             group_path=group_path,
             chunk_size=backed_chunk_size,
+            row_scale_factors=row_scale_factors,
+            apply_log1p=apply_log1p,
+            log_scale=log_scale,
         )
         result = _core.orthogonalize_batch_effect_operator(
             op, old_S_r, old_U, old_A, old_B, old_sigma, design,
@@ -124,6 +142,13 @@ def correct_batch_effect(
                 S, old_S_r, old_U, old_A, old_B, old_sigma, design
             )
 
+    corrected_params = {
+        "sigma": result["sigma"],
+        "batch_key": batch_key,
+        "original_reduction": reduction_key,
+    }
+    corrected_params.update(_lazy_params_for_metadata(lazy_transform if apply_log1p else None))
+
     persist_updates(
         adata,
         obsm={
@@ -134,13 +159,7 @@ def correct_batch_effect(
             f"{corrected_key}_U": result["U"],
             f"{corrected_key}_A": result["A"],
         },
-        uns={
-            f"{corrected_key}_params": {
-                "sigma": result["sigma"],
-                "batch_key": batch_key,
-                "original_reduction": reduction_key,
-            }
-        },
+        uns={f"{corrected_key}_params": corrected_params},
     )
     return adata
 

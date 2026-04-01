@@ -1,10 +1,7 @@
 """High-level Python API wrapping C++ bindings with AnnData integration."""
 
 import os
-import shutil
-import tempfile
-import warnings
-from typing import Any, Optional, Union, Literal
+from typing import Any, Literal, Optional, Union
 import numpy as np
 import scipy.sparse as sp
 from anndata import AnnData
@@ -12,18 +9,26 @@ from anndata import AnnData
 from . import _core
 from .anndata_utils import anndata_to_matrix
 from ._backed_persist import persist_updates
-from ._backed_compression import (
-    format_compression_summary,
-    get_storage_metadata_from_adata,
-    get_storage_metadata_from_matrix,
-    is_compressed_storage,
-)
 from ._matrix_source import MatrixSource
-from .preprocessing import decompress_backed_storage
+from .backed_io import (
+    _backed_group_path,
+    _chunk_target_bytes,
+    _flush_backed_handle,
+    _is_backed_matrix,
+    _maybe_decompress_backed_path,
+    _resolve_backed_handle,
+    _run_specificity_backed_dense,
+    _run_specificity_backed_sparse,
+    _warn_if_compressed_backed_svd,
+)
+from .lazy_transform import (
+    LazyTransform,
+    create_lazy_transform,
+    _lazy_params_for_metadata,
+    _resolve_lazy_backed_transform,
+)
 from . import tools
 
-
-_WARNED_COMPRESSED_BACKED_SVD: set[tuple[str, str, str]] = set()
 _SVD_ALGORITHM_TO_ID = {
     "irlb": 0,
     "halko": 1,
@@ -31,54 +36,6 @@ _SVD_ALGORITHM_TO_ID = {
     "primme": 3,
 }
 _SVD_ID_TO_ALGORITHM = {v: k for k, v in _SVD_ALGORITHM_TO_ID.items()}
-
-
-def _is_backed_matrix(X: Any) -> bool:
-    """Detect whether ``X`` is backed/on-disk rather than fully in memory."""
-    if sp.issparse(X) or isinstance(X, np.ndarray):
-        return False
-
-    if hasattr(X, "isbacked"):
-        return bool(X.isbacked)
-
-    if hasattr(X, "group"):
-        return True
-
-    mod = type(X).__module__
-    if mod and mod.startswith("h5py"):
-        return True
-
-    return False
-
-
-def _warn_if_compressed_backed_svd(
-    metadata: Optional[dict],
-    *,
-    context: str,
-    recommendation: str,
-) -> None:
-    """Warn once per (file, matrix key, context) for compressed backed SVD."""
-    if not is_compressed_storage(metadata):
-        return
-
-    filename = str((metadata or {}).get("filename") or "<unknown>")
-    matrix_key = str((metadata or {}).get("matrix_key") or "<unknown>")
-    dedupe_key = (filename, matrix_key, context)
-    if dedupe_key in _WARNED_COMPRESSED_BACKED_SVD:
-        return
-    _WARNED_COMPRESSED_BACKED_SVD.add(dedupe_key)
-
-    codecs = format_compression_summary(metadata)
-    warnings.warn(
-        (
-            f"Backed operator SVD in `{context}` is reading compressed storage "
-            f"for `{matrix_key}` ({codecs}). This can cause major runtime "
-            f"slowdowns due to repeated decompression during matvec passes. "
-            f"Recommended: `{recommendation}`."
-        ),
-        UserWarning,
-        stacklevel=3,
-    )
 
 
 def _normalize_algorithm(algorithm: Optional[str], *, context: str) -> str:
@@ -149,161 +106,6 @@ def _select_svd_algorithm_backed(algorithm: str, verbose: bool = True) -> int:
     return _SVD_ALGORITHM_TO_ID[algorithm]
 
 
-def _backed_group_path(layer: Optional[str]) -> str:
-    return "/X" if layer is None else f"/layers/{layer}"
-
-
-def _resolve_backed_handle(X: Any, layer: Optional[str] = None) -> tuple[str, str]:
-    if isinstance(X, AnnData):
-        if not bool(getattr(X, "isbacked", False) and getattr(X, "filename", None)):
-            raise ValueError("Backed AnnData expected")
-        return str(X.filename), _backed_group_path(layer)
-
-    group = getattr(X, "group", None)
-    if group is None or not hasattr(group, "file"):
-        raise ValueError("Unable to resolve backed file/group from matrix handle")
-
-    return str(group.file.filename), str(group.name)
-
-
-def _flush_backed_handle(adata: AnnData, *, context: str) -> None:
-    """Flush backed AnnData before opening a second HDF5 handle.
-
-    Raises
-    ------
-    RuntimeError
-        If the underlying backed handle flush fails.
-    """
-    if not bool(getattr(adata, "isbacked", False)):
-        return
-
-    file_obj = getattr(getattr(adata, "file", None), "_file", None)
-    if file_obj is None:
-        return
-
-    try:
-        file_obj.flush()
-    except Exception as exc:
-        raise RuntimeError(
-            f"{context}: failed to flush backed AnnData handle before operator read "
-            f"({type(exc).__name__}: {exc})"
-        )
-
-
-def _chunk_target_bytes(backed_target_chunk_mb: Optional[float]) -> int:
-    if backed_target_chunk_mb is None:
-        # 0 delegates to the C++ backed-operator auto heuristic that scales with
-        # chunk_size and sparse structure.
-        return 0
-    target = float(backed_target_chunk_mb)
-    if target <= 0:
-        raise ValueError("`backed_target_chunk_mb` must be > 0 when provided")
-    return int(target * 1024 * 1024)
-
-
-def _validate_lazy_logcounts_params(
-    *,
-    lazy_logcounts: bool,
-    lazy_target_sum: float,
-    lazy_log_base: Optional[float],
-    lazy_pseudocount: float,
-) -> None:
-    if not lazy_logcounts:
-        return
-
-    if lazy_target_sum <= 0:
-        raise ValueError("`lazy_target_sum` must be > 0 when `lazy_logcounts=True`.")
-    if lazy_log_base is not None:
-        if lazy_log_base <= 0:
-            raise ValueError("`lazy_log_base` must be > 0 when provided.")
-        if np.isclose(lazy_log_base, 1.0):
-            raise ValueError("`lazy_log_base` cannot be 1.0.")
-    if lazy_pseudocount <= 0:
-        raise ValueError("`lazy_pseudocount` must be > 0 when `lazy_logcounts=True`.")
-    if not np.isclose(lazy_pseudocount, 1.0):
-        raise ValueError(
-            "Stage-1 lazy logcounts currently supports only `lazy_pseudocount=1.0`."
-        )
-
-
-def _build_lazy_backed_transform(
-    source: MatrixSource,
-    *,
-    lazy_logcounts: bool,
-    lazy_target_sum: float,
-    lazy_log_base: Optional[float],
-    lazy_pseudocount: float,
-    backed_chunk_size: int,
-) -> tuple[Optional[np.ndarray], bool, float]:
-    _validate_lazy_logcounts_params(
-        lazy_logcounts=lazy_logcounts,
-        lazy_target_sum=lazy_target_sum,
-        lazy_log_base=lazy_log_base,
-        lazy_pseudocount=lazy_pseudocount,
-    )
-    if not lazy_logcounts:
-        return None, False, 1.0
-
-    row_sums = source.row_sums(chunk_size=backed_chunk_size)
-    row_scale_factors = np.divide(
-        lazy_target_sum,
-        row_sums,
-        out=np.zeros_like(row_sums, dtype=np.float64),
-        where=row_sums > 0,
-    )
-    log_scale = 1.0 if lazy_log_base is None else float(1.0 / np.log(lazy_log_base))
-    return row_scale_factors, True, log_scale
-
-
-def _maybe_decompress_backed_path(
-    adata: AnnData,
-    *,
-    layer: Optional[str],
-    allow_compressed: bool,
-    chunk_size: int,
-    verbose: bool,
-    context: str,
-) -> Optional[str]:
-    if allow_compressed:
-        return None
-
-    metadata = get_storage_metadata_from_adata(adata, layer=layer)
-    if not is_compressed_storage(metadata):
-        return None
-
-    src_path = str(adata.filename)
-    parent = os.path.dirname(src_path) or "."
-    free_bytes = shutil.disk_usage(parent).free
-    required_bytes = max(int(os.path.getsize(src_path) * 3), 1)
-    if free_bytes < required_bytes:
-        codecs = format_compression_summary(metadata)
-        warnings.warn(
-            (
-                f"{context}: insufficient disk for auto-decompression "
-                f"(need ~{required_bytes / 1e9:.1f} GB free, have {free_bytes / 1e9:.1f} GB). "
-                f"Continuing with compressed matrix ({codecs})."
-            ),
-            UserWarning,
-            stacklevel=3,
-        )
-        return None
-
-    fd, tmp_path = tempfile.mkstemp(prefix="actionet_oom_", suffix=".h5ad", dir=parent)
-    os.close(fd)
-    os.unlink(tmp_path)
-    decompressed = decompress_backed_storage(
-        adata,
-        layer=layer,
-        scope="matrix",
-        output_file=tmp_path,
-        chunk_size=chunk_size,
-        verbose=verbose,
-    )
-    if decompressed is not None and getattr(decompressed, "file", None) is not None:
-        decompressed.file.close()
-    return tmp_path
-
-
 def reduce_kernel(
     adata: AnnData,
     n_components: int = 30,
@@ -319,10 +121,7 @@ def reduce_kernel(
     inplace: bool = True,
     backed_target_chunk_mb: Optional[float] = None,
     backed_n_threads: int = 0,
-    lazy_logcounts: bool = False,
-    lazy_target_sum: float = 1e4,
-    lazy_log_base: Optional[float] = None,
-    lazy_pseudocount: float = 1.0,
+    lazy_transform: Optional[LazyTransform] = None,
 ) -> Optional[AnnData]:
     """Compute low-rank kernel reduction and persist outputs to AnnData.
 
@@ -333,29 +132,25 @@ def reduce_kernel(
     """
     if backed_n_threads < 0:
         raise ValueError("`backed_n_threads` must be >= 0")
-    _validate_lazy_logcounts_params(
-        lazy_logcounts=lazy_logcounts,
-        lazy_target_sum=lazy_target_sum,
-        lazy_log_base=lazy_log_base,
-        lazy_pseudocount=lazy_pseudocount,
-    )
 
     if not inplace:
         adata = adata.copy()
 
     source = MatrixSource(adata, layer=layer)
     use_operator = source.is_backed
-    if lazy_logcounts and not use_operator:
-        raise ValueError("`lazy_logcounts=True` is supported only for backed AnnData inputs.")
+    if lazy_transform is not None and not use_operator:
+        raise ValueError(
+            "Lazy logcount transform is supported only for backed AnnData inputs."
+        )
     algorithm_name = _normalize_algorithm(svd_algorithm, context="svd_algorithm")
+    row_scale_factors: Optional[np.ndarray] = None
+    apply_log1p = False
+    log_scale = 1.0
 
     if use_operator:
-        row_scale_factors, apply_log1p, log_scale = _build_lazy_backed_transform(
+        row_scale_factors, apply_log1p, log_scale = _resolve_lazy_backed_transform(
             source,
-            lazy_logcounts=lazy_logcounts,
-            lazy_target_sum=lazy_target_sum,
-            lazy_log_base=lazy_log_base,
-            lazy_pseudocount=lazy_pseudocount,
+            lazy_transform=lazy_transform,
             backed_chunk_size=backed_chunk_size,
         )
         _flush_backed_handle(adata, context="reduce_kernel")
@@ -433,11 +228,8 @@ def reduce_kernel(
         "svd_algorithm_name": _SVD_ID_TO_ALGORITHM.get(svd_algorithm_id, f"unknown({svd_algorithm_id})"),
         "used_precomputed_svd": precomputed_svd is not None,
         "operator_mode": use_operator,
-        "lazy_logcounts": bool(lazy_logcounts and use_operator),
-        "lazy_target_sum": float(lazy_target_sum),
-        "lazy_log_base": None if lazy_log_base is None else float(lazy_log_base),
-        "lazy_pseudocount": float(lazy_pseudocount),
     }
+    params.update(_lazy_params_for_metadata(lazy_transform if apply_log1p else None))
     persist_updates(
         adata,
         obsm={
@@ -464,10 +256,7 @@ def reduce_kernel_from_svd(
     verbose: bool = True,
     backed_chunk_size: int = 4096,
     inplace: bool = True,
-    lazy_logcounts: bool = False,
-    lazy_target_sum: float = 1e4,
-    lazy_log_base: Optional[float] = None,
-    lazy_pseudocount: float = 1.0,
+    lazy_transform: Optional[LazyTransform] = None,
 ) -> Optional[AnnData]:
     """Compute reduced kernel using a precomputed SVD result.
 
@@ -504,10 +293,7 @@ def reduce_kernel_from_svd(
         precomputed_svd=svd_result,
         backed_chunk_size=backed_chunk_size,
         inplace=inplace,
-        lazy_logcounts=lazy_logcounts,
-        lazy_target_sum=lazy_target_sum,
-        lazy_log_base=lazy_log_base,
-        lazy_pseudocount=lazy_pseudocount,
+        lazy_transform=lazy_transform,
     )
 
 
@@ -786,76 +572,6 @@ def _labels_to_membership(labels_int: np.ndarray, n_obs: int) -> np.ndarray:
     return H
 
 
-def _run_specificity_backed_sparse(
-    adata: AnnData,
-    layer: Optional[str],
-    chunk_size: int,
-    *,
-    H: Optional[np.ndarray] = None,
-    labels_int: Optional[np.ndarray] = None,
-    n_threads: int = 0,
-) -> dict:
-    """Dispatch backed sparse specificity through the C++ ABI.
-
-    Exactly one of *H* (archetype/membership matrix, shape ``(n_obs, k)``) or
-    *labels_int* (1-based integer labels, shape ``(n_obs,)``) must be supplied.
-
-    Returns the raw result dict from the C++ binding.
-    """
-    file_path = str(adata.filename)
-    group_path = _backed_group_path(layer)
-    op = None
-    try:
-        op = _core.create_backed_operator(
-            file_path=file_path,
-            group_path=group_path,
-            chunk_size=chunk_size,
-            row_scale_factors=None,
-            apply_log1p=False,
-        )
-        if H is not None:
-            return _core.archetype_feature_specificity_backed_operator(op, H, n_threads)
-        else:
-            return _core.compute_feature_specificity_backed_operator(op, labels_int, n_threads)
-    finally:
-        op = None
-
-
-def _run_specificity_backed_dense(
-    adata: AnnData,
-    layer: Optional[str],
-    chunk_size: int,
-    *,
-    H: Optional[np.ndarray] = None,
-    labels_int: Optional[np.ndarray] = None,
-    n_threads: int = 0,
-) -> dict:
-    """Dispatch backed dense specificity through the C++ ABI (BackedDenseMatrixOperator).
-
-    Exactly one of *H* (archetype/membership matrix, shape ``(n_obs, k)``) or
-    *labels_int* (1-based integer labels, shape ``(n_obs,)``) must be supplied.
-
-    Returns the raw result dict from the C++ binding.
-    """
-    file_path = str(adata.filename)
-    group_path = _backed_group_path(layer)
-    op = None
-    try:
-        op = _core.create_backed_operator(
-            file_path=file_path,
-            group_path=group_path,
-            chunk_size=chunk_size,
-            row_scale_factors=None,
-            apply_log1p=False,
-        )
-        if H is not None:
-            return _core.archetype_feature_specificity_backed_dense_operator(op, H, n_threads)
-        else:
-            return _core.compute_feature_specificity_backed_dense_operator(op, labels_int, n_threads)
-    finally:
-        op = None
-
-
 def _compute_specificity_streamed(
     source: MatrixSource,
     H_cells: np.ndarray,
@@ -1131,6 +847,7 @@ def compute_archetype_feature_specificity(
     key_added: str = "archetype",
     inplace: bool = True,
     backed_chunk_size: int = 4096,
+    lazy_transform: Optional[LazyTransform] = None,
 ) -> Optional[AnnData]:
     """
     Compute feature specificity scores for archetypes using archetype matrix.
@@ -1186,6 +903,8 @@ def compute_archetype_feature_specificity(
         adata = adata.copy()
 
     source = MatrixSource(adata, layer=layer)
+    if lazy_transform is not None and not source.is_backed:
+        raise ValueError("Lazy logcount transform is supported only for backed AnnData inputs.")
 
     if isinstance(archetype_key, str):
         if archetype_key not in adata.obsm:
@@ -1196,6 +915,16 @@ def compute_archetype_feature_specificity(
 
     H = np.ascontiguousarray(H, dtype=np.float64)
 
+    row_scale_factors: Optional[np.ndarray] = None
+    apply_log1p = False
+    log_scale = 1.0
+    if source.is_backed:
+        row_scale_factors, apply_log1p, log_scale = _resolve_lazy_backed_transform(
+            source,
+            lazy_transform=lazy_transform,
+            backed_chunk_size=backed_chunk_size,
+        )
+
     if source.is_backed:
         if source.is_sparse:
             # Sparse-backed: H is (n_obs, k); pass directly (C++ now accepts cells × k).
@@ -1205,6 +934,9 @@ def compute_archetype_feature_specificity(
                 chunk_size=backed_chunk_size,
                 H=H,
                 n_threads=n_threads,
+                row_scale_factors=row_scale_factors,
+                apply_log1p=apply_log1p,
+                log_scale=log_scale,
             )
         else:
             # Dense-backed: dispatch through the C++ ABI (BackedDenseMatrixOperator).
@@ -1214,6 +946,9 @@ def compute_archetype_feature_specificity(
                 chunk_size=backed_chunk_size,
                 H=H,
                 n_threads=n_threads,
+                row_scale_factors=row_scale_factors,
+                apply_log1p=apply_log1p,
+                log_scale=log_scale,
             )
             result = {
                 "archetypes": result_stream["archetypes"],
@@ -1384,10 +1119,7 @@ def run_svd(
     allow_compressed: bool = False,
     backed_target_chunk_mb: Optional[float] = None,
     backed_n_threads: int = 0,
-    lazy_logcounts: bool = False,
-    lazy_target_sum: float = 1e4,
-    lazy_log_base: Optional[float] = None,
-    lazy_pseudocount: float = 1.0,
+    lazy_transform: Optional[LazyTransform] = None,
 ) -> dict:
     """Compute truncated SVD decomposition.
 
@@ -1398,12 +1130,6 @@ def run_svd(
     """
     if backed_n_threads < 0:
         raise ValueError("`backed_n_threads` must be >= 0")
-    _validate_lazy_logcounts_params(
-        lazy_logcounts=lazy_logcounts,
-        lazy_target_sum=lazy_target_sum,
-        lazy_log_base=lazy_log_base,
-        lazy_pseudocount=lazy_pseudocount,
-    )
 
     algorithm_name = _normalize_algorithm(algorithm, context="algorithm")
 
@@ -1412,19 +1138,20 @@ def run_svd(
     matrix = source_ctx.matrix if source_ctx is not None else X
 
     if _is_backed_matrix(matrix):
-        if lazy_logcounts and source_ctx is None:
+        if lazy_transform is not None and source_ctx is None:
             raise ValueError(
-                "`lazy_logcounts=True` in `run_svd` requires a backed AnnData input "
+                "`lazy_transform` in `run_svd` requires a backed AnnData input "
                 "so row-sum scaling factors can be streamed from the source matrix."
             )
-        row_scale_factors, apply_log1p, log_scale = _build_lazy_backed_transform(
-            source_ctx,
-            lazy_logcounts=lazy_logcounts,
-            lazy_target_sum=lazy_target_sum,
-            lazy_log_base=lazy_log_base,
-            lazy_pseudocount=lazy_pseudocount,
-            backed_chunk_size=backed_chunk_size,
-        ) if source_ctx is not None else (None, False, 1.0)
+        row_scale_factors, apply_log1p, log_scale = (
+            _resolve_lazy_backed_transform(
+                source_ctx,
+                lazy_transform=lazy_transform,
+                backed_chunk_size=backed_chunk_size,
+            )
+            if source_ctx is not None
+            else (None, False, 1.0)
+        )
         if adata_ctx is not None:
             _flush_backed_handle(adata_ctx, context="run_svd")
         selected_algorithm = _select_svd_algorithm_backed(algorithm_name, verbose)
@@ -1472,15 +1199,15 @@ def run_svd(
             if temp_path is not None and os.path.exists(temp_path):
                 os.remove(temp_path)
     elif sp.issparse(matrix):
-        if lazy_logcounts:
-            raise ValueError("`lazy_logcounts=True` is supported only for backed matrix inputs.")
+        if lazy_transform is not None:
+            raise ValueError("`lazy_transform` is supported only for backed matrix inputs.")
         if not sp.isspmatrix_csr(matrix):
             matrix = matrix.tocsr()
         algorithm_id = _select_svd_algorithm_inmemory(matrix, algorithm_name, verbose)
         result = _core.run_svd_sparse(matrix, n_components, max_iter, seed, algorithm_id, verbose)
     else:
-        if lazy_logcounts:
-            raise ValueError("`lazy_logcounts=True` is supported only for backed matrix inputs.")
+        if lazy_transform is not None:
+            raise ValueError("`lazy_transform` is supported only for backed matrix inputs.")
         algorithm_id = _select_svd_algorithm_inmemory(matrix, algorithm_name, verbose)
         result = _core.run_svd_dense(matrix, n_components, max_iter, seed, algorithm_id, verbose)
 

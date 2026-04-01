@@ -184,6 +184,7 @@ def test_run_svd_backed_lazy_logcounts_matches_eager_normalized(tmp_path, sparse
         tmp_path / f"lazy_svd_{sparse_fmt}",
         make_test_adata(n_cells=96, n_genes=72, sparse_fmt=sparse_fmt, seed=321),
     )
+    lazy_transform = an.create_lazy_transform(adata_backed, target_sum=1e4, log_base=2.0)
     svd_lazy = an.run_svd(
         adata_backed,
         n_components=n_components,
@@ -191,9 +192,7 @@ def test_run_svd_backed_lazy_logcounts_matches_eager_normalized(tmp_path, sparse
         seed=seed,
         verbose=False,
         backed_chunk_size=24,
-        lazy_logcounts=True,
-        lazy_target_sum=1e4,
-        lazy_log_base=2.0,
+        lazy_transform=lazy_transform,
     )
 
     if hasattr(adata_backed, "file") and adata_backed.file is not None:
@@ -235,6 +234,7 @@ def test_reduce_kernel_backed_lazy_logcounts_matches_eager_normalized(tmp_path, 
         tmp_path / f"lazy_reduce_{sparse_fmt}",
         make_test_adata(n_cells=96, n_genes=72, sparse_fmt=sparse_fmt, seed=456),
     )
+    lazy_transform = an.create_lazy_transform(adata_backed, target_sum=1e4, log_base=2.0)
     an.reduce_kernel(
         adata_backed,
         n_components=n_components,
@@ -243,9 +243,7 @@ def test_reduce_kernel_backed_lazy_logcounts_matches_eager_normalized(tmp_path, 
         seed=seed,
         verbose=False,
         backed_chunk_size=24,
-        lazy_logcounts=True,
-        lazy_target_sum=1e4,
-        lazy_log_base=2.0,
+        lazy_transform=lazy_transform,
         inplace=True,
     )
     action_lazy = np.asarray(adata_backed.obsm["action_lazy"], dtype=float)
@@ -298,15 +296,14 @@ def test_reduce_kernel_from_svd_backed_lazy_logcounts_matches_eager(tmp_path):
         tmp_path / "lazy_reduce_from_svd",
         make_test_adata(n_cells=96, n_genes=72, sparse_fmt="csr", seed=999),
     )
+    lazy_transform = an.create_lazy_transform(adata_backed, target_sum=1e4, log_base=2.0)
     an.reduce_kernel_from_svd(
         adata_backed,
         svd_result=svd_ref,
         key_added="action_lazy",
         verbose=False,
         backed_chunk_size=24,
-        lazy_logcounts=True,
-        lazy_target_sum=1e4,
-        lazy_log_base=2.0,
+        lazy_transform=lazy_transform,
         inplace=True,
     )
     action_lazy = np.asarray(adata_backed.obsm["action_lazy"], dtype=float)
@@ -321,18 +318,29 @@ def test_reduce_kernel_from_svd_backed_lazy_logcounts_matches_eager(tmp_path):
     assert action_rel < 1e-3
 
 
-def test_lazy_logcounts_validation_errors():
+def test_lazy_logcounts_validation_errors(tmp_path):
     """Invalid lazy settings should raise informative errors."""
     adata = make_test_adata(n_cells=24, n_genes=20, sparse_fmt="csr", seed=7)
+    adata_backed = open_backed(tmp_path / "lazy_validation", adata.copy())
 
     with pytest.raises(ValueError, match="lazy_target_sum"):
-        an.run_svd(adata, n_components=5, lazy_logcounts=True, lazy_target_sum=0)
+        an.create_lazy_transform(adata_backed, target_sum=0)
 
     with pytest.raises(ValueError, match="lazy_log_base"):
-        an.run_svd(adata, n_components=5, lazy_logcounts=True, lazy_log_base=1.0)
+        an.create_lazy_transform(adata_backed, log_base=1.0)
 
     with pytest.raises(ValueError, match="lazy_pseudocount"):
-        an.run_svd(adata, n_components=5, lazy_logcounts=True, lazy_pseudocount=0.5)
+        an.create_lazy_transform(adata_backed, pseudocount=0.5)
+
+    lazy_transform = an.create_lazy_transform(adata_backed, target_sum=1e4, log_base=2.0)
 
     with pytest.raises(ValueError, match="supported only for backed"):
-        an.reduce_kernel(adata, n_components=5, lazy_logcounts=True, inplace=False)
+        an.reduce_kernel(
+            adata,
+            n_components=5,
+            lazy_transform=lazy_transform,
+            inplace=False,
+        )
+
+    if hasattr(adata_backed, "file") and adata_backed.file is not None:
+        adata_backed.file.close()

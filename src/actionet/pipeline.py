@@ -5,6 +5,7 @@ import numpy as np
 from anndata import AnnData
 
 from .core import (
+    LazyTransform,
     run_action,
     build_network,
     compute_network_diffusion,
@@ -44,6 +45,7 @@ def run_actionet(
     seed: int = 0,
     inplace: bool = True,
     backed_chunk_size: int = 4096,
+    lazy_transform: Optional[LazyTransform] = None,
 ) -> Optional[AnnData]:
     """
     Run the complete ACTIONet pipeline.
@@ -294,6 +296,7 @@ def run_actionet(
         key_added="archetype",
         n_threads=1 if not compute_specificity_parallel else n_threads,
         backed_chunk_size=backed_chunk_size,
+        lazy_transform=lazy_transform,
         inplace=True,
     )
 

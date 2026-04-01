@@ -7,7 +7,8 @@ from anndata import AnnData
 from scipy.stats import rankdata
 from scipy.sparse import issparse, csr_matrix
 
-from .core import compute_feature_specificity, _labels_to_membership, _run_specificity_backed_sparse, _run_specificity_backed_dense
+from .core import compute_feature_specificity, _labels_to_membership
+from .backed_io import _backed_group_path, _run_specificity_backed_dense, _run_specificity_backed_sparse
 from . import _core
 from ._matrix_source import MatrixSource
 
@@ -415,7 +416,6 @@ def annotate_cells(
     # Compute marker statistics using graph-based imputation
     if method == "vision":
         if source.is_backed:
-            from .core import _backed_group_path
             file_path = str(adata.filename)
             group_path = _backed_group_path(layer)
             op = _core.create_backed_operator(

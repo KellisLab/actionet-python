@@ -9,6 +9,8 @@ except PackageNotFoundError:
 
 # Import will happen after building the C++ extension
 from .core import (
+    LazyTransform,
+    create_lazy_transform,
     reduce_kernel,
     reduce_kernel_from_svd,
     run_action,
@@ -83,6 +85,8 @@ from .tools import (
 __all__ = [
     "__version__",
     # Core functions
+    "LazyTransform",
+    "create_lazy_transform",
     "reduce_kernel",
     "reduce_kernel_from_svd",
     "run_action",
