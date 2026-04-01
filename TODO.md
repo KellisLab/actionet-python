@@ -15,6 +15,7 @@
 * Normalize with C++ API (nah?)
 * `lazy_logcounts` in `_validate_lazy_logcounts_params()` does nothing?
 * compute_transparency() use scale()
+* Explore more accurate and faster log approximations for JSD and lazy transform
 
 ## Done
 * ARMA_DONT_USE_WRAPPER multiple redefinition

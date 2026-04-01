@@ -161,7 +161,9 @@ def correct_batch_effect(
         },
         uns={f"{corrected_key}_params": corrected_params},
     )
-    return adata
+    if not inplace:
+        return adata
+    return None
 
 
 def correct_basal_expression(
