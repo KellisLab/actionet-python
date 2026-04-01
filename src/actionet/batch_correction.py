@@ -51,7 +51,7 @@ def correct_batch_effect(
     inplace: bool = True,
     backed_chunk_size: int = 4096,
     lazy_transform: Optional[LazyTransform] = None,
-) -> AnnData:
+) -> Optional[AnnData]:
     """Correct batch effects using orthogonalization.
 
     Parameters
@@ -71,10 +71,19 @@ def correct_batch_effect(
     corrected_suffix : str
         Suffix appended to *reduction_key* for storing corrected results.
     inplace : bool
-        Modify *adata* in place or return a copy.
+        If True, modifies *adata* in place and returns None.
+        If False, returns a modified copy.
     backed_chunk_size : int
         Number of rows per chunk when streaming backed AnnData.
         Ignored for in-memory objects.
+    lazy_transform : LazyTransform or None
+        Pre-computed lazy logcount transform for backed inputs.
+
+    Returns
+    -------
+    None or AnnData
+        If ``inplace=True``, returns ``None`` and modifies *adata* in place.
+        If ``inplace=False``, returns a new AnnData with corrected results.
     """
     corrected_key = f"{reduction_key}_{corrected_suffix}"
 
@@ -174,7 +183,8 @@ def correct_basal_expression(
     corrected_key: str = "action_basal_corrected",
     inplace: bool = True,
     backed_chunk_size: int = 4096,
-) -> AnnData:
+    lazy_transform: Optional[LazyTransform] = None,
+) -> Optional[AnnData]:
     """Correct for basal expression levels by orthogonalizing their effects.
 
     Parameters
@@ -190,10 +200,19 @@ def correct_basal_expression(
     corrected_key : str
         Key for storing corrected results.
     inplace : bool
-        Modify *adata* in place or return a copy.
+        If True, modifies *adata* in place and returns None.
+        If False, returns a modified copy.
     backed_chunk_size : int
         Number of rows per chunk when streaming backed AnnData.
         Ignored for in-memory objects.
+    lazy_transform : LazyTransform or None
+        Pre-computed lazy logcount transform for backed inputs.
+
+    Returns
+    -------
+    None or AnnData
+        If ``inplace=True``, returns ``None`` and modifies *adata* in place.
+        If ``inplace=False``, returns a new AnnData with corrected results.
     """
     if not inplace:
         adata = adata.copy()
@@ -210,13 +229,28 @@ def correct_basal_expression(
     basal = np.ascontiguousarray(basal)
 
     source = MatrixSource(adata, layer=layer)
+    row_scale_factors: Optional[np.ndarray] = None
+    apply_log1p = False
+    log_scale = 1.0
+
+    if lazy_transform is not None and not source.is_backed:
+        raise ValueError("Lazy logcount transform is supported only for backed AnnData inputs.")
+
     if source.is_backed:
+        row_scale_factors, apply_log1p, log_scale = _resolve_lazy_backed_transform(
+            source,
+            lazy_transform=lazy_transform,
+            backed_chunk_size=backed_chunk_size,
+        )
         file_path = str(adata.filename)
         group_path = _backed_group_path(layer)
         op = _core.create_backed_operator(
             file_path=file_path,
             group_path=group_path,
             chunk_size=backed_chunk_size,
+            row_scale_factors=row_scale_factors,
+            apply_log1p=apply_log1p,
+            log_scale=log_scale,
         )
         result = _core.orthogonalize_basal_operator(
             op, old_S_r, old_U, old_A, old_B, old_sigma, basal,
@@ -233,6 +267,13 @@ def correct_basal_expression(
                 S, old_S_r, old_U, old_A, old_B, old_sigma, basal
             )
 
+    corrected_params = {
+        "sigma": result["sigma"],
+        "basal_genes": basal_genes[np.isin(basal_genes, adata.var_names)].tolist(),
+        "original_reduction": reduction_key,
+    }
+    corrected_params.update(_lazy_params_for_metadata(lazy_transform if apply_log1p else None))
+
     persist_updates(
         adata,
         obsm={
@@ -243,13 +284,9 @@ def correct_basal_expression(
             f"{corrected_key}_U": result["U"],
             f"{corrected_key}_A": result["A"],
         },
-        uns={
-            f"{corrected_key}_params": {
-                "sigma": result["sigma"],
-                "basal_genes": basal_genes[np.isin(basal_genes, adata.var_names)].tolist(),
-                "original_reduction": reduction_key,
-            }
-        },
+        uns={f"{corrected_key}_params": corrected_params},
     )
 
-    return adata
+    if not inplace:
+        return adata
+    return None

@@ -77,7 +77,11 @@ py::dict run_svd_backed_operator(std::shared_ptr<actionet::MatrixOperator> op,
     if (!op) {
         throw std::runtime_error("run_svd_backed_operator: operator is null");
     }
-    actionet::SVDResult res = actionet::runSVD_Operator(*op, k, max_it, seed, algorithm, verbose);
+    actionet::SVDResult res;
+    {
+        py::gil_scoped_release release;
+        res = actionet::runSVD_Operator(*op, k, max_it, seed, algorithm, verbose);
+    }
     return svd_to_dict(res);
 }
 
@@ -87,8 +91,11 @@ py::dict reduce_kernel_backed_operator(std::shared_ptr<actionet::MatrixOperator>
     if (!op) {
         throw std::runtime_error("reduce_kernel_backed_operator: operator is null");
     }
-    actionet::KernelReductionResult res =
-        actionet::reduceKernel_Operator(*op, k, svd_alg, max_it, seed, verbose);
+    actionet::KernelReductionResult res;
+    {
+        py::gil_scoped_release release;
+        res = actionet::reduceKernel_Operator(*op, k, svd_alg, max_it, seed, verbose);
+    }
     return kernel_to_dict(res);
 }
 
@@ -103,7 +110,11 @@ py::dict reduce_kernel_from_svd_backed_operator(std::shared_ptr<actionet::Matrix
     svd.U = numpy_to_arma_mat(u);
     svd.sigma = parse_sigma(d);
     svd.V = numpy_to_arma_mat(v);
-    actionet::KernelReductionResult res = actionet::reduceKernelFromSVD_Operator(*op, svd, verbose);
+    actionet::KernelReductionResult res;
+    {
+        py::gil_scoped_release release;
+        res = actionet::reduceKernelFromSVD_Operator(*op, svd, verbose);
+    }
     return kernel_to_dict(res);
 }
 
