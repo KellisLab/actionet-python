@@ -72,6 +72,8 @@ class LazyTransform:
         self.validation_row_indices = np.ascontiguousarray(sample_indices, dtype=np.int64)
         self.validation_row_sums = np.ascontiguousarray(sample_row_sums, dtype=np.float64)
 
+        self._validated = False
+
     @property
     def is_initialized(self) -> bool:
         return (
@@ -299,20 +301,22 @@ def _resolve_lazy_backed_transform(
             "Recreate the lazy transform."
         )
 
-    indices = np.asarray(lazy_transform.validation_row_indices, dtype=np.int64)
-    expected = np.asarray(lazy_transform.validation_row_sums, dtype=np.float64)
-    if indices.size != expected.size:
-        raise ValueError(
-            "Lazy transform validation state is corrupt (sample index/row-sum size mismatch). "
-            "Recreate the lazy transform."
-        )
-    if indices.size > 0:
-        observed = _row_sums_for_rows(source, indices)
-        if not np.allclose(observed, expected, rtol=1e-8, atol=1e-8):
+    if not lazy_transform._validated:
+        indices = np.asarray(lazy_transform.validation_row_indices, dtype=np.int64)
+        expected = np.asarray(lazy_transform.validation_row_sums, dtype=np.float64)
+        if indices.size != expected.size:
             raise ValueError(
-                "Lazy transform validation failed: sampled source rows changed since "
-                "transform initialization. Recreate the lazy transform."
+                "Lazy transform validation state is corrupt (sample index/row-sum size mismatch). "
+                "Recreate the lazy transform."
             )
+        if indices.size > 0:
+            observed = _row_sums_for_rows(source, indices)
+            if not np.allclose(observed, expected, rtol=1e-8, atol=1e-8):
+                raise ValueError(
+                    "Lazy transform validation failed: sampled source rows changed since "
+                    "transform initialization. Recreate the lazy transform."
+                )
+        lazy_transform._validated = True
 
     return (
         np.ascontiguousarray(row_scale_factors, dtype=np.float64),

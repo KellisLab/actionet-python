@@ -257,6 +257,8 @@ def reduce_kernel_from_svd(
     backed_chunk_size: int = 4096,
     inplace: bool = True,
     lazy_transform: Optional[LazyTransform] = None,
+    backed_target_chunk_mb: Optional[float] = None,
+    backed_n_threads: int = 0,
 ) -> Optional[AnnData]:
     """Compute reduced kernel using a precomputed SVD result.
 
@@ -280,6 +282,12 @@ def reduce_kernel_from_svd(
         Chunk size for backed sparse streaming.
     inplace : bool
         Modify adata in place or return a copy.
+    lazy_transform : LazyTransform or None
+        Pre-computed lazy logcount transform for backed inputs.
+    backed_target_chunk_mb : float or None
+        Target chunk size in MiB for backed I/O (None = auto).
+    backed_n_threads : int
+        Thread count for backed operator compute loops (0 = auto).
     """
     return reduce_kernel(
         adata=adata,
@@ -293,6 +301,8 @@ def reduce_kernel_from_svd(
         precomputed_svd=svd_result,
         backed_chunk_size=backed_chunk_size,
         inplace=inplace,
+        backed_target_chunk_mb=backed_target_chunk_mb,
+        backed_n_threads=backed_n_threads,
         lazy_transform=lazy_transform,
     )
 

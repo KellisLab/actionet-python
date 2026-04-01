@@ -95,8 +95,16 @@ def _flush_backed_handle(adata: AnnData, *, context: str) -> None:
     if not bool(getattr(adata, "isbacked", False)):
         return
 
-    file_obj = getattr(getattr(adata, "file", None), "_file", None)
+    file_attr = getattr(adata, "file", None)
+    file_obj = getattr(file_attr, "_file", None)
     if file_obj is None:
+        if file_attr is not None:
+            warnings.warn(
+                f"{context}: backed AnnData file handle appears closed; "
+                "operator may read stale data",
+                UserWarning,
+                stacklevel=3,
+            )
         return
 
     try:
