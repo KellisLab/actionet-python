@@ -129,8 +129,6 @@ void init_io(py::module_ &m) {
              py::arg("group_path") = "/X",
              py::arg("chunk_size") = 4096,
              py::arg("row_scale_factors") = std::vector<double>{},
-             py::arg("apply_log1p") = false,
-             py::arg("log_scale") = 1.0,
              py::arg("io_target_chunk_bytes") = 0,
              py::arg("io_target_chunk_fraction_of_cap") = 0.5,
              py::arg("n_threads") = 0)
@@ -149,8 +147,6 @@ void init_io(py::module_ &m) {
              py::arg("group_path") = "/X",
              py::arg("chunk_size") = 4096,
              py::arg("row_scale_factors") = std::vector<double>{},
-             py::arg("apply_log1p") = false,
-             py::arg("log_scale") = 1.0,
              py::arg("slab_byte_budget") = 256ULL * 1024 * 1024,
              py::arg("n_threads") = 0)
         .def_property_readonly("shape", [](const actionet::BackedDenseMatrixOperator& op) {
@@ -166,8 +162,6 @@ void init_io(py::module_ &m) {
           py::arg("group_path") = "/X",
           py::arg("chunk_size") = 4096,
           py::arg("row_scale_factors") = py::none(),
-          py::arg("apply_log1p") = false,
-          py::arg("log_scale") = 1.0,
           py::arg("io_target_chunk_bytes") = 0,
           py::arg("io_target_chunk_fraction_of_cap") = 0.5,
           py::arg("n_threads") = 0);

@@ -183,8 +183,8 @@ def _run_specificity_backed_sparse(
     labels_int: Optional[np.ndarray] = None,
     n_threads: int = 0,
     row_scale_factors: Optional[np.ndarray] = None,
-    apply_log1p: bool = False,
-    log_scale: float = 1.0,
+    apply_log1p: bool,
+    log_scale: float,
 ) -> dict:
     """Dispatch backed sparse specificity through the C++ ABI."""
     file_path = str(adata.filename)
@@ -215,8 +215,8 @@ def _run_specificity_backed_dense(
     labels_int: Optional[np.ndarray] = None,
     n_threads: int = 0,
     row_scale_factors: Optional[np.ndarray] = None,
-    apply_log1p: bool = False,
-    log_scale: float = 1.0,
+    apply_log1p: bool,
+    log_scale: float,
 ) -> dict:
     """Dispatch backed dense specificity through the C++ ABI."""
     file_path = str(adata.filename)
