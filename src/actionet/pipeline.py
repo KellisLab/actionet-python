@@ -4,14 +4,15 @@ from typing import Optional, Literal
 import numpy as np
 from anndata import AnnData
 
+from ._matrix_source import MatrixSource
 from .core import (
-    LazyTransform,
     run_action,
     build_network,
     compute_network_diffusion,
     compute_archetype_feature_specificity,
     layout_network,
 )
+from .lazy_transform import LazyTransform, _validate_lazy_transform
 from .tools import scale
 from .visualization import compute_node_colors
 
@@ -130,6 +131,9 @@ def run_actionet(
         Number of rows per chunk when streaming backed AnnData.
         Forwarded to feature specificity and any other backed-aware stage.
         Ignored for in-memory objects.
+    lazy_transform : LazyTransform or None, optional (default: None)
+        Pre-computed lazy logcount transform for backed inputs on ``.X`` only.
+        ``None`` means no transformation is applied.
 
     Returns
     -------
@@ -182,6 +186,11 @@ def run_actionet(
     """
     if not inplace:
         adata = adata.copy()
+
+    # Validate lazy-transform compatibility up front so failures happen
+    # before running expensive decomposition/network/layout stages.
+    source = MatrixSource(adata, layer=layer)
+    _validate_lazy_transform(lazy_transform, layer=layer, source=source)
 
     # Step 1: ACTION archetypal analysis
     print("Running ACTION decomposition...")

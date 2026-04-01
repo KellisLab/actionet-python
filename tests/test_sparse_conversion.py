@@ -194,6 +194,7 @@ def test_run_actionet_forwards_knn_network_params(monkeypatch):
 def test_run_actionet_forwards_lazy_specificity_params(monkeypatch):
     adata = ad.AnnData(np.zeros((4, 1), dtype=np.float64))
     specificity_kwargs = {}
+    validate_kwargs = {}
 
     def fake_run_action(adata, **kwargs):
         H = np.array(
@@ -238,8 +239,18 @@ def test_run_actionet_forwards_lazy_specificity_params(monkeypatch):
         "compute_archetype_feature_specificity",
         fake_compute_archetype_feature_specificity,
     )
+    monkeypatch.setattr(
+        pipeline,
+        "_validate_lazy_transform",
+        lambda lazy_transform, *, layer, source: validate_kwargs.update(
+            {"lazy_transform": lazy_transform, "layer": layer}
+        ),
+    )
 
-    lazy_transform = object()
+    from actionet.lazy_transform import LazyTransform
+    import unittest.mock as mock
+
+    lazy_transform = mock.MagicMock(spec=LazyTransform)
     pipeline.run_actionet(
         adata,
         reduction_key="action_corrected",
@@ -250,3 +261,22 @@ def test_run_actionet_forwards_lazy_specificity_params(monkeypatch):
     )
 
     assert specificity_kwargs["lazy_transform"] is lazy_transform
+    assert validate_kwargs["lazy_transform"] is lazy_transform
+
+
+def test_run_actionet_lazy_transform_fails_fast_before_pipeline_work(monkeypatch):
+    adata = ad.AnnData(np.zeros((4, 1), dtype=np.float64))
+
+    def _should_not_run(*args, **kwargs):
+        raise AssertionError("run_action should not be called when lazy_transform is invalid")
+
+    monkeypatch.setattr(pipeline, "run_action", _should_not_run)
+
+    with np.testing.assert_raises_regex(TypeError, "LazyTransform instance"):
+        pipeline.run_actionet(
+            adata,
+            layout_3d=False,
+            n_threads=1,
+            lazy_transform=object(),
+            inplace=True,
+        )

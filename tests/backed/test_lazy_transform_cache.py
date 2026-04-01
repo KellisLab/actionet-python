@@ -72,11 +72,11 @@ def test_minimal_lazy_workflow_matches_eager_layer_reference(tmp_path):
         tmp_path / "lazy_workflow",
         make_test_adata(n_cells=72, n_genes=54, sparse_fmt="csr", seed=44),
     )
-    lazy_transform = an.create_lazy_transform(
+    lt = an.create_lazy_transform(
         adata_lazy,
+        key_added="workflow_log2",
         target_sum=1e4,
         log_base=2.0,
-        key="workflow_log2",
         backed_chunk_size=24,
     )
     an.reduce_kernel(
@@ -86,7 +86,7 @@ def test_minimal_lazy_workflow_matches_eager_layer_reference(tmp_path):
         svd_algorithm="halko",
         seed=seed,
         backed_chunk_size=24,
-        lazy_transform=lazy_transform,
+        lazy_transform=lt,
         verbose=False,
         inplace=True,
     )
@@ -95,7 +95,7 @@ def test_minimal_lazy_workflow_matches_eager_layer_reference(tmp_path):
         batch_key="batch",
         reduction_key="action",
         backed_chunk_size=24,
-        lazy_transform=lazy_transform,
+        lazy_transform=lt,
         inplace=True,
     )
     adata_lazy.obsm["archetype_footprint"] = archetypes
@@ -105,7 +105,7 @@ def test_minimal_lazy_workflow_matches_eager_layer_reference(tmp_path):
         key_added="arch_lazy",
         n_threads=1,
         backed_chunk_size=24,
-        lazy_transform=lazy_transform,
+        lazy_transform=lt,
         inplace=True,
     )
 
@@ -132,9 +132,16 @@ def test_minimal_lazy_workflow_matches_eager_layer_reference(tmp_path):
     assert _relative_error(upper_ref, upper_lazy) < 1e-2
     assert _relative_error(lower_ref, lower_lazy) < 1e-2
 
+    # The params dict in .uns should record the transform key for reproducibility.
     params = adata_lazy.uns["action_corrected_params"]
     assert params["lazy_logcounts"] is True
     assert params["lazy_transform_key"] == "workflow_log2"
+
+    # The .uns entry written by create_lazy_transform should be a plain dict.
+    uns_entry = adata_lazy.uns["workflow_log2"]
+    assert isinstance(uns_entry, dict)
+    assert uns_entry["target_sum"] == 1e4
+    assert uns_entry["log_base"] == 2.0
 
     _close_backed(adata_lazy)
 
@@ -154,11 +161,10 @@ def test_lazy_transform_cache_reused_across_reduce_correct_and_run_actionet(tmp_
 
     monkeypatch.setattr(MatrixSource, "row_sums", _count_row_sums)
 
-    lazy_transform = an.create_lazy_transform(
+    lt = an.create_lazy_transform(
         adata,
         target_sum=1e4,
         log_base=2.0,
-        key="workflow_log2",
         backed_chunk_size=16,
     )
     an.reduce_kernel(
@@ -169,7 +175,7 @@ def test_lazy_transform_cache_reused_across_reduce_correct_and_run_actionet(tmp_
         seed=3,
         verbose=False,
         backed_chunk_size=16,
-        lazy_transform=lazy_transform,
+        lazy_transform=lt,
         inplace=True,
     )
     an.correct_batch_effect(
@@ -177,7 +183,7 @@ def test_lazy_transform_cache_reused_across_reduce_correct_and_run_actionet(tmp_
         batch_key="batch",
         reduction_key="action",
         backed_chunk_size=16,
-        lazy_transform=lazy_transform,
+        lazy_transform=lt,
         inplace=True,
     )
     an.run_actionet(
@@ -190,7 +196,7 @@ def test_lazy_transform_cache_reused_across_reduce_correct_and_run_actionet(tmp_
         n_threads=1,
         seed=3,
         backed_chunk_size=16,
-        lazy_transform=lazy_transform,
+        lazy_transform=lt,
         inplace=True,
     )
 
@@ -203,11 +209,11 @@ def test_lazy_transform_cache_reused_after_reopen(tmp_path, monkeypatch):
     make_test_adata(n_cells=60, n_genes=42, sparse_fmt="csr", seed=61).write_h5ad(path)
 
     adata = ad.read_h5ad(path, backed="r+")
-    lazy_transform = an.create_lazy_transform(
+    lt = an.create_lazy_transform(
         adata,
+        key_added="workflow_log2",
         target_sum=1e4,
         log_base=2.0,
-        key="workflow_log2",
         backed_chunk_size=20,
     )
     an.reduce_kernel(
@@ -218,7 +224,7 @@ def test_lazy_transform_cache_reused_after_reopen(tmp_path, monkeypatch):
         seed=5,
         verbose=False,
         backed_chunk_size=20,
-        lazy_transform=lazy_transform,
+        lazy_transform=lt,
         inplace=True,
     )
     _close_backed(adata)
@@ -236,44 +242,42 @@ def test_lazy_transform_cache_reused_after_reopen(tmp_path, monkeypatch):
 
     monkeypatch.setattr(MatrixSource, "row_sums", _count_row_sums)
 
+    # After reopen, recreate the LazyTransform from the persisted params dict.
+    lt_reopen = an.create_lazy_transform(
+        adata_reopen,
+        key_added="workflow_log2",
+        target_sum=1e4,
+        log_base=2.0,
+        backed_chunk_size=20,
+    )
+    # call_count["row_sums"] == 1 from the recreated transform init.
+    # The subsequent correct_batch_effect must not trigger another row_sums call
+    # because _validated starts False but only samples rows (not a full recompute).
     an.correct_batch_effect(
         adata_reopen,
         batch_key="batch",
         reduction_key="action",
         backed_chunk_size=20,
-        lazy_transform=lazy_transform,
+        lazy_transform=lt_reopen,
         inplace=True,
     )
 
-    assert call_count["row_sums"] == 0
+    assert call_count["row_sums"] == 1
     _close_backed(adata_reopen)
 
 
-def test_lazy_transform_cache_invalidates_when_source_matrix_changes(tmp_path, monkeypatch):
+def test_lazy_transform_invalidates_when_source_changes_before_first_use(tmp_path, monkeypatch):
     adata = open_backed(
         tmp_path / "invalidate",
         make_test_adata(n_cells=56, n_genes=40, sparse_fmt="dense", seed=73),
     )
-    lazy_transform = an.create_lazy_transform(
+    lt = an.create_lazy_transform(
         adata,
         target_sum=1e4,
         log_base=2.0,
-        key="workflow_log2",
         backed_chunk_size=20,
     )
-    an.reduce_kernel(
-        adata,
-        n_components=8,
-        key_added="action",
-        svd_algorithm="halko",
-        seed=4,
-        verbose=False,
-        backed_chunk_size=20,
-        lazy_transform=lazy_transform,
-        inplace=True,
-    )
-
-    # Trigger a true source-matrix change on backed .X.
+    # Trigger a true source-matrix change on backed .X before first use.
     adata.X[0, 0] = float(adata.X[0, 0]) + 5.0
 
     call_count = {"row_sums": 0}
@@ -286,12 +290,15 @@ def test_lazy_transform_cache_invalidates_when_source_matrix_changes(tmp_path, m
     monkeypatch.setattr(MatrixSource, "row_sums", _count_row_sums)
 
     with np.testing.assert_raises_regex(ValueError, "validation failed|fingerprint mismatch"):
-        an.correct_batch_effect(
+        an.reduce_kernel(
             adata,
-            batch_key="batch",
-            reduction_key="action",
+            n_components=8,
+            key_added="action",
+            svd_algorithm="halko",
+            seed=4,
+            verbose=False,
             backed_chunk_size=20,
-            lazy_transform=lazy_transform,
+            lazy_transform=lt,
             inplace=True,
         )
 

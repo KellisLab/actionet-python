@@ -1,4 +1,5 @@
 ## Primary
+* recreate LazyTransform from uns
 * Numerical percision inconsistency
   * Mix of float64 and float64 (mainly in operator, sometimes in-mem) causes drift within and across modes
   * C++ uses 64-bit, R/Rcpp does also - always consistent
@@ -12,6 +13,10 @@
 * Reorganize and consolidate code
 
 ## Secondary
+* Lazy transform in-memory?
+* Allow changes to lazy transform params
+  * Force recompute of attributes
+* MatrixSource supports layers, but layers can't be backed. 
 * Normalize with C++ API (nah?)
 * `lazy_logcounts` in `_validate_lazy_logcounts_params()` does nothing?
 * compute_transparency() use scale()

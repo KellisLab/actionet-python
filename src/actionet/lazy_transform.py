@@ -16,13 +16,25 @@ from .backed_io import _backed_group_path
 
 
 class LazyTransform:
-    """Reusable lazy logcount transform state for backed matrix operators."""
+    """Reusable lazy logcount transform state for backed matrix operators.
+
+    Notes
+    -----
+    ``LazyTransform`` operates exclusively on ``.X``.  AnnData does not
+    currently support backed streaming over layers; only ``.X`` is
+    accessible in backed (HDF5-streamed) mode.  A ``layer`` parameter may
+    be introduced in a future release once this AnnData limitation is
+    lifted.
+
+    Create instances with :func:`create_lazy_transform`, which optionally
+    writes reconstruction parameters to ``adata.uns[key_added]`` so the
+    transform can be recreated identically after reopening the file.
+    """
 
     def __init__(
         self,
         adata: AnnData,
         *,
-        layer: Optional[str] = None,
         target_sum: float = 1e4,
         log_base: Optional[float] = None,
         pseudocount: float = 1.0,
@@ -30,6 +42,11 @@ class LazyTransform:
         backed_chunk_size: int = 4096,
         validation_samples: int = 16,
     ) -> None:
+        if int(backed_chunk_size) <= 0:
+            raise ValueError("`backed_chunk_size` must be > 0.")
+        if int(validation_samples) <= 0:
+            raise ValueError("`validation_samples` must be > 0.")
+
         _validate_lazy_logcounts_params(
             lazy_logcounts=True,
             lazy_target_sum=target_sum,
@@ -37,7 +54,7 @@ class LazyTransform:
             lazy_pseudocount=pseudocount,
         )
 
-        source = MatrixSource(adata, layer=layer)
+        source = MatrixSource(adata, layer=None)
         if not source.is_backed:
             raise ValueError(
                 "Lazy logcount transform is supported only for backed AnnData inputs."
@@ -62,11 +79,12 @@ class LazyTransform:
 
         # Operator parameters are materialized once during initialization.
         self.row_scale_factors = np.ascontiguousarray(row_scale_factors, dtype=np.float64)
-        self.apply_log1p = True
-        self.log_scale = 1.0 if self.log_base is None else float(1.0 / np.log(self.log_base))
+        self._apply_log1p = True
+        self._log_scale = 1.0 if self.log_base is None else float(1.0 / np.log(self.log_base))
 
         # Validation state used by downstream operators.
-        self.source_group_path = _backed_group_path(layer)
+        # Always "/X": LazyTransform is restricted to .X (AnnData backed limitation).
+        self.source_group_path = _backed_group_path(None)
         self.source_shape = (int(source.n_obs), int(source.n_vars))
         self.matrix_fingerprint = _matrix_fingerprint(source)
         self.validation_row_indices = np.ascontiguousarray(sample_indices, dtype=np.int64)
@@ -93,25 +111,123 @@ class LazyTransform:
 def create_lazy_transform(
     adata: AnnData,
     *,
-    layer: Optional[str] = None,
     target_sum: float = 1e4,
     log_base: Optional[float] = None,
     pseudocount: float = 1.0,
-    key: Optional[str] = None,
+    key_added: Optional[str] = None,
     backed_chunk_size: int = 4096,
     validation_samples: int = 16,
-) -> LazyTransform:
-    """Create and initialize a reusable lazy transform for a backed matrix source."""
-    return LazyTransform(
+) -> "LazyTransform":
+    """Create and initialize a reusable lazy transform for a backed matrix source.
+
+    Parameters
+    ----------
+    adata : AnnData
+        Backed AnnData object whose ``.X`` will be transformed on-the-fly.
+        Must be in backed (HDF5-streamed) mode.
+    target_sum : float
+        Per-cell normalization target (library-size scaling denominator).
+    log_base : float or None
+        Logarithm base for the log1p step.  ``None`` uses natural log.
+    pseudocount : float
+        Pseudocount added before taking the log (currently only 1.0 is supported).
+    key_added : str or None
+        If provided, writes a plain dict of reconstruction parameters to
+        ``adata.uns[key_added]``.  This dict contains everything needed to
+        recreate an identical :class:`LazyTransform` after reopening the file:
+        ``target_sum``, ``log_base``, ``pseudocount``, ``backed_chunk_size``,
+        ``validation_samples``, and ``source_fingerprint`` (for verification).
+        The :class:`LazyTransform` object itself is **not** stored in ``.uns``
+        because it is not HDF5-serializable.
+    backed_chunk_size : int
+        Row chunk size used when computing per-cell row sums during init.
+        Must be > 0.
+    validation_samples : int
+        Number of rows sampled for fingerprint validation at operator time.
+        Must be > 0.
+
+    Returns
+    -------
+    LazyTransform
+        Initialized transform object.  Hold this in a variable and pass it
+        as ``lazy_transform=`` to downstream functions
+        (:func:`~actionet.reduce_kernel`, :func:`~actionet.run_svd`, etc.).
+
+    Notes
+    -----
+    Operates exclusively on ``.X``.  AnnData does not support backed streaming
+    over layers; a ``layer`` parameter may be added in future once AnnData
+    lifts this restriction.
+
+    The transform is linked to the AnnData object's current state via a
+    fingerprint.  If the underlying matrix changes after initialization,
+    downstream operators will raise a ``ValueError`` at validation time.
+
+    To recreate the transform after reopening a file, read back the params dict
+    from ``adata.uns[key_added]`` and call this function again with the same
+    arguments.
+    """
+    transform = LazyTransform(
         adata,
-        layer=layer,
         target_sum=target_sum,
         log_base=log_base,
         pseudocount=pseudocount,
-        key=key,
+        key=key_added,
         backed_chunk_size=backed_chunk_size,
         validation_samples=validation_samples,
     )
+    if key_added is not None:
+        adata.uns[key_added] = {
+            "target_sum": float(target_sum),
+            "log_base": None if log_base is None else float(log_base),
+            "pseudocount": float(pseudocount),
+            "backed_chunk_size": int(backed_chunk_size),
+            "validation_samples": int(validation_samples),
+            "source_fingerprint": dict(transform.matrix_fingerprint),
+        }
+    return transform
+
+
+def _validate_lazy_transform(
+    lazy_transform: Optional["LazyTransform"],
+    *,
+    layer: Optional[str],
+    source: "MatrixSource",
+) -> None:
+    """Consolidated pre-flight validation for a :class:`LazyTransform` argument.
+
+    This is the single validation point for the ``lazy_transform`` parameter
+    across all downstream functions.  Call it **before** any expensive
+    operation (operator construction, I/O, etc.).
+
+    Does nothing when ``lazy_transform`` is ``None``.
+
+    Raises
+    ------
+    ValueError
+        If ``layer`` is not ``None`` (LazyTransform only supports ``.X``).
+    ValueError
+        If the AnnData source is not in backed mode.
+    """
+    if lazy_transform is None:
+        return
+
+    if not isinstance(lazy_transform, LazyTransform):
+        raise TypeError(
+            "`lazy_transform` must be a LazyTransform instance or None."
+        )
+
+    if layer is not None:
+        raise ValueError(
+            "`lazy_transform` is restricted to .X: AnnData does not support backed streaming "
+            "over layers. Pass `layer=None` (or omit `layer`) when using `lazy_transform`. "
+            "Layer support may be added in a future release once AnnData lifts this limitation."
+        )
+
+    if not source.is_backed:
+        raise ValueError(
+            "Lazy logcount transform is supported only for backed AnnData inputs."
+        )
 
 
 def _validate_lazy_logcounts_params(
@@ -230,8 +346,8 @@ def _lazy_params_for_metadata(
         "lazy_target_sum": float(lazy_transform.target_sum),
         "lazy_pseudocount": float(lazy_transform.pseudocount),
         "lazy_log_base_mode": _lazy_log_base_mode(lazy_transform.log_base),
-        "lazy_apply_log1p": bool(lazy_transform.apply_log1p),
-        "lazy_log_scale": float(lazy_transform.log_scale),
+        "lazy_apply_log1p": bool(lazy_transform._apply_log1p),
+        "lazy_log_scale": float(lazy_transform._log_scale),
     }
     if lazy_transform.log_base is not None:
         payload["lazy_log_base"] = float(lazy_transform.log_base)
@@ -249,13 +365,16 @@ def _resolve_lazy_backed_transform(
     lazy_transform: Optional[LazyTransform],
     backed_chunk_size: int,
 ) -> tuple[Optional[np.ndarray], bool, float]:
+    """Validate a pre-resolved :class:`LazyTransform` against the current source.
+
+    Callers must already have called :func:`_validate_lazy_transform`
+    (which enforces the ``layer=None`` and ``is_backed`` preconditions)
+    before reaching this function.
+    """
     del backed_chunk_size  # The transform must already be fully initialized.
 
     if lazy_transform is None:
         return None, False, 1.0
-
-    if not source.is_backed:
-        raise ValueError("Lazy logcount transform is supported only for backed AnnData inputs.")
 
     _validate_lazy_logcounts_params(
         lazy_logcounts=True,
@@ -320,6 +439,6 @@ def _resolve_lazy_backed_transform(
 
     return (
         np.ascontiguousarray(row_scale_factors, dtype=np.float64),
-        bool(lazy_transform.apply_log1p),
-        float(lazy_transform.log_scale),
+        bool(lazy_transform._apply_log1p),
+        float(lazy_transform._log_scale),
     )

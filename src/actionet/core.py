@@ -26,6 +26,7 @@ from .lazy_transform import (
     create_lazy_transform,
     _lazy_params_for_metadata,
     _resolve_lazy_backed_transform,
+    _validate_lazy_transform,
 )
 from . import tools
 
@@ -137,11 +138,11 @@ def reduce_kernel(
         adata = adata.copy()
 
     source = MatrixSource(adata, layer=layer)
+
+    # Validate the lazy transform before any expensive operation.
+    _validate_lazy_transform(lazy_transform, layer=layer, source=source)
+
     use_operator = source.is_backed
-    if lazy_transform is not None and not use_operator:
-        raise ValueError(
-            "Lazy logcount transform is supported only for backed AnnData inputs."
-        )
     algorithm_name = _normalize_algorithm(svd_algorithm, context="svd_algorithm")
     row_scale_factors: Optional[np.ndarray] = None
     apply_log1p = False
@@ -283,7 +284,8 @@ def reduce_kernel_from_svd(
     inplace : bool
         Modify adata in place or return a copy.
     lazy_transform : LazyTransform or None
-        Pre-computed lazy logcount transform for backed inputs.
+        Pre-computed lazy transform for backed inputs on ``.X`` only.
+        ``None`` means no transformation is applied.
     backed_target_chunk_mb : float or None
         Target chunk size in MiB for backed I/O (None = auto).
     backed_n_threads : int
@@ -884,6 +886,9 @@ def compute_archetype_feature_specificity(
     backed_chunk_size : int, optional (default: 4096)
         Number of rows per chunk for streamed specificity computation on
         backed AnnData.  Ignored for in-memory objects.
+    lazy_transform : LazyTransform or None
+        Pre-computed lazy transform for backed inputs on ``.X`` only.
+        ``None`` means no transformation is applied.
 
     Returns
     -------
@@ -913,8 +918,9 @@ def compute_archetype_feature_specificity(
         adata = adata.copy()
 
     source = MatrixSource(adata, layer=layer)
-    if lazy_transform is not None and not source.is_backed:
-        raise ValueError("Lazy logcount transform is supported only for backed AnnData inputs.")
+
+    # Validate the lazy transform before any expensive operation.
+    _validate_lazy_transform(lazy_transform, layer=layer, source=source)
 
     if isinstance(archetype_key, str):
         if archetype_key not in adata.obsm:
@@ -925,17 +931,12 @@ def compute_archetype_feature_specificity(
 
     H = np.ascontiguousarray(H, dtype=np.float64)
 
-    row_scale_factors: Optional[np.ndarray] = None
-    apply_log1p = False
-    log_scale = 1.0
     if source.is_backed:
         row_scale_factors, apply_log1p, log_scale = _resolve_lazy_backed_transform(
             source,
             lazy_transform=lazy_transform,
             backed_chunk_size=backed_chunk_size,
         )
-
-    if source.is_backed:
         if source.is_sparse:
             # Sparse-backed: H is (n_obs, k); pass directly (C++ now accepts cells × k).
             result = _run_specificity_backed_sparse(
@@ -1147,21 +1148,21 @@ def run_svd(
     adata_ctx: Optional[AnnData] = X if isinstance(X, AnnData) else None
     matrix = source_ctx.matrix if source_ctx is not None else X
 
-    if _is_backed_matrix(matrix):
-        if lazy_transform is not None and source_ctx is None:
+    # Validate the lazy transform before any expensive operation.
+    if lazy_transform is not None:
+        if adata_ctx is None:
             raise ValueError(
                 "`lazy_transform` in `run_svd` requires a backed AnnData input "
                 "so row-sum scaling factors can be streamed from the source matrix."
             )
-        row_scale_factors, apply_log1p, log_scale = (
-            _resolve_lazy_backed_transform(
-                source_ctx,
-                lazy_transform=lazy_transform,
-                backed_chunk_size=backed_chunk_size,
-            )
-            if source_ctx is not None
-            else (None, False, 1.0)
-        )
+        _validate_lazy_transform(lazy_transform, layer=layer, source=source_ctx)
+
+    if _is_backed_matrix(matrix):
+        row_scale_factors, apply_log1p, log_scale = _resolve_lazy_backed_transform(
+            source_ctx,
+            lazy_transform=lazy_transform,
+            backed_chunk_size=backed_chunk_size,
+        ) if source_ctx is not None else (None, False, 1.0)
         if adata_ctx is not None:
             _flush_backed_handle(adata_ctx, context="run_svd")
         selected_algorithm = _select_svd_algorithm_backed(algorithm_name, verbose)

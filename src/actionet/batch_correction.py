@@ -15,6 +15,7 @@ from .lazy_transform import (
     LazyTransform,
     _lazy_params_for_metadata,
     _resolve_lazy_backed_transform,
+    _validate_lazy_transform,
 )
 
 
@@ -77,7 +78,8 @@ def correct_batch_effect(
         Number of rows per chunk when streaming backed AnnData.
         Ignored for in-memory objects.
     lazy_transform : LazyTransform or None
-        Pre-computed lazy logcount transform for backed inputs.
+        Pre-computed lazy transform for backed inputs on ``.X`` only.
+        ``None`` means no transformation is applied.
 
     Returns
     -------
@@ -96,6 +98,10 @@ def correct_batch_effect(
     if batch_key is not None and batch_key not in adata.obs:
         raise ValueError(f"Batch key '{batch_key}' not found in adata.obs")
 
+    source = MatrixSource(adata, layer=layer)
+    # Validate before expensive reduction-state loading or operator setup.
+    _validate_lazy_transform(lazy_transform, layer=layer, source=source)
+
     old_S_r, old_U, old_A, old_B, old_sigma = _load_reduction_state(adata, reduction_key)
 
     if batch_key is not None:
@@ -112,13 +118,7 @@ def correct_batch_effect(
         raise ValueError("Design matrix does not match number of observations.")
     design = np.ascontiguousarray(design)
 
-    source = MatrixSource(adata, layer=layer)
-    row_scale_factors: Optional[np.ndarray] = None
     apply_log1p = False
-    log_scale = 1.0
-
-    if lazy_transform is not None and not source.is_backed:
-        raise ValueError("Lazy logcount transform is supported only for backed AnnData inputs.")
 
     if source.is_backed:
         row_scale_factors, apply_log1p, log_scale = _resolve_lazy_backed_transform(
@@ -206,7 +206,8 @@ def correct_basal_expression(
         Number of rows per chunk when streaming backed AnnData.
         Ignored for in-memory objects.
     lazy_transform : LazyTransform or None
-        Pre-computed lazy logcount transform for backed inputs.
+        Pre-computed lazy transform for backed inputs on ``.X`` only.
+        ``None`` means no transformation is applied.
 
     Returns
     -------
@@ -216,6 +217,10 @@ def correct_basal_expression(
     """
     if not inplace:
         adata = adata.copy()
+
+    source = MatrixSource(adata, layer=layer)
+    # Validate before expensive reduction-state loading or operator setup.
+    _validate_lazy_transform(lazy_transform, layer=layer, source=source)
 
     old_S_r, old_U, old_A, old_B, old_sigma = _load_reduction_state(adata, reduction_key)
 
@@ -228,13 +233,9 @@ def correct_basal_expression(
     basal[gene_mask, 0] = 1.0
     basal = np.ascontiguousarray(basal)
 
-    source = MatrixSource(adata, layer=layer)
     row_scale_factors: Optional[np.ndarray] = None
     apply_log1p = False
     log_scale = 1.0
-
-    if lazy_transform is not None and not source.is_backed:
-        raise ValueError("Lazy logcount transform is supported only for backed AnnData inputs.")
 
     if source.is_backed:
         row_scale_factors, apply_log1p, log_scale = _resolve_lazy_backed_transform(
