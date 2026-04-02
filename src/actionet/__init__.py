@@ -16,10 +16,12 @@ from .core import (
     run_action,
     build_network,
     compute_network_diffusion,
-    compute_feature_specificity,
-    compute_archetype_feature_specificity,
     layout_network,
     run_svd,
+)
+from .specificity import (
+    compute_feature_specificity,
+    compute_archetype_feature_specificity,
 )
 from .clustering import (
     cluster_network,

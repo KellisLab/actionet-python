@@ -12,7 +12,6 @@ import numpy as np
 import scipy.sparse as sp
 from anndata import AnnData
 
-from . import _core
 from ._backed_compression import (
     format_compression_summary,
     get_storage_metadata_from_adata,
@@ -172,67 +171,3 @@ def _maybe_decompress_backed_path(
     if decompressed is not None and getattr(decompressed, "file", None) is not None:
         decompressed.file.close()
     return tmp_path
-
-
-def _run_specificity_backed_sparse(
-    adata: AnnData,
-    layer: Optional[str],
-    chunk_size: int,
-    *,
-    H: Optional[np.ndarray] = None,
-    labels_int: Optional[np.ndarray] = None,
-    n_threads: int = 0,
-    row_scale_factors: Optional[np.ndarray] = None,
-    apply_log1p: bool,
-    log_scale: float,
-) -> dict:
-    """Dispatch backed sparse specificity through the C++ ABI."""
-    file_path = str(adata.filename)
-    group_path = _backed_group_path(layer)
-    op = None
-    try:
-        op = _core.create_backed_operator(
-            file_path=file_path,
-            group_path=group_path,
-            chunk_size=chunk_size,
-            row_scale_factors=row_scale_factors,
-            apply_log1p=apply_log1p,
-            log_scale=log_scale,
-        )
-        if H is not None:
-            return _core.archetype_feature_specificity_backed_operator(op, H, n_threads)
-        return _core.compute_feature_specificity_backed_operator(op, labels_int, n_threads)
-    finally:
-        op = None
-
-
-def _run_specificity_backed_dense(
-    adata: AnnData,
-    layer: Optional[str],
-    chunk_size: int,
-    *,
-    H: Optional[np.ndarray] = None,
-    labels_int: Optional[np.ndarray] = None,
-    n_threads: int = 0,
-    row_scale_factors: Optional[np.ndarray] = None,
-    apply_log1p: bool,
-    log_scale: float,
-) -> dict:
-    """Dispatch backed dense specificity through the C++ ABI."""
-    file_path = str(adata.filename)
-    group_path = _backed_group_path(layer)
-    op = None
-    try:
-        op = _core.create_backed_operator(
-            file_path=file_path,
-            group_path=group_path,
-            chunk_size=chunk_size,
-            row_scale_factors=row_scale_factors,
-            apply_log1p=apply_log1p,
-            log_scale=log_scale,
-        )
-        if H is not None:
-            return _core.archetype_feature_specificity_backed_dense_operator(op, H, n_threads)
-        return _core.compute_feature_specificity_backed_dense_operator(op, labels_int, n_threads)
-    finally:
-        op = None

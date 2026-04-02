@@ -7,8 +7,14 @@ from anndata import AnnData
 from scipy.stats import rankdata
 from scipy.sparse import issparse, csr_matrix
 
-from .core import compute_feature_specificity, _labels_to_membership
-from .backed_io import _backed_group_path, _run_specificity_backed_dense, _run_specificity_backed_sparse
+from .specificity import (
+    _cluster_names_for_specificity_labels,
+    _encode_labels_for_specificity,
+    compute_feature_specificity,
+    _run_specificity_backed_dense,
+    _run_specificity_backed_sparse,
+)
+from .backed_io import _backed_group_path
 from . import _core
 from ._matrix_source import MatrixSource
 
@@ -123,18 +129,8 @@ def find_markers(
         feature_labels = adata_filtered.var[features_use].values
 
     if getattr(adata_filtered, "isbacked", False):
-        from pandas import Categorical
-        from pandas.api.types import is_integer_dtype
-
-        if not is_integer_dtype(labels_arr_filtered):
-            cat = Categorical(labels_arr_filtered)
-            labels_int = cat.codes.astype(np.int32)
-            cluster_names = np.asarray(cat.categories)
-        else:
-            labels_int = labels_arr_filtered.astype(np.int32)
-            cluster_names = np.unique(labels_arr_filtered)
-
-        labels_int = labels_int + 1
+        labels_int = _encode_labels_for_specificity(labels_arr_filtered, n_obs=adata_filtered.n_obs)
+        cluster_names = _cluster_names_for_specificity_labels(labels_arr_filtered)
         source = MatrixSource(adata_filtered, layer=layer)
         if source.is_sparse:
             # Sparse-backed: use the C++ ABI path via the shared dispatcher.
@@ -159,20 +155,7 @@ def find_markers(
             upper_sig = raw["upper_significance"]
             lower_sig = raw["lower_significance"]
     else:
-        # compute_feature_specificity internally does np.asarray → Categorical
-        # to map labels to integer codes.  Because we already normalised
-        # labels_arr to a plain array above, the Categorical constructed here
-        # will have the same lexicographic category order as the one inside
-        # compute_feature_specificity, so cluster_names and the output
-        # columns are guaranteed to align.
-        from pandas import Categorical
-        from pandas.api.types import is_integer_dtype
-
-        if not is_integer_dtype(labels_arr_filtered):
-            cat = Categorical(labels_arr_filtered)
-            cluster_names = np.asarray(cat.categories)
-        else:
-            cluster_names = np.unique(labels_arr_filtered)
+        cluster_names = _cluster_names_for_specificity_labels(labels_arr_filtered)
 
         temp_key = "_temp_specificity"
         result_adata = compute_feature_specificity(
@@ -646,30 +629,25 @@ def annotate_clusters(
         cluster_feat_spec = upper_sig - lower_sig
         cluster_feat_spec[cluster_feat_spec < 0] = 0
 
-    # Normalize cluster labels to plain array to ensure consistent ordering
-    if hasattr(cluster_labels, 'categories'):
+    # Normalize cluster labels to plain array to ensure consistent ordering.
+    if hasattr(cluster_labels, "categories"):
         cluster_labels = np.asarray(cluster_labels)
 
-    # Get cluster names in the same order as the feature specificity matrix columns
-    # This matches the logic in compute_feature_specificity
-    from pandas import Categorical
-    from pandas.api.types import is_integer_dtype
-
+    # Match the same label ordering logic used by compute_feature_specificity.
     n_clusters = cluster_feat_spec.shape[1]
+    cluster_names = _cluster_names_for_specificity_labels(cluster_labels)
+    if cluster_names.shape[0] != n_clusters:
+        from pandas.api.types import is_integer_dtype
 
-    if not is_integer_dtype(cluster_labels):
-        # For string/categorical labels: use lexicographic ordering (from Categorical)
-        cat = Categorical(cluster_labels)
-        cluster_names = np.asarray(cat.categories)
-    else:
-        # For integer labels: C++ backend may create sparse array with max(label)+1 columns
-        # We need to match the actual column count of the specificity matrix
-        if n_clusters == len(np.unique(cluster_labels)):
-            # Contiguous or small range: use actual unique values
-            cluster_names = np.unique(cluster_labels)
-        else:
-            # Sparse integer range: create array matching matrix columns (0 to n_clusters-1)
+        if is_integer_dtype(cluster_labels):
+            # Backward-compat fallback for precomputed matrices generated before
+            # integer-label compaction (legacy behavior used 0..max(label)).
             cluster_names = np.arange(n_clusters)
+        else:
+            raise ValueError(
+                "Cluster label cardinality does not match specificity matrix columns "
+                f"({cluster_names.shape[0]} labels vs {n_clusters} columns)."
+            )
 
     # Get feature labels
     from ._feature_lookup import resolve_feature_space

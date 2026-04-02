@@ -9,9 +9,9 @@ from .core import (
     run_action,
     build_network,
     compute_network_diffusion,
-    compute_archetype_feature_specificity,
     layout_network,
 )
+from .specificity import compute_archetype_feature_specificity
 from .lazy_transform import LazyTransform, _validate_lazy_transform
 from .tools import scale
 from .visualization import compute_node_colors
