@@ -13,7 +13,7 @@ This document records **deliberate architectural and operational decisions** for
 - `libactionet` (C++ core)
 - `actionet-r` (R front-end)
 - `actionet-python` (Python front-end)
-- `ACTIONetExperiment` (AnnData symmetric data container for `actionet-r`)
+- `ACTIONetExperiment` (Deprecated: AnnData symmetric data container for `actionet-r`)
 
 **Rationale:**
 

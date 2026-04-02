@@ -1,4 +1,5 @@
 ## Primary
+* Python `compute_feature_specificity()` in-mem is still garbage
 * recreate LazyTransform from uns
 * Numerical percision inconsistency
   * Mix of float64 and float64 (mainly in operator, sometimes in-mem) causes drift within and across modes
