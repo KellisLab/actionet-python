@@ -44,6 +44,32 @@ py::array_t<double> compute_feature_stats_vision(py::object G, py::object S, py:
     return arma_mat_to_numpy(stats);
 }
 
+py::array_t<double> compute_feature_stats_vision_from_stats(
+        py::object G,
+        py::array_t<double> stats_arr,
+        py::array_t<double> mu_arr,
+        py::array_t<double> sigma_sq_arr,
+        py::object X,
+        int norm_method = 2,
+        double alpha = 0.85, int max_it = 5, bool approx = false,
+        int thread_no = 0) {
+    arma::sp_mat G_sp = scipy_to_arma_sparse(G);
+    arma::mat stats_mat = numpy_to_arma_mat(stats_arr);
+    arma::vec mu_vec = numpy_to_arma_vec(mu_arr);
+    arma::vec sigma_sq_vec = numpy_to_arma_vec(sigma_sq_arr);
+    arma::sp_mat X_sp = scipy_to_arma_sparse(X);
+
+    arma::mat result;
+    {
+        py::gil_scoped_release release;
+        result = actionet::computeFeatureStatsVisionFromStats(
+            G_sp, stats_mat, mu_vec, sigma_sq_vec, X_sp,
+            norm_method, alpha, max_it, approx, thread_no);
+    }
+
+    return arma_mat_to_numpy(result);
+}
+
 // specificity =========================================================================================================
 
 py::dict archetype_feature_specificity_sparse(py::object S, py::array_t<double> H, int thread_no = 0) {
@@ -185,6 +211,13 @@ void init_annotation(py::module_ &m) {
     m.def("compute_feature_stats_vision", &compute_feature_stats_vision,
           "Compute feature statistics (VISION method)",
           py::arg("G"), py::arg("S"), py::arg("X"), py::arg("norm_method") = 2,
+          py::arg("alpha") = 0.85, py::arg("max_it") = 5, py::arg("approx") = false,
+          py::arg("thread_no") = 0);
+
+    m.def("compute_feature_stats_vision_from_stats", &compute_feature_stats_vision_from_stats,
+          "VISION standardization + diffusion from pre-computed per-row stats",
+          py::arg("G"), py::arg("stats"), py::arg("mu"), py::arg("sigma_sq"),
+          py::arg("X"), py::arg("norm_method") = 2,
           py::arg("alpha") = 0.85, py::arg("max_it") = 5, py::arg("approx") = false,
           py::arg("thread_no") = 0);
 

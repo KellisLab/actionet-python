@@ -481,6 +481,41 @@ class MatrixSource:
             pos += size
         return out
 
+    def row_sum_of_squares(
+        self,
+        chunk_size: int = 4096,
+        col_indices: Optional[Sequence[int]] = None,
+        row_indices: Optional[Sequence[int]] = None,
+    ) -> np.ndarray:
+        """Return per-row sum of squared elements as a 1-D float64 array."""
+        if row_indices is None:
+            out = np.zeros(self.n_obs, dtype=np.float64)
+            for chunk in self.iter_row_chunks(chunk_size=chunk_size, col_indices=col_indices):
+                block = chunk.block
+                if sp.issparse(block):
+                    out[chunk.start:chunk.end] = np.asarray(block.power(2).sum(axis=1)).ravel()
+                else:
+                    arr = np.asarray(block, dtype=np.float64)
+                    out[chunk.start:chunk.end] = np.sum(arr * arr, axis=1)
+            return out
+
+        row_indices = np.asarray(row_indices, dtype=np.int64).reshape(-1)
+        out = np.zeros(row_indices.size, dtype=np.float64)
+        pos = 0
+        for rows, block in self.iter_selected_row_chunks(
+            row_indices,
+            chunk_size=chunk_size,
+            col_indices=col_indices,
+        ):
+            size = rows.size
+            if sp.issparse(block):
+                out[pos:pos + size] = np.asarray(block.power(2).sum(axis=1)).ravel()
+            else:
+                arr = np.asarray(block, dtype=np.float64)
+                out[pos:pos + size] = np.sum(arr * arr, axis=1)
+            pos += size
+        return out
+
     def nnz_col_counts(
         self,
         chunk_size: int = 4096,

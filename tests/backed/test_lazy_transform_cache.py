@@ -305,3 +305,181 @@ def test_lazy_transform_invalidates_when_source_changes_before_first_use(tmp_pat
     # No full row-sum recomputation should happen during operator-time validation.
     assert call_count["row_sums"] == 0
     _close_backed(adata)
+
+
+# ---------------------------------------------------------------------------
+# find_markers: lazy_transform parity against explicit logcounts layer
+# ---------------------------------------------------------------------------
+
+def _top_n_genes(ranks_df: "pd.DataFrame", col: str, n: int) -> set:
+    return set(ranks_df[col].sort_values().index[:n])
+
+
+def test_find_markers_lazy_transform_matches_logcounts_reference(tmp_path):
+    """find_markers with lazy_transform must match an explicit logcounts baseline.
+
+    Both paths normalize with identical (target_sum=1e4, log_base=2) params;
+    the top-N marker sets must overlap well across every cluster.
+    """
+    import pandas as pd
+    from actionet.specificity import compute_feature_specificity  # noqa: F401 (smoke import)
+
+    seed = 89
+    n_cells, n_genes = 96, 72
+    topn = 10
+
+    # --- reference: explicit logcounts layer ---
+    adata_ref = make_test_adata(n_cells=n_cells, n_genes=n_genes, sparse_fmt="csr", seed=seed)
+    # normalize_anndata writes into an existing layer; seed it from .X first.
+    adata_ref.layers["logcounts_ref"] = adata_ref.X.copy()
+    an.normalize_anndata(
+        adata_ref,
+        target_sum=1e4,
+        layer="logcounts_ref",
+        log_transform=True,
+        log_base=2,
+        inplace=True,
+    )
+    ranks_ref = an.find_markers(
+        adata_ref,
+        labels="CellLabel",
+        features_use="Gene",
+        layer="logcounts_ref",
+        result="ranks",
+        return_type="dataframe",
+    )
+
+    # --- lazy: backed .X, no logcounts layer written ---
+    adata_lazy = open_backed(
+        tmp_path / "find_markers_lazy",
+        make_test_adata(n_cells=n_cells, n_genes=n_genes, sparse_fmt="csr", seed=seed),
+    )
+    lt = an.create_lazy_transform(
+        adata_lazy,
+        target_sum=1e4,
+        log_base=2.0,
+        backed_chunk_size=32,
+    )
+    ranks_lazy = an.find_markers(
+        adata_lazy,
+        labels="CellLabel",
+        features_use="Gene",
+        layer=None,
+        result="ranks",
+        return_type="dataframe",
+        backed_chunk_size=32,
+        lazy_transform=lt,
+    )
+    _close_backed(adata_lazy)
+
+    shared_cols = sorted(set(ranks_ref.columns) & set(ranks_lazy.columns))
+    assert len(shared_cols) > 0, "No shared cluster columns between reference and lazy"
+
+    overlaps = []
+    for col in shared_cols:
+        top_ref = _top_n_genes(ranks_ref, col, topn)
+        top_lazy = _top_n_genes(ranks_lazy, col, topn)
+        overlaps.append(len(top_ref & top_lazy) / float(topn))
+
+    mean_overlap = float(np.mean(overlaps))
+    assert mean_overlap >= 0.80, (
+        f"Lazy find_markers top-{topn} overlap vs logcounts reference: "
+        f"{mean_overlap:.2f} < 0.80.  Per-cluster: {overlaps}"
+    )
+
+
+def test_find_markers_lazy_transform_differs_from_raw_counts(tmp_path):
+    """Sanity check: lazy (normalized) specificity scores differ from raw-count scores.
+
+    Log-normalization changes the absolute scale of counts, so the raw
+    specificity score matrices must differ numerically even if the rank
+    ordering of the top markers happens to be stable.
+    """
+    seed = 91
+    n_cells, n_genes = 96, 72
+
+    # --- raw: no normalization ---
+    adata_raw = make_test_adata(n_cells=n_cells, n_genes=n_genes, sparse_fmt="csr", seed=seed)
+    scores_raw = an.find_markers(
+        adata_raw,
+        labels="CellLabel",
+        features_use="Gene",
+        result="scores",
+        return_type="dataframe",
+    )
+
+    # --- lazy: backed, with log2 normalization ---
+    adata_lazy = open_backed(
+        tmp_path / "find_markers_raw_vs_lazy",
+        make_test_adata(n_cells=n_cells, n_genes=n_genes, sparse_fmt="csr", seed=seed),
+    )
+    lt = an.create_lazy_transform(
+        adata_lazy,
+        target_sum=1e4,
+        log_base=2.0,
+        backed_chunk_size=32,
+    )
+    scores_lazy = an.find_markers(
+        adata_lazy,
+        labels="CellLabel",
+        features_use="Gene",
+        result="scores",
+        return_type="dataframe",
+        backed_chunk_size=32,
+        lazy_transform=lt,
+    )
+    _close_backed(adata_lazy)
+
+    shared_cols = sorted(set(scores_raw.columns) & set(scores_lazy.columns))
+    assert len(shared_cols) > 0
+
+    # Log-normalization must change the numeric scores — compare L2 relative error.
+    raw_mat = scores_raw[shared_cols].to_numpy(dtype=float)
+    lazy_mat = scores_lazy[shared_cols].to_numpy(dtype=float)
+    rel_err = float(np.linalg.norm(raw_mat - lazy_mat) / (np.linalg.norm(raw_mat) + 1e-12))
+    assert rel_err > 0.05, (
+        f"Lazy (normalized) and raw specificity scores are nearly identical "
+        f"(relative error {rel_err:.4f}); the lazy_transform appears to have had no effect."
+    )
+
+
+def test_annotate_cells_lazy_transform_runs_without_error(tmp_path):
+    """annotate_cells with method='vision' and lazy_transform must run end-to-end."""
+    seed = 97
+    n_cells, n_genes = 96, 72
+
+    # Build in-memory reference to get a network and marker table.
+    adata_ref = make_test_adata(n_cells=n_cells, n_genes=n_genes, sparse_fmt="csr", seed=seed)
+    an.normalize_anndata(adata_ref, target_sum=1e4, layer="logcounts", log_transform=True, log_base=2, inplace=True)
+    an.reduce_kernel(adata_ref, n_components=10, layer="logcounts", key_added="action", seed=seed, inplace=True)
+    an.correct_batch_effect(adata_ref, batch_key="batch", reduction_key="action", layer="logcounts", inplace=True)
+    an.run_actionet(adata_ref, layer="logcounts", reduction_key="action_corrected", k_min=2, k_max=8,
+                    layout_3d=False, n_threads=1, seed=seed, inplace=True)
+    markers = an.find_markers(adata_ref, labels="CellLabel", features_use="Gene",
+                               layer="logcounts", top_genes=6, return_type="dataframe")
+
+    # Now use backed lazy path for annotate_cells.
+    adata_lazy = open_backed(
+        tmp_path / "annotate_cells_lazy",
+        make_test_adata(n_cells=n_cells, n_genes=n_genes, sparse_fmt="csr", seed=seed),
+    )
+    # Copy the network built on the reference into the backed object.
+    adata_lazy.obsp["actionet"] = adata_ref.obsp["actionet"]
+
+    lt = an.create_lazy_transform(adata_lazy, target_sum=1e4, log_base=2.0, backed_chunk_size=32)
+    result = an.annotate_cells(
+        adata_lazy,
+        markers,
+        method="vision",
+        features_use="Gene",
+        layer=None,
+        n_threads=1,
+        backed_chunk_size=32,
+        lazy_transform=lt,
+    )
+    _close_backed(adata_lazy)
+
+    assert "labels" in result
+    assert "enrichment" in result
+    assert len(result["labels"]) == n_cells
+    assert result["enrichment"].shape[0] == n_cells

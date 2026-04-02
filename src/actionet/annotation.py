@@ -339,32 +339,6 @@ def annotate_cells(
 
     source = MatrixSource(adata, layer=layer)
     _validate_lazy_transform(lazy_transform, layer=layer, source=source)
-    if source.is_backed:
-        if method == "vision":
-            # Vision method: use the full-width marker matrix and the backed
-            # operator directly — no column extraction needed.
-            pass  # S is not needed; handled below in the vision backed path
-        else:
-            # ACTIONet method: extract marker columns via C++ column-extract,
-            # then pass to the existing in-memory computeFeatureStats binding.
-            required_idx = np.where(np.asarray(X_markers.getnnz(axis=1)).ravel() > 0)[0]
-
-            if required_idx.size == 0:
-                raise ValueError("Marker set does not overlap features in AnnData.")
-
-            X_markers = X_markers[required_idx, :]
-            S_cells = source.feature_subset(
-                required_idx,
-                chunk_size=backed_chunk_size,
-                prefer_sparse=True,
-            )
-            if not issparse(S_cells):
-                S_cells = csr_matrix(np.asarray(S_cells))
-            S = S_cells
-    else:
-        S = source.matrix
-        if not issparse(S):
-            S = csr_matrix(S)
 
     # Get network graph
     if network_key not in adata.obsp:
@@ -381,9 +355,21 @@ def annotate_cells(
     if not issparse(X_markers):
         X_markers = csr_matrix(X_markers)
 
-    # Compute marker statistics using graph-based imputation
+    n_vars = source.n_vars
+
+    # Compute marker statistics using graph-based imputation.
+    # Each method+storage combination is a self-contained block.
+    # Backed paths are read-only: only MatrixSource streaming and the
+    # C++ backed operator (both read-only) are used — no AnnData mutation.
     if method == "vision":
         if source.is_backed:
+            # ----------------------------------------------------------
+            # Vision · backed
+            # ----------------------------------------------------------
+            # Use the C++ backed operator for stats = S @ X (inherits
+            # lazy_transform) and row_sums, then compute row_sum_sq via
+            # MatrixSource streaming.  Pass pre-computed arrays to the
+            # new split binding — avoids copying S across the pybind boundary.
             row_scale_factors, apply_log1p, log_scale = _resolve_lazy_backed_transform(
                 source,
                 lazy_transform=lazy_transform,
@@ -410,9 +396,39 @@ def annotate_cells(
                 thread_no=n_threads,
             )
         else:
-            marker_stats = _core.compute_feature_stats_vision(
+            # ----------------------------------------------------------
+            # Vision · in-memory
+            # ----------------------------------------------------------
+            # Compute S @ X, mu, sigma_sq entirely in scipy/numpy so the
+            # full expression matrix never crosses the pybind boundary.
+            S = source.matrix  # reference — no copy
+
+            if issparse(S):
+                stats = S.dot(X_markers)
+                if issparse(stats):
+                    stats = stats.toarray()
+                stats = np.asarray(stats, dtype=np.float64)
+
+                row_sums = np.asarray(S.sum(axis=1), dtype=np.float64).ravel()
+                row_sum_sq = np.asarray(S.power(2).sum(axis=1), dtype=np.float64).ravel()
+            else:
+                S_arr = np.asarray(S, dtype=np.float64)
+                X_dense = X_markers.toarray() if issparse(X_markers) else np.asarray(X_markers)
+                stats = S_arr @ X_dense
+                stats = np.asarray(stats, dtype=np.float64)
+
+                row_sums = S_arr.sum(axis=1)
+                row_sum_sq = np.sum(S_arr * S_arr, axis=1)
+
+            mu = row_sums / n_vars
+            sigma_sq = (row_sum_sq - 2.0 * mu * row_sums
+                        + n_vars * mu ** 2) / (n_vars - 1)
+
+            marker_stats = _core.compute_feature_stats_vision_from_stats(
                 G=G,
-                S=S,
+                stats=stats,
+                mu=mu,
+                sigma_sq=sigma_sq,
                 X=X_markers,
                 norm_method=norm_method_code,
                 alpha=alpha,
@@ -420,11 +436,36 @@ def annotate_cells(
                 approx=approx,
                 thread_no=n_threads,
             )
+
     elif method == "actionet":
+        # ----------------------------------------------------------
+        # ACTIONet · both storage modes
+        # ----------------------------------------------------------
+        # Extract only the marker columns from S (typically 50-200
+        # out of ~30k genes) to avoid copying the full matrix.
+        required_idx = np.where(np.asarray(X_markers.getnnz(axis=1)).ravel() > 0)[0]
+
+        if required_idx.size == 0:
+            raise ValueError("Marker set does not overlap features in AnnData.")
+
+        X_sub = X_markers[required_idx, :]
+
+        if source.is_backed:
+            S_sub = source.feature_subset(
+                required_idx,
+                chunk_size=backed_chunk_size,
+                prefer_sparse=True,
+            )
+        else:
+            S_sub = source.matrix[:, required_idx]
+
+        if not issparse(S_sub):
+            S_sub = csr_matrix(np.asarray(S_sub))
+
         marker_stats = _core.compute_feature_stats(
             G=G,
-            S=S,
-            X=X_markers,
+            S=S_sub,
+            X=X_sub,
             norm_method=norm_method_code,
             alpha=alpha,
             max_it=max_it,
@@ -436,26 +477,23 @@ def annotate_cells(
         raise ValueError(f"Unknown method: {method}")
 
     # marker_stats is cells × celltypes
-    # Clean up invalid values
-    marker_stats = np.nan_to_num(marker_stats, nan=0.0, posinf=0.0, neginf=0.0)
-    enrichment = marker_stats.copy()
+    enrichment = np.nan_to_num(marker_stats, nan=0.0, posinf=0.0, neginf=0.0)
 
     # Compute labels and confidence
+    celltype_arr = np.asarray(celltype_names)
     if use_enrichment:
-        # Normalize graph and compute enrichment
-        Gn = _core.normalize_graph(G, norm_method=1).T  # Transpose for column-wise normalization
-        marker_stats_pos = np.maximum(marker_stats, 0)
+        Gn = _core.normalize_graph(G, norm_method=1).T
+        marker_stats_pos = np.maximum(enrichment, 0)
 
         log_pvals = _core.compute_graph_label_enrichment(Gn, marker_stats_pos, n_threads)
 
         labels_idx = np.argmax(log_pvals, axis=1)
         confidence = np.max(log_pvals, axis=1)
     else:
-        labels_idx = np.argmax(marker_stats, axis=1)
-        confidence = np.max(marker_stats, axis=1)
+        labels_idx = np.argmax(enrichment, axis=1)
+        confidence = np.max(enrichment, axis=1)
 
-    # Convert indices to label names
-    labels = np.array([celltype_names[i] for i in labels_idx])
+    labels = celltype_arr[labels_idx]
 
     result = {
         "labels": labels,
@@ -465,10 +503,8 @@ def annotate_cells(
 
     # Optional label propagation
     if use_lpa:
-        # Convert string labels to numeric
-        unique_labels = np.unique(labels)
-        label_to_idx = {label: idx for idx, label in enumerate(unique_labels)}
-        numeric_labels = np.array([label_to_idx[label] for label in labels], dtype=np.float64)
+        unique_labels, numeric_labels = np.unique(labels, return_inverse=True)
+        numeric_labels = numeric_labels.astype(np.float64)
 
         corrected_numeric = _core.run_lpa(
             G=G,
@@ -480,10 +516,7 @@ def annotate_cells(
             thread_no=n_threads,
         )
 
-        # Convert back to string labels
-        idx_to_label = {idx: label for label, idx in label_to_idx.items()}
-        labels_corrected = np.array([idx_to_label[int(idx)] for idx in corrected_numeric])
-        result["labels_corrected"] = labels_corrected
+        result["labels_corrected"] = unique_labels[corrected_numeric.astype(np.intp)]
 
     return result
 
