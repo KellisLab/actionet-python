@@ -21,6 +21,9 @@ from .core import (
     layout_network,
     run_svd,
 )
+from .clustering import (
+    cluster_network,
+)
 from .anndata_utils import (
     anndata_to_matrix,
     matrix_to_anndata,
@@ -91,6 +94,7 @@ __all__ = [
     "reduce_kernel_from_svd",
     "run_action",
     "build_network",
+    "cluster_network",
     "compute_network_diffusion",
     "compute_feature_specificity",
     "compute_archetype_feature_specificity",

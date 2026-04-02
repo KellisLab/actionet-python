@@ -11,8 +11,11 @@
 * Decouple compute_network_diffusion from anndata
 * Change output from numpy to pandas (annotate_*)
 * Reorganize and consolidate code
+* * Remove dead functions.
 
 ## Secondary
+* Add network centrality to run_actionet?
+* Remove archetype specificity from run_actionet?
 * Lazy transform in-memory?
 * Allow changes to lazy transform params
   * Force recompute of attributes
