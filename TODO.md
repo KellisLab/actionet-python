@@ -11,17 +11,15 @@
 * Decouple compute_network_diffusion from anndata
 * Change output from numpy to pandas (annotate_*)
 * Reorganize and consolidate code
-* * Remove dead functions.
+* * Audit for dead functions.
 
 ## Secondary
-* `compute_feature_specificity` backed/in-mem parity
-* Add pseudocount to `normalize_anndata()`
+* Consolidate normalization code-paths
 * Add network centrality to run_actionet?
 * Remove archetype specificity from run_actionet?
 * Lazy transform in-memory?
 * Allow changes to lazy transform params
   * Force recompute of attributes
-* MatrixSource supports layers, but layers can't be backed. 
 * Normalize with C++ API (nah?)
 * `lazy_logcounts` in `_validate_lazy_logcounts_params()` does nothing?
 * compute_transparency() use scale()
@@ -34,3 +32,7 @@
 * Test impute features
 * Implement plotFeatures
 * test backed SVD
+* MatrixSource supports layers, but layers can't be backed.
+  * Added validation logic
+* Add pseudocount to `normalize_anndata()`
+* `compute_feature_specificity` backed/in-mem parity

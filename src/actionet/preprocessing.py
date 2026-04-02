@@ -71,19 +71,20 @@ def normalize_anndata(
     target_sum: float = 1e4,
     log_transform: bool = True,
     log_base: Optional[float] = None,
+    pseudocount: float = 1.0,
     layer: str | None = None,
     backed_chunk_size: int = 4096,
     dtype_out: str = "float32",
     inplace: bool = True,
     layer_added: str | None = None,
 ) -> Optional[AnnData]:
-    """Total-count normalization with optional log1p transform.
+    """Total-count normalization with optional log transform.
 
     Mimics the R ``normalize.ace`` function: each cell's counts are scaled
-    to *target_sum*, then (by default) a ``log1p`` transform is applied.
-    The default normalization path works for both in-memory and HDF5-backed
-    AnnData objects. When ``layer_added`` is provided in backed mode, the
-    normalized values are streamed directly into a new on-disk layer
+    to *target_sum*, then (by default) a ``log(x + pseudocount)`` transform
+    is applied.  The default normalization path works for both in-memory and
+    HDF5-backed AnnData objects.  When ``layer_added`` is provided in backed
+    mode, the normalized values are streamed directly into a new on-disk layer
     without copying the full source matrix.
 
     Parameters
@@ -93,11 +94,16 @@ def normalize_anndata(
     target_sum : float, optional (default: 1e4)
         Target total count per cell after scaling.
     log_transform : bool, optional (default: True)
-        If ``True``, apply ``log1p`` (optionally with a custom base) after
-        scaling.  Set to ``False`` for scaling only.
+        If ``True``, apply ``log(x + pseudocount)`` (optionally with a custom
+        base) after scaling.  Set to ``False`` for scaling only.
     log_base : float or None, optional (default: None)
-        Logarithm base for the log1p step.  ``None`` uses the natural
-        logarithm.  Ignored when *log_transform* is ``False``.
+        Logarithm base for the log step.  ``None`` uses the natural logarithm.
+        Ignored when *log_transform* is ``False``.
+    pseudocount : float, optional (default: 1.0)
+        Value added to each scaled count before taking the log.  Must be
+        positive when *log_transform* is ``True``.  The default of ``1.0``
+        is identical to the classic ``log1p`` transform.  Ignored when
+        *log_transform* is ``False``.
     layer : str or None, optional (default: None)
         Layer to normalize.  ``None`` uses ``adata.X``.
     backed_chunk_size : int, optional (default: 4096)
@@ -122,14 +128,17 @@ def normalize_anndata(
     Raises
     ------
     ValueError
-        If ``target_sum`` or ``log_base`` is not positive, or if
-        ``layer_added`` equals ``layer``, or if ``layer_added`` is requested
-        on a read-only backed AnnData object.
+        If ``target_sum`` or ``log_base`` is not positive, if ``pseudocount``
+        is not positive when *log_transform* is ``True``, if ``layer_added``
+        equals ``layer``, or if ``layer_added`` is requested on a read-only
+        backed AnnData object.
     """
     if target_sum <= 0:
         raise ValueError("target_sum must be positive.")
     if log_base is not None and log_base <= 0:
         raise ValueError("log_base must be positive.")
+    if log_transform and pseudocount <= 0:
+        raise ValueError("`pseudocount` must be > 0 when `log_transform=True`.")
     if layer_added is not None and layer is not None and layer_added == layer:
         raise ValueError("`layer_added` must differ from `layer`.")
 
@@ -156,6 +165,7 @@ def normalize_anndata(
                     target_sum=target_sum,
                     log_transform=log_transform,
                     log_base=log_base,
+                    pseudocount=pseudocount,
                     chunk_size=backed_chunk_size,
                     dtype_out=out_dtype,
                     layer_added=layer_added,
@@ -174,6 +184,7 @@ def normalize_anndata(
                     target_sum=target_sum,
                     log_transform=log_transform,
                     log_base=log_base,
+                    pseudocount=pseudocount,
                     chunk_size=backed_chunk_size,
                     dtype_out=out_dtype,
                 )
@@ -184,6 +195,7 @@ def normalize_anndata(
                 target_sum=target_sum,
                 log_transform=log_transform,
                 log_base=log_base,
+                pseudocount=pseudocount,
             )
     elif not source.is_backed:
         normalized = _normalize_matrix_in_memory(
@@ -191,6 +203,7 @@ def normalize_anndata(
             target_sum=target_sum,
             log_transform=log_transform,
             log_base=log_base,
+            pseudocount=pseudocount,
         )
         if layer is None:
             adata.X = normalized
@@ -202,6 +215,7 @@ def normalize_anndata(
             target_sum,
             log_transform,
             log_base,
+            pseudocount,
             backed_chunk_size,
             out_dtype,
         )
@@ -211,11 +225,27 @@ def normalize_anndata(
     return adata
 
 
+def _apply_log_transform(arr, pseudocount: float, log_scale: Optional[float]) -> None:
+    """In-place log transform: ``log(arr + pseudocount) / log(base)``.
+
+    When *pseudocount* is 1.0 (the default), the faster ``np.log1p`` kernel
+    is used so existing behaviour is bit-for-bit identical.
+    """
+    if np.isclose(pseudocount, 1.0):
+        np.log1p(arr, out=arr)
+    else:
+        arr += pseudocount
+        np.log(arr, out=arr)
+    if log_scale is not None and not np.isclose(log_scale, 1.0):
+        arr *= log_scale
+
+
 def _normalize_matrix_in_memory(
     matrix,
     target_sum: float,
     log_transform: bool,
     log_base: Optional[float],
+    pseudocount: float = 1.0,
 ):
     """Return a normalized in-memory copy of ``matrix``.
 
@@ -241,13 +271,12 @@ def _normalize_matrix_in_memory(
                     import warnings
                     warnings.warn(
                         f"Matrix contains negative values (min={X.data.min():.4g}). "
-                        "log1p is only meaningful for non-negative data; "
+                        "log transform is only meaningful for non-negative data; "
                         "results may contain NaN.",
                         stacklevel=2,
                     )
-                np.log1p(X.data, out=X.data)
-                if log_base is not None:
-                    X.data /= np.log(log_base)
+                log_scale = 1.0 if log_base is None else 1.0 / np.log(log_base)
+                _apply_log_transform(X.data, pseudocount, log_scale)
         return X
 
     arr = np.array(matrix, dtype=np.float64, copy=True)
@@ -262,9 +291,8 @@ def _normalize_matrix_in_memory(
     arr *= scaling[:, np.newaxis]
 
     if log_transform:
-        np.log1p(arr, out=arr)
-        if log_base is not None:
-            arr /= np.log(log_base)
+        log_scale = 1.0 if log_base is None else 1.0 / np.log(log_base)
+        _apply_log_transform(arr, pseudocount, log_scale)
     return arr
 
 
@@ -274,6 +302,7 @@ def _normalize_sparse_block(
     *,
     log_transform: bool,
     log_scale: Optional[float],
+    pseudocount: float = 1.0,
     dtype_out: np.dtype,
 ) -> sp.csr_matrix:
     """Normalize one sparse row block and return CSR output."""
@@ -283,9 +312,7 @@ def _normalize_sparse_block(
         row_nnz = np.diff(block.indptr)
         block.data *= np.repeat(scale, row_nnz)
         if log_transform:
-            np.log1p(block.data, out=block.data)
-            if log_scale is not None and log_scale != 1.0:
-                block.data *= log_scale
+            _apply_log_transform(block.data, pseudocount, log_scale)
     return block
 
 
@@ -295,15 +322,14 @@ def _normalize_dense_block(
     *,
     log_transform: bool,
     log_scale: Optional[float],
+    pseudocount: float = 1.0,
     dtype_out: np.dtype,
 ) -> np.ndarray:
     """Normalize one dense row block and return dense output."""
     arr = np.asarray(block, dtype=dtype_out)
     arr *= scale[:, np.newaxis]
     if log_transform:
-        np.log1p(arr, out=arr)
-        if log_scale is not None and log_scale != 1.0:
-            arr *= log_scale
+        _apply_log_transform(arr, pseudocount, log_scale)
     return arr
 
 
@@ -316,6 +342,7 @@ def _normalize_backed(
     target_sum: float,
     log_transform: bool,
     log_base: Optional[float],
+    pseudocount: float,
     chunk_size: int,
     dtype_out: np.dtype,
 ) -> None:
@@ -326,6 +353,7 @@ def _normalize_backed(
             target_sum=target_sum,
             log_transform=log_transform,
             log_base=log_base,
+            pseudocount=pseudocount,
             chunk_size=chunk_size,
             dtype_out=dtype_out,
             layer_added=None,
@@ -349,6 +377,7 @@ def _normalize_backed(
                 scale,
                 log_transform=log_transform,
                 log_scale=log_scale,
+                pseudocount=pseudocount,
                 dtype_out=dtype_out,
             )
         return _normalize_dense_block(
@@ -356,6 +385,7 @@ def _normalize_backed(
             scale,
             log_transform=log_transform,
             log_scale=log_scale,
+            pseudocount=pseudocount,
             dtype_out=dtype_out,
         )
 
@@ -449,6 +479,7 @@ def _normalize_backed_streamed(
     target_sum: float,
     log_transform: bool,
     log_base: Optional[float],
+    pseudocount: float = 1.0,
     chunk_size: int,
     dtype_out: np.dtype,
 ) -> None:
@@ -498,6 +529,7 @@ def _normalize_backed_streamed(
                     scale,
                     log_transform=log_transform,
                     log_scale=log_scale,
+                    pseudocount=pseudocount,
                     dtype_out=dtype_out,
                 )
             else:
@@ -507,6 +539,7 @@ def _normalize_backed_streamed(
                         scale,
                         log_transform=log_transform,
                         log_scale=log_scale,
+                        pseudocount=pseudocount,
                         dtype_out=dtype_out,
                     )
                 )
@@ -529,6 +562,7 @@ def _normalize_backed_streamed(
                 scale,
                 log_transform=log_transform,
                 log_scale=log_scale,
+                pseudocount=pseudocount,
                 dtype_out=dtype_out,
             )
 
@@ -659,6 +693,7 @@ def _write_normalized_chunks_to_csr_group(
     scaling: np.ndarray,
     log_transform: bool,
     log_scale: Optional[float],
+    pseudocount: float = 1.0,
     chunk_size: int,
     dtype_out: np.dtype,
 ) -> None:
@@ -674,6 +709,7 @@ def _write_normalized_chunks_to_csr_group(
             scale,
             log_transform=log_transform,
             log_scale=log_scale,
+            pseudocount=pseudocount,
             dtype_out=dtype_out,
         )
 
@@ -699,6 +735,7 @@ def _normalize_backed_csc_via_csr_rewrite(
     target_sum: float,
     log_transform: bool,
     log_base: Optional[float],
+    pseudocount: float = 1.0,
     chunk_size: int,
     dtype_out: np.dtype,
     layer_added: str | None,
@@ -740,6 +777,7 @@ def _normalize_backed_csc_via_csr_rewrite(
             scaling=scaling,
             log_transform=log_transform,
             log_scale=log_scale,
+            pseudocount=pseudocount,
             chunk_size=chunk_size,
             dtype_out=dtype_out,
         )
