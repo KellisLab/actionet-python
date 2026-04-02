@@ -120,6 +120,8 @@ def run_actionet(
         Use multiple threads for layout computation.
     compute_specificity_parallel : bool, optional (default: False)
         Use multiple threads for specificity computation.
+        Backed sparse specificity uses a memory-safe parallel scan that avoids
+        per-thread ``n_features x k`` temporary matrices.
         May cause memory issues on large datasets.
     n_threads : int, optional (default: 0)
         Number of threads (0=auto).

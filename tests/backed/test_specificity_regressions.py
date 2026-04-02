@@ -2,6 +2,7 @@
 
 import numpy as np
 import pytest
+import scipy.sparse as sp
 
 import actionet as an
 
@@ -68,3 +69,59 @@ def test_compute_archetype_feature_specificity_validates_membership_shape():
 
     with pytest.raises(ValueError, match="row count"):
         an.compute_archetype_feature_specificity(adata, archetype_key=H_bad, inplace=True)
+
+
+def test_backed_sparse_parallel_matches_single_thread(tmp_path):
+    """Backed sparse specificity should be numerically stable across thread counts."""
+    adata = open_backed(tmp_path, make_test_adata(n_cells=160, n_genes=96, sparse_fmt="csr", seed=105))
+    raw_1 = an.compute_feature_specificity(
+        adata,
+        labels="CellLabel",
+        n_threads=1,
+        backed_chunk_size=32,
+        return_raw=True,
+    )
+    raw_4 = an.compute_feature_specificity(
+        adata,
+        labels="CellLabel",
+        n_threads=4,
+        backed_chunk_size=32,
+        return_raw=True,
+    )
+
+    for key in ("average_profile", "upper_significance", "lower_significance"):
+        np.testing.assert_allclose(raw_4[key], raw_1[key], rtol=1e-10, atol=1e-12)
+
+    adata.file.close()
+
+
+def test_backed_sparse_parallel_matches_single_thread_with_negative_values(tmp_path):
+    """Parallel backed sparse path should match single-thread when min-shift support is used."""
+    adata_mem = make_test_adata(n_cells=160, n_genes=96, sparse_fmt="csr", seed=106)
+    X = adata_mem.X
+    if not sp.isspmatrix_csr(X):
+        X = X.tocsr()
+    X = X.copy()
+    X.data = X.data - 2.0  # force a negative minimum to trigger support-pass correction
+    adata_mem.X = X
+
+    adata = open_backed(tmp_path, adata_mem)
+    raw_1 = an.compute_feature_specificity(
+        adata,
+        labels="CellLabel",
+        n_threads=1,
+        backed_chunk_size=32,
+        return_raw=True,
+    )
+    raw_4 = an.compute_feature_specificity(
+        adata,
+        labels="CellLabel",
+        n_threads=4,
+        backed_chunk_size=32,
+        return_raw=True,
+    )
+
+    for key in ("average_profile", "upper_significance", "lower_significance"):
+        np.testing.assert_allclose(raw_4[key], raw_1[key], rtol=1e-10, atol=1e-12)
+
+    adata.file.close()

@@ -14,6 +14,8 @@
 * * Remove dead functions.
 
 ## Secondary
+* `compute_feature_specificity` backed/in-mem parity
+* Add pseudocount to `normalize_anndata()`
 * Add network centrality to run_actionet?
 * Remove archetype specificity from run_actionet?
 * Lazy transform in-memory?

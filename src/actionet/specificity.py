@@ -169,12 +169,25 @@ def compute_feature_specificity(
     inplace: bool = True,
     backed_chunk_size: int = 4096,
     return_raw: bool = False,
+    lazy_transform: Optional[LazyTransform] = None,
 ) -> Optional[Union[AnnData, dict]]:
-    """Compute feature specificity scores for clusters/archetypes."""
+    """Compute feature specificity scores for clusters/archetypes.
+
+    Parameters
+    ----------
+    lazy_transform : LazyTransform, optional
+        Pre-built lazy logcount transform for backed AnnData inputs.
+        When provided, the backed operator applies per-row normalization
+        (target-sum scaling) and log1p on-the-fly without requiring a
+        persisted ``logcounts`` layer.  Only valid when ``layer=None``
+        and the input is backed.  Create with
+        :func:`~actionet.lazy_transform.create_lazy_transform`.
+    """
     if not inplace and not return_raw:
         adata = adata.copy()
 
     source = MatrixSource(adata, layer=layer)
+    _validate_lazy_transform(lazy_transform, layer=layer, source=source)
 
     if isinstance(labels, str):
         if labels not in adata.obs:
@@ -189,6 +202,11 @@ def compute_feature_specificity(
     labels_int = _encode_labels_for_specificity(labels_arr, n_obs=source.n_obs)
 
     if source.is_backed:
+        row_scale_factors, apply_log1p, log_scale = _resolve_lazy_backed_transform(
+            source,
+            lazy_transform=lazy_transform,
+            backed_chunk_size=backed_chunk_size,
+        )
         if source.is_sparse:
             result = _run_specificity_backed_sparse(
                 adata,
@@ -196,8 +214,9 @@ def compute_feature_specificity(
                 chunk_size=backed_chunk_size,
                 labels_int=labels_int,
                 n_threads=n_threads,
-                apply_log1p=False,
-                log_scale=1.0,
+                row_scale_factors=row_scale_factors,
+                apply_log1p=apply_log1p,
+                log_scale=log_scale,
             )
         else:
             result = _run_specificity_backed_dense(
@@ -206,8 +225,9 @@ def compute_feature_specificity(
                 chunk_size=backed_chunk_size,
                 labels_int=labels_int,
                 n_threads=n_threads,
-                apply_log1p=False,
-                log_scale=1.0,
+                row_scale_factors=row_scale_factors,
+                apply_log1p=apply_log1p,
+                log_scale=log_scale,
             )
     else:
         S = anndata_to_matrix(adata, layer=layer)  # cells x genes, native

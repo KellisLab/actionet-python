@@ -9,12 +9,8 @@ from scipy.sparse import issparse, csr_matrix
 
 from .specificity import (
     _cluster_names_for_specificity_labels,
-    _encode_labels_for_specificity,
     compute_feature_specificity,
-    _run_specificity_backed_dense,
-    _run_specificity_backed_sparse,
 )
-from .backed_io import _backed_group_path
 from . import _core
 from ._matrix_source import MatrixSource
 
@@ -110,7 +106,6 @@ def find_markers(
     # Filter labels if labels_use is provided
     if labels_use is not None:
         mask = np.isin(labels_arr, labels_use)
-        # Use a view to avoid backed-incompatible eager copies.
         adata_filtered = adata[mask, :]
         labels_arr_filtered = labels_arr[mask]
     else:
@@ -128,47 +123,18 @@ def find_markers(
             raise ValueError(f"Column '{features_use}' not found in adata.var")
         feature_labels = adata_filtered.var[features_use].values
 
-    if getattr(adata_filtered, "isbacked", False):
-        labels_int = _encode_labels_for_specificity(labels_arr_filtered, n_obs=adata_filtered.n_obs)
-        cluster_names = _cluster_names_for_specificity_labels(labels_arr_filtered)
-        source = MatrixSource(adata_filtered, layer=layer)
-        if source.is_sparse:
-            # Sparse-backed: use the C++ ABI path via the shared dispatcher.
-            raw = _run_specificity_backed_sparse(
-                adata_filtered,
-                layer=layer,
-                chunk_size=backed_chunk_size,
-                labels_int=labels_int,
-                n_threads=0,
-            )
-            upper_sig = raw["upper_significance"]
-            lower_sig = raw["lower_significance"]
-        else:
-            # Dense-backed: use the C++ ABI path (BackedDenseMatrixOperator).
-            raw = _run_specificity_backed_dense(
-                adata_filtered,
-                layer=layer,
-                chunk_size=backed_chunk_size,
-                labels_int=labels_int,
-                n_threads=0,
-            )
-            upper_sig = raw["upper_significance"]
-            lower_sig = raw["lower_significance"]
-    else:
-        cluster_names = _cluster_names_for_specificity_labels(labels_arr_filtered)
+    cluster_names = _cluster_names_for_specificity_labels(labels_arr_filtered)
 
-        temp_key = "_temp_specificity"
-        result_adata = compute_feature_specificity(
-            adata_filtered,
-            labels_arr_filtered,
-            layer=layer,
-            n_threads=n_threads,
-            key_added=temp_key,
-            backed_chunk_size=backed_chunk_size,
-            inplace=False,
-        )
-        upper_sig = result_adata.varm[f"{temp_key}_upper"]
-        lower_sig = result_adata.varm[f"{temp_key}_lower"]
+    raw = compute_feature_specificity(
+        adata_filtered,
+        labels_arr_filtered,
+        layer=layer,
+        n_threads=n_threads,
+        backed_chunk_size=backed_chunk_size,
+        return_raw=True,
+    )
+    upper_sig = raw["upper_significance"]
+    lower_sig = raw["lower_significance"]
 
     # Compute feature specificity scores
     feat_spec = upper_sig - lower_sig
