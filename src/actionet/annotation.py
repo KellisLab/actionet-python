@@ -11,6 +11,8 @@ from .specificity import (
     _cluster_names_for_specificity_labels,
     compute_feature_specificity,
 )
+from .lazy_transform import LazyTransform, _validate_lazy_transform, _resolve_lazy_backed_transform
+from .backed_io import _backed_group_path
 from . import _core
 from ._matrix_source import MatrixSource
 
@@ -27,6 +29,7 @@ def find_markers(
     result: Literal["table", "ranks", "scores"] = "table",
     return_type: Literal["dataframe", "dict", ""] = "dataframe",
     backed_chunk_size: int = 4096,
+    lazy_transform: Optional[LazyTransform] = None,
 ) -> Union[pd.DataFrame, Dict[str, np.ndarray]]:
     """
     Find marker genes for each cluster/group.
@@ -69,6 +72,12 @@ def find_markers(
     backed_chunk_size : int, optional (default: 4096)
         Number of rows per chunk when streaming backed AnnData.
         Ignored for in-memory objects.
+    lazy_transform : LazyTransform, optional
+        Pre-built lazy logcount transform for backed AnnData inputs.
+        When provided, the backed operator applies per-row normalization
+        and log1p on-the-fly without requiring a persisted ``logcounts``
+        layer.  Only valid when ``layer=None`` and the input is backed.
+        Create with :func:`~actionet.lazy_transform.create_lazy_transform`.
 
     Returns
     -------
@@ -103,35 +112,40 @@ def find_markers(
     if hasattr(labels_arr, 'categories'):
         labels_arr = np.asarray(labels_arr)
 
-    # Filter labels if labels_use is provided
+    # Mask excluded observations in the label vector instead of subsetting
+    # the AnnData.  The C++ specificity backend treats label=0 as
+    # "unassigned" so masked-out cells contribute zero weight.
     if labels_use is not None:
         mask = np.isin(labels_arr, labels_use)
-        adata_filtered = adata[mask, :]
-        labels_arr_filtered = labels_arr[mask]
+        labels_for_spec = labels_arr.copy()
+        from pandas.api.types import is_integer_dtype
+        if is_integer_dtype(labels_for_spec):
+            labels_for_spec[~mask] = -1
+        else:
+            labels_for_spec = labels_for_spec.astype(object)
+            labels_for_spec[~mask] = np.nan
+        cluster_names = _cluster_names_for_specificity_labels(labels_arr[mask])
     else:
-        adata_filtered = adata
-        labels_arr_filtered = labels_arr
+        labels_for_spec = labels_arr
+        cluster_names = _cluster_names_for_specificity_labels(labels_arr)
 
     # Handle features_use parameter
     # Can be: None (use var_names) or str (column name in adata.var)
     if features_use is None:
-        # Use all features
-        feature_labels = adata_filtered.var_names.values
+        feature_labels = adata.var_names.values
     else:
-        # Extract from adata.var column
-        if features_use not in adata_filtered.var.columns:
+        if features_use not in adata.var.columns:
             raise ValueError(f"Column '{features_use}' not found in adata.var")
-        feature_labels = adata_filtered.var[features_use].values
-
-    cluster_names = _cluster_names_for_specificity_labels(labels_arr_filtered)
+        feature_labels = adata.var[features_use].values
 
     raw = compute_feature_specificity(
-        adata_filtered,
-        labels_arr_filtered,
+        adata,
+        labels_for_spec,
         layer=layer,
         n_threads=n_threads,
         backed_chunk_size=backed_chunk_size,
         return_raw=True,
+        lazy_transform=lazy_transform,
     )
     upper_sig = raw["upper_significance"]
     lower_sig = raw["lower_significance"]
@@ -140,15 +154,11 @@ def find_markers(
     feat_spec = upper_sig - lower_sig
     feat_spec[feat_spec < 0] = 0
 
-    # cluster_names was set above during label conversion to match
-    # the column ordering of the specificity matrix.
-
     # Handle features_keep parameter (whitelist filtering)
-    # Can be: None (no filtering), list/array of names, boolean mask, or adata.var column name
     if features_keep is not None:
         if isinstance(features_keep, str):
-            if features_keep in adata_filtered.var.columns:
-                keep_values = adata_filtered.var[features_keep].to_numpy()
+            if features_keep in adata.var.columns:
+                keep_values = adata.var[features_keep].to_numpy()
                 if keep_values.dtype == bool:
                     keep_mask = keep_values
                 else:
@@ -237,6 +247,7 @@ def annotate_cells(
     use_lpa: bool = False,
     n_threads: int = 0,
     backed_chunk_size: int = 4096,
+    lazy_transform: Optional[LazyTransform] = None,
 ) -> Dict[str, np.ndarray]:
     """
     Infer cell annotations from imputed gene expression for all cells.
@@ -282,6 +293,13 @@ def annotate_cells(
     backed_chunk_size : int, optional (default: 4096)
         Number of rows per chunk when streaming backed AnnData.
         Ignored for in-memory objects.
+    lazy_transform : LazyTransform, optional
+        Pre-built lazy logcount transform for backed AnnData inputs.
+        Only applied when ``method="vision"`` and the input is backed.
+        When provided, the backed operator applies per-row normalization
+        and log1p on-the-fly without requiring a persisted ``logcounts``
+        layer.  Only valid when ``layer=None``.
+        Create with :func:`~actionet.lazy_transform.create_lazy_transform`.
 
     Returns
     -------
@@ -320,6 +338,7 @@ def annotate_cells(
     X_markers, celltype_names = _encode_markers(markers, feature_set)
 
     source = MatrixSource(adata, layer=layer)
+    _validate_lazy_transform(lazy_transform, layer=layer, source=source)
     if source.is_backed:
         if method == "vision":
             # Vision method: use the full-width marker matrix and the backed
@@ -365,12 +384,20 @@ def annotate_cells(
     # Compute marker statistics using graph-based imputation
     if method == "vision":
         if source.is_backed:
+            row_scale_factors, apply_log1p, log_scale = _resolve_lazy_backed_transform(
+                source,
+                lazy_transform=lazy_transform,
+                backed_chunk_size=backed_chunk_size,
+            )
             file_path = str(adata.filename)
             group_path = _backed_group_path(layer)
             op = _core.create_backed_operator(
                 file_path=file_path,
                 group_path=group_path,
                 chunk_size=backed_chunk_size,
+                row_scale_factors=row_scale_factors,
+                apply_log1p=apply_log1p,
+                log_scale=log_scale,
             )
             marker_stats = _core.compute_feature_stats_vision_backed_operator(
                 op=op,
