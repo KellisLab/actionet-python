@@ -849,23 +849,78 @@ def plot_umap_raster(
 def plot_umap_interactive(
     adata: AnnData,
     color: Optional[Union[str, Sequence, np.ndarray, pd.Series]] = None,
-    color_source: Optional[Literal["obs", "var", "obsm"]] = None,
+    color_source: Optional[Literal["obs", "var", "obsm"]] = "obs",
     color_type: Optional[Literal["auto", "categorical", "continuous"]] = "auto",
     layer: Optional[str] = None,
-    basis: str = "X_umap",
+    basis: str = "umap_2d_actionet",
     palette: Optional[Union[str, Sequence[str], dict]] = "tab20",
-    cmap: Optional[Union[str, Sequence[str]]] = "viridis",
+    cmap: Optional[Union[str, Sequence[str]]] = "magma",
     size: float = 6,
-    alpha: float = 0.9,
+    alpha: Union[float, Sequence[float]] = 1,
+    legend: bool = True,
     hover_data: Optional[Sequence[str]] = None,
     title: Optional[str] = None,
     vmin: Optional[float] = None,
     vmax: Optional[float] = None,
+    na_color: str = "#cccccc",
+    hide_na: bool = False,
+    color_slot: Optional[str] = "colors_actionet",
     trans_attr: Optional[Union[str, Sequence[float], np.ndarray]] = None,
     trans_fac: float = 1.5,
     trans_th: float = -0.5,
 ):
-    """Plot an interactive UMAP embedding using Plotly WebGL."""
+    """Plot an interactive UMAP embedding using Plotly WebGL.
+
+    Parameters
+    ----------
+    adata
+        AnnData with a 2D embedding in ``adata.obsm[basis]``.
+    color
+        Color key string or vector-like values with length ``adata.n_obs``.
+    color_source
+        When ``color`` is a key string, where to resolve it from: ``"obs"``, ``"var"``,
+        or ``"obsm"``.
+    color_type
+        Override the automatic color classification. ``"auto"`` (default) infers the type
+        from the data. Use ``"categorical"`` or ``"continuous"`` to force a specific mode.
+    layer
+        AnnData layer to use when ``color_source="var"``.
+    basis
+        Key in ``adata.obsm`` containing 2D coordinates.
+    palette
+        Discrete palette name, list of colors, or dict mapping category to color.
+    cmap
+        Continuous colormap name or list of colors for gradients.
+    size
+        Marker size in pixels.
+    alpha
+        Scalar opacity for all points (per-point alpha is not supported by Plotly WebGL).
+    legend
+        Whether to show the legend.
+    hover_data
+        Additional columns from ``adata.obs`` to include in hover tooltips.
+    title
+        Optional plot title.
+    vmin, vmax
+        Optional clamping bounds for continuous values.
+    na_color
+        Color for missing values when categorical or continuous values contain NA.
+    hide_na
+        If True, remove points with missing categorical labels.
+    color_slot
+        If no color specified, try ``adata.obsm[color_slot]`` for RGB colors.
+    trans_attr
+        Continuous attribute used to compute point transparency (applied to scalar alpha).
+    trans_fac
+        Transparency scale factor for the logistic mapping.
+    trans_th
+        Z-score threshold for transparency mapping.
+
+    Returns
+    -------
+    plotly.graph_objects.Figure
+        A Plotly figure object.
+    """
 
     try:
         import plotly.express as px
@@ -876,7 +931,7 @@ def plot_umap_interactive(
         adata,
         color=color,
         color_source=color_source,
-        color_slot=None,
+        color_slot=color_slot,
         color_type=color_type,
         layer=layer,
     )
@@ -884,10 +939,10 @@ def plot_umap_interactive(
     coords = resolve_embedding(adata, basis)
     plot_df = pd.DataFrame({"x": coords[:, 0], "y": coords[:, 1]})
 
-    alpha_values = None
+    scalar_alpha = float(alpha) if not isinstance(alpha, (list, tuple, np.ndarray, pd.Series)) else 1.0
     if trans_attr is not None:
         trans_vals = resolve_numeric_vector(adata, trans_attr, "trans_attr")
-        alpha_values = compute_transparency(trans_vals, trans_fac, trans_th) * float(alpha)
+        scalar_alpha = float(scalar_alpha) * float(np.mean(compute_transparency(trans_vals, trans_fac, trans_th)))
 
     color_args = {}
     if kind == "none":
@@ -905,9 +960,11 @@ def plot_umap_interactive(
             values,
             categories=categories,
             palette=palette,
-            na_color="#cccccc",
+            na_color=na_color,
         )
         plot_df["color"] = labels
+        if hide_na and "NA" in plot_df["color"].values:
+            plot_df = plot_df[plot_df["color"] != "NA"].copy()
         color_args["color_discrete_map"] = color_map
         color_key = "color"
     else:
@@ -930,10 +987,14 @@ def plot_umap_interactive(
         render_mode="webgl",
         **color_args,
     )
-    marker_opts = {"size": size, "opacity": alpha}
-    if alpha_values is not None:
-        marker_opts["opacity"] = alpha_values
-    fig.update_traces(marker=marker_opts)
+    fig.update_traces(marker={"size": size, "opacity": scalar_alpha})
+    fig.update_layout(
+        xaxis={"visible": False},
+        yaxis={"visible": False},
+        plot_bgcolor="white",
+        paper_bgcolor="white",
+        showlegend=legend,
+    )
     if title:
         fig.update_layout(title=title)
     return fig
