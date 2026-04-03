@@ -57,7 +57,7 @@ Repository = "https://github.com/KellisLab/actionet-python"
 [tool.scikit-build]
 minimum-version = "0.10"
 build-dir = "build/{wheel_tag}"
-cmake.verbose = true
+build.verbose = true
 cmake.build-type = "Release"
 wheel.packages = ["src/actionet"]
 
