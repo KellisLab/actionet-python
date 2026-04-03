@@ -48,7 +48,7 @@ class LazyTransform:
             raise ValueError("`validation_samples` must be > 0.")
 
         _validate_lazy_logcounts_params(
-            lazy_logcounts=True,
+            enabled=True,
             lazy_target_sum=target_sum,
             lazy_log_base=log_base,
             lazy_pseudocount=pseudocount,
@@ -232,12 +232,12 @@ def _validate_lazy_transform(
 
 def _validate_lazy_logcounts_params(
     *,
-    lazy_logcounts: bool,
+    enabled: bool,
     lazy_target_sum: float,
     lazy_log_base: Optional[float],
     lazy_pseudocount: float,
 ) -> None:
-    if not lazy_logcounts:
+    if not enabled:
         return
 
     if lazy_target_sum <= 0:
@@ -377,7 +377,7 @@ def _resolve_lazy_backed_transform(
         return None, False, 1.0
 
     _validate_lazy_logcounts_params(
-        lazy_logcounts=True,
+        enabled=True,
         lazy_target_sum=lazy_transform.target_sum,
         lazy_log_base=lazy_transform.log_base,
         lazy_pseudocount=lazy_transform.pseudocount,

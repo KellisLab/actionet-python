@@ -5,12 +5,11 @@
   * Mix of float64 and float64 (mainly in operator, sometimes in-mem) causes drift within and across modes
   * C++ uses 64-bit, R/Rcpp does also - always consistent
 * Fix R/Python result parity
-* obs label as legend title
-* Test plot umap interactive
 * Document everything
 * Add run_lpa/propagate_labels
 * Decouple compute_network_diffusion from anndata
 * Change output from numpy to pandas (annotate_*)
+* Fix memory usage in `compute_network_diffusion()` (in-memory)
 * Reorganize and consolidate code
 * * Audit for dead functions.
 
@@ -21,7 +20,6 @@
 * Lazy transform in-memory?
 * Allow changes to lazy transform params
   * Force recompute of attributes
-* Normalize with C++ API (nah?)
 * `lazy_logcounts` in `_validate_lazy_logcounts_params()` does nothing?
 * compute_transparency() use scale()
 * Explore more accurate and faster log approximations for JSD and lazy transform

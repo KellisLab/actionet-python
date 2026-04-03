@@ -20,9 +20,9 @@ dependencies = [
     "numpy>=2.0.0",
     "scipy>=1.11.0",
     "anndata>=0.12.10",
-    "scanpy>=1.10.0",
     "pandas>=2.0.0",
     "h5py>=3.9.0",
+    "igraph>=1.0.0",
 ]
 classifiers = [
     "Development Status :: 4 - Beta",
@@ -46,7 +46,7 @@ plotting = [
     "lets-plot>=4.5.0",
     "matplotlib>=3.9.0",
     "plotly>=5.18.0",
-    "igraph>=1.0.0",
+    "nbformat>=4.2.0",
 ]
 
 [project.urls]

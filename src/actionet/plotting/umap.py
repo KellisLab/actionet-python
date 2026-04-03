@@ -656,6 +656,7 @@ def plot_umap(
     try:
         from lets_plot import (
             aes,
+            element_blank,
             geom_point,
             geom_text,
             ggplot,
@@ -770,7 +771,10 @@ def plot_umap(
         plot = plot + scale_alpha_identity()
 
     plot = plot + theme_void() + ggsize(ctx.width_px, ctx.height_px)
-    plot = plot + theme(legend_position="right" if legend else "none")
+    plot = plot + theme(
+        legend_position="right" if legend else "none",
+        legend_title=element_blank(),
+    )
 
     if title:
         plot = plot + labs(title=title)
@@ -855,11 +859,13 @@ def plot_umap_interactive(
     basis: str = "umap_2d_actionet",
     palette: Optional[Union[str, Sequence[str], dict]] = "tab20",
     cmap: Optional[Union[str, Sequence[str]]] = "magma",
-    size: float = 6,
+    size: float = 3,
     alpha: Union[float, Sequence[float]] = 1,
     legend: bool = True,
     hover_data: Optional[Sequence[str]] = None,
     title: Optional[str] = None,
+    width: Optional[int] = 600,
+    height: Optional[int] = 500,
     vmin: Optional[float] = None,
     vmax: Optional[float] = None,
     na_color: str = "#cccccc",
@@ -901,6 +907,10 @@ def plot_umap_interactive(
         Additional columns from ``adata.obs`` to include in hover tooltips.
     title
         Optional plot title.
+    width
+        Figure width in pixels. Set to ``None`` for responsive (full-width) layout.
+    height
+        Figure height in pixels. Set to ``None`` for responsive layout.
     vmin, vmax
         Optional clamping bounds for continuous values.
     na_color
@@ -989,11 +999,15 @@ def plot_umap_interactive(
     )
     fig.update_traces(marker={"size": size, "opacity": scalar_alpha})
     fig.update_layout(
+        width=width,
+        height=height,
         xaxis={"visible": False},
         yaxis={"visible": False},
         plot_bgcolor="white",
         paper_bgcolor="white",
         showlegend=legend,
+        legend_title_text="",
+        coloraxis_colorbar_title_text="",
     )
     if title:
         fig.update_layout(title=title)
