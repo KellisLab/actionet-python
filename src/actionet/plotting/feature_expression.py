@@ -10,6 +10,13 @@ from anndata import AnnData
 
 from ..anndata_utils import anndata_to_matrix
 from ..imputation import impute_features
+from .._matrix_source import MatrixSource
+from ..backed_io import _backed_group_path
+from ..lazy_transform import (
+    LazyTransform,
+    _resolve_lazy_backed_transform,
+)
+from .. import _core
 from .umap import (
     _new_raster_figure,
     _prepare_umap_context,
@@ -60,16 +67,38 @@ def _extract_expression(
     features: Sequence[str],
     features_use: Optional[str],
     layer: Optional[str],
+    lazy_transform: Optional[LazyTransform] = None,
+    backed_chunk_size: int = 4096,
 ) -> pd.DataFrame:
     feature_labels = _resolve_feature_labels(adata, features_use)
     feature_to_idx = {feat: idx for idx, feat in enumerate(feature_labels)}
-    feature_indices = np.array([feature_to_idx[feat] for feat in features], dtype=int)
+    feature_indices = np.array([feature_to_idx[feat] for feat in features], dtype=np.int64)
 
-    matrix = anndata_to_matrix(adata, layer=layer, transpose=True)
-    expr = matrix[feature_indices, :]
-    if hasattr(expr, "toarray"):
-        expr = expr.toarray()
-    expr = np.asarray(expr).T
+    source = MatrixSource(adata, layer=layer)
+    if source.is_backed:
+        row_scale_factors, apply_log1p, log_scale = _resolve_lazy_backed_transform(
+            source,
+            lazy_transform=lazy_transform,
+            backed_chunk_size=backed_chunk_size,
+        )
+        op = _core.create_backed_operator(
+            file_path=str(adata.filename),
+            group_path=_backed_group_path(layer),
+            chunk_size=backed_chunk_size,
+            row_scale_factors=row_scale_factors,
+            apply_log1p=apply_log1p,
+            log_scale=log_scale,
+        )
+        expr = np.asarray(
+            _core.backed_take_columns(op, feature_indices, prefer_sparse=False),
+            dtype=np.float64,
+        )
+    else:
+        matrix = anndata_to_matrix(adata, layer=layer, transpose=True)
+        expr = matrix[feature_indices, :]
+        if hasattr(expr, "toarray"):
+            expr = expr.toarray()
+        expr = np.asarray(expr).T
     return pd.DataFrame(expr, index=adata.obs_names, columns=features)
 
 
@@ -97,6 +126,8 @@ def plot_feature_expression(
     show_legend: bool = False,
     sort_features: bool = True,
     n_threads: int = 0,
+    backed_chunk_size: int = 4096,
+    lazy_transform: Optional[LazyTransform] = None,
 ):
     """Plot feature expression values on the UMAP embedding.
 
@@ -136,6 +167,15 @@ def plot_feature_expression(
         If True, sort matched features.
     n_threads
         Number of threads for imputation.
+    backed_chunk_size : int, optional (default: 4096)
+        Number of rows per chunk when streaming backed AnnData.
+        Ignored for in-memory objects.
+    lazy_transform : LazyTransform, optional
+        Pre-built lazy logcount transform for backed AnnData inputs.
+        When provided, the backed operator applies per-row normalization
+        and log1p on-the-fly without requiring a persisted ``logcounts``
+        layer.  Only valid when ``layer=None`` and the input is backed.
+        Create with :func:`~actionet.lazy_transform.create_lazy_transform`.
 
     Returns
     -------
@@ -161,11 +201,17 @@ def plot_feature_expression(
             layer=layer,
             alpha=alpha,
             n_threads=n_threads,
+            backed_chunk_size=backed_chunk_size,
+            lazy_transform=lazy_transform,
         )
         if sort_features:
             expr_profile = expr_profile.loc[:, [feat for feat in marker_set if feat in expr_profile.columns]]
     else:
-        expr_profile = _extract_expression(adata, marker_set, features_use, layer)
+        expr_profile = _extract_expression(
+            adata, marker_set, features_use, layer,
+            lazy_transform=lazy_transform,
+            backed_chunk_size=backed_chunk_size,
+        )
 
     out = {}
     for feat_name in expr_profile.columns:
@@ -236,8 +282,57 @@ def plot_feature_expression_raster(
     show_legend: bool = False,
     sort_features: bool = True,
     n_threads: int = 0,
+    backed_chunk_size: int = 4096,
+    lazy_transform: Optional[LazyTransform] = None,
 ):
-    """Plot feature expression values on the UMAP embedding using a raster backend."""
+    """Plot feature expression values on the UMAP embedding using a raster backend.
+
+    Parameters
+    ----------
+    adata
+        AnnData with expression data and embedding in ``adata.obsm[basis]``.
+    features
+        Feature name or collection of features to plot.
+    features_use
+        Column in ``adata.var`` to use for feature matching.
+    alpha
+        Diffusion parameter; if > 0, impute expression using network diffusion.
+    algorithm
+        Imputation algorithm (``"actionet"`` or ``"pca"``).
+    layer
+        Layer to read expression values from when alpha == 0.
+    trans_attr
+        Optional continuous attribute controlling transparency.
+    trans_th
+        Z-score threshold for transparency mapping.
+    trans_fac
+        Transparency scale factor for the logistic mapping.
+    grad_palette
+        Continuous palette for expression values.
+    point_size
+        Marker size for UMAP scatter.
+    net_slot
+        Key in ``adata.obsp`` for the ACTIONet network.
+    basis
+        Key in ``adata.obsm`` containing 2D coordinates.
+    single_plot
+        If True, arrange multiple plots into a grid.
+    show_legend
+        Whether to show the color legend.
+    sort_features
+        If True, sort matched features.
+    n_threads
+        Number of threads for imputation.
+    backed_chunk_size : int, optional (default: 4096)
+        Number of rows per chunk when streaming backed AnnData.
+        Ignored for in-memory objects.
+    lazy_transform : LazyTransform, optional
+        Pre-built lazy logcount transform for backed AnnData inputs.
+        When provided, the backed operator applies per-row normalization
+        and log1p on-the-fly without requiring a persisted ``logcounts``
+        layer.  Only valid when ``layer=None`` and the input is backed.
+        Create with :func:`~actionet.lazy_transform.create_lazy_transform`.
+    """
 
     requested = _flatten_features(features)
     marker_set = _select_features(adata, requested, features_use, sort_features)
@@ -257,11 +352,17 @@ def plot_feature_expression_raster(
             layer=layer,
             alpha=alpha,
             n_threads=n_threads,
+            backed_chunk_size=backed_chunk_size,
+            lazy_transform=lazy_transform,
         )
         if sort_features:
             expr_profile = expr_profile.loc[:, [feat for feat in marker_set if feat in expr_profile.columns]]
     else:
-        expr_profile = _extract_expression(adata, marker_set, features_use, layer)
+        expr_profile = _extract_expression(
+            adata, marker_set, features_use, layer,
+            lazy_transform=lazy_transform,
+            backed_chunk_size=backed_chunk_size,
+        )
 
     out = {}
     for feat_name in expr_profile.columns:

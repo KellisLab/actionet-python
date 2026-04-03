@@ -11,6 +11,12 @@ from . import _core
 from .anndata_utils import anndata_to_matrix
 from ._matrix_source import MatrixSource
 from ._backed_persist import persist_updates
+from .backed_io import _backed_group_path
+from .lazy_transform import (
+    LazyTransform,
+    _resolve_lazy_backed_transform,
+    _validate_lazy_transform,
+)
 
 
 def impute_features(
@@ -26,6 +32,7 @@ def impute_features(
     norm_method: Union[int, Literal["pagerank", "pagerank_sym"]] = "pagerank_sym",
     n_threads: int = 0,
     backed_chunk_size: int = 4096,
+    lazy_transform: Optional[LazyTransform] = None,
 ) -> pd.DataFrame:
     """
     Impute gene expression using network diffusion.
@@ -60,6 +67,12 @@ def impute_features(
     backed_chunk_size : int, optional (default: 4096)
         Number of rows per chunk when streaming backed AnnData.
         Ignored for in-memory objects.
+    lazy_transform : LazyTransform, optional
+        Pre-built lazy logcount transform for backed AnnData inputs.
+        When provided, the backed operator applies per-row normalization
+        and log1p on-the-fly without requiring a persisted ``logcounts``
+        layer.  Only valid when ``layer=None`` and the input is backed.
+        Create with :func:`~actionet.lazy_transform.create_lazy_transform`.
 
     Returns
     -------
@@ -86,13 +99,28 @@ def impute_features(
     feature_indices = resolved.matched_indices
 
     source = MatrixSource(adata, layer=layer)
+    _validate_lazy_transform(lazy_transform, layer=layer, source=source)
+
     if source.is_backed:
-        X0_cells = source.feature_subset(
-            feature_indices,
-            chunk_size=backed_chunk_size,
-            prefer_sparse=False,
+        row_scale_factors, apply_log1p, log_scale = _resolve_lazy_backed_transform(
+            source,
+            lazy_transform=lazy_transform,
+            backed_chunk_size=backed_chunk_size,
         )
-        X0 = np.asarray(X0_cells, dtype=np.float64)  # cells x features
+        file_path = str(adata.filename)
+        group_path = _backed_group_path(layer)
+        op = _core.create_backed_operator(
+            file_path=file_path,
+            group_path=group_path,
+            chunk_size=backed_chunk_size,
+            row_scale_factors=row_scale_factors,
+            apply_log1p=apply_log1p,
+            log_scale=log_scale,
+        )
+        X0 = np.asarray(
+            _core.backed_take_columns(op, feature_indices, prefer_sparse=False),
+            dtype=np.float64,
+        )
     else:
         S = anndata_to_matrix(adata, layer=layer)  # cells x genes, native
         X0 = S[:, feature_indices]
