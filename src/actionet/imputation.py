@@ -116,6 +116,7 @@ def impute_features(
             row_scale_factors=row_scale_factors,
             apply_log1p=apply_log1p,
             log_scale=log_scale,
+            n_threads=n_threads,
         )
         X0 = np.asarray(
             _core.backed_take_columns(op, feature_indices, prefer_sparse=False),
