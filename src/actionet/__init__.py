@@ -39,7 +39,7 @@ from .batch_correction import (
 )
 from .imputation import (
     impute_features,
-    impute_from_archetypes,
+    impute_features_from_archetypes,
     smooth_kernel,
 )
 from .advanced import (
@@ -107,7 +107,7 @@ __all__ = [
     "correct_basal_expression",
     # Imputation
     "impute_features",
-    "impute_from_archetypes",
+    "impute_features_from_archetypes",
     "smooth_kernel",
     # Advanced functions
     "run_archetypal_analysis",

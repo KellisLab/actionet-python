@@ -260,10 +260,65 @@ def compute_archetype_feature_specificity(
     key_added: str = "archetype",
     inplace: bool = True,
     backed_chunk_size: int = 4096,
+    return_raw: bool = False,
     lazy_transform: Optional[LazyTransform] = None,
-) -> Optional[AnnData]:
-    """Compute feature specificity scores for archetypes using archetype matrix."""
-    if not inplace:
+) -> Optional[Union[AnnData, dict]]:
+    """Compute feature specificity scores for archetypes using archetype footprint matrix.
+
+    For each archetype, scores each feature (gene) by how specifically it is
+    expressed in cells with high membership in that archetype.  Results are
+    stored in ``adata.varm`` under keys derived from ``key_added``.
+
+    Parameters
+    ----------
+    adata : AnnData
+        Annotated data matrix (cells x genes).
+    archetype_key : str or np.ndarray, default ``"archetype_footprint"``
+        Key in ``adata.obsm`` holding the archetype membership matrix
+        (cells x archetypes), or the matrix itself as an ndarray.
+    layer : str, optional
+        Layer of ``adata`` to use as the expression matrix.  If ``None``,
+        ``adata.X`` is used.
+    n_threads : int, default 0
+        Number of threads for the C++ backend.  ``0`` lets the backend choose.
+    key_added : str, default ``"archetype"``
+        Prefix for the keys written to ``adata.varm``:
+
+        - ``<key_added>_feat_profile`` — average expression profile per archetype
+          (genes x archetypes).
+        - ``<key_added>_feat_specificity_upper`` — upper-tail specificity scores
+          (genes x archetypes).
+        - ``<key_added>_feat_specificity_lower`` — lower-tail specificity scores
+          (genes x archetypes).
+    inplace : bool, default ``True``
+        If ``True``, write results into ``adata`` and return ``None``.
+        If ``False``, operate on a copy of ``adata`` and return it.
+        Ignored when ``return_raw=True``.
+    backed_chunk_size : int, default 4096
+        Row chunk size used when streaming a backed (HDF5-on-disk) AnnData.
+    return_raw : bool, default ``False``
+        If ``True``, return the raw result dict from the C++ backend instead of
+        writing to ``adata``.  The dict contains keys ``"archetypes"``,
+        ``"upper_significance"``, and ``"lower_significance"``.
+        When ``True``, ``adata`` is never modified and ``inplace`` is ignored.
+    lazy_transform : LazyTransform, optional
+        Pre-built lazy logcount transform for backed AnnData inputs.
+        When provided, the backed operator applies per-row normalization
+        (target-sum scaling) and log1p on-the-fly without requiring a
+        persisted ``logcounts`` layer.  Only valid when ``layer=None``
+        and the input is backed.  Create with
+        :func:`~actionet.lazy_transform.create_lazy_transform`.
+
+    Returns
+    -------
+    None
+        When ``inplace=True`` (default).
+    AnnData
+        A modified copy of ``adata`` when ``inplace=False``.
+    dict
+        Raw C++ result dict when ``return_raw=True``.
+    """
+    if not inplace and not return_raw:
         adata = adata.copy()
 
     source = MatrixSource(adata, layer=layer)
@@ -317,6 +372,9 @@ def compute_archetype_feature_specificity(
             result = _core.archetype_feature_specificity_sparse(S, H, n_threads)
         else:
             result = _core.archetype_feature_specificity_dense(S, H, n_threads)
+
+    if return_raw:
+        return result
 
     persist_updates(
         adata,

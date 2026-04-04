@@ -4,15 +4,12 @@ from typing import Optional, Literal
 import numpy as np
 from anndata import AnnData
 
-from ._matrix_source import MatrixSource
 from .core import (
     run_action,
     build_network,
     compute_network_diffusion,
     layout_network,
 )
-from .specificity import compute_archetype_feature_specificity
-from .lazy_transform import LazyTransform, _validate_lazy_transform
 from .tools import scale
 from .visualization import compute_node_colors
 
@@ -21,7 +18,6 @@ def run_actionet(
     adata: AnnData,
     k_min: int = 2,
     k_max: int = 30,
-    layer: Optional[str] = None,
     reduction_key: str = "action",
     network_key: str = "actionet",
     min_observations: int = 2,
@@ -41,12 +37,9 @@ def run_actionet(
     layout_min_dist: float = 1.0,
     layout_3d: bool = True,
     layout_parallel: bool = True,
-    compute_specificity_parallel: bool = False,
     n_threads: int = 0,
     seed: int = 0,
     inplace: bool = True,
-    backed_chunk_size: int = 4096,
-    lazy_transform: Optional[LazyTransform] = None,
 ) -> Optional[AnnData]:
     """
     Run the complete ACTIONet pipeline.
@@ -58,7 +51,6 @@ def run_actionet(
     4. Network-based diffusion
     5. 2D/3D layout generation
     6. Node color computation
-    7. Feature specificity analysis
 
     Parameters
     ----------
@@ -68,8 +60,6 @@ def run_actionet(
         Minimum number of archetypes.
     k_max : int, optional (default: 30)
         Maximum number of archetypes.
-    layer : str, optional
-        Layer in adata to use. If None, uses adata.X.
     reduction_key : str, optional (default: "action")
         Key for storing/retrieving reduced representation in adata.obsm.
     network_key : str, optional (default: "actionet")
@@ -118,24 +108,12 @@ def run_actionet(
         If True, compute both 2D and 3D layouts.
     layout_parallel : bool, optional (default: True)
         Use multiple threads for layout computation.
-    compute_specificity_parallel : bool, optional (default: False)
-        Use multiple threads for specificity computation.
-        Backed sparse specificity uses a memory-safe parallel scan that avoids
-        per-thread ``n_features x k`` temporary matrices.
-        May cause memory issues on large datasets.
     n_threads : int, optional (default: 0)
         Number of threads (0=auto).
     seed : int, optional (default: 0)
         Random seed for reproducibility.
     inplace : bool, optional (default: True)
         If True, modifies adata in place. If False, returns modified copy.
-    backed_chunk_size : int, optional (default: 4096)
-        Number of rows per chunk when streaming backed AnnData.
-        Forwarded to feature specificity and any other backed-aware stage.
-        Ignored for in-memory objects.
-    lazy_transform : LazyTransform or None, optional (default: None)
-        Pre-computed lazy logcount transform for backed inputs on ``.X`` only.
-        ``None`` means no transformation is applied.
 
     Returns
     -------
@@ -165,12 +143,6 @@ def run_actionet(
         3D layout coordinates (if layout_3d=True).
     adata.obsm[f"colors_{network_key}"] : np.ndarray
         RGB colors for 3D layout (if layout_3d=True).
-    adata.varm["archetype_feat_profile"] : np.ndarray
-        Average feature profile per archetype (features × archetypes).
-    adata.varm["archetype_feat_specificity_upper"] : np.ndarray
-        Upper-tail significance scores (features × archetypes).
-    adata.varm["archetype_feat_specificity_lower"] : np.ndarray
-        Lower-tail significance scores (features × archetypes).
 
     Examples
     --------
@@ -188,11 +160,6 @@ def run_actionet(
     """
     if not inplace:
         adata = adata.copy()
-
-    # Validate lazy-transform compatibility up front so failures happen
-    # before running expensive decomposition/network/layout stages.
-    source = MatrixSource(adata, layer=layer)
-    _validate_lazy_transform(lazy_transform, layer=layer, source=source)
 
     # Step 1: ACTION archetypal analysis
     print("Running ACTION decomposition...")
@@ -228,7 +195,7 @@ def run_actionet(
     )
 
     # Step 3: Compute network centrality
-     # TODO: Implement network_centrality
+    # TODO: Implement network_centrality
 
     # Step 4: Smooth archetype footprints via network diffusion
     print("Computing archetype footprints via diffusion...")
@@ -297,19 +264,6 @@ def run_actionet(
             n_threads=n_threads,
             return_raw=False,
         )
-
-    # Step 7: Compute feature specificity for each archetype
-    print("Computing feature specificity...")
-    compute_archetype_feature_specificity(
-        adata,
-        archetype_key="archetype_footprint",
-        layer=layer,
-        key_added="archetype",
-        n_threads=1 if not compute_specificity_parallel else n_threads,
-        backed_chunk_size=backed_chunk_size,
-        lazy_transform=lazy_transform,
-        inplace=True,
-    )
 
     if not inplace:
         return adata

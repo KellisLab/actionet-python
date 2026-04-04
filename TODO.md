@@ -6,20 +6,16 @@
   * C++ uses 64-bit, R/Rcpp does also - always consistent
 * Fix R/Python result parity
 * Document everything
-* Add run_lpa/propagate_labels
 * Decouple compute_network_diffusion from anndata
 * Change output from numpy to pandas (annotate_*)
-* Fix memory usage in `compute_network_diffusion()` (in-memory)
 * Reorganize and consolidate code
 * * Audit for dead functions.
-* Speed up plot/impute features
 * Interactive cell selector
 * Optionally omit C_* and specificity matrices to reduce object size
 
 ## Secondary
 * Consolidate normalization code-paths
 * Add network centrality to run_actionet?
-* Remove archetype specificity from run_actionet?
 * Lazy transform in-memory?
 * Allow changes to lazy transform params
   * Force recompute of attributes
@@ -39,3 +35,10 @@
   * Added validation logic
 * Add pseudocount to `normalize_anndata()`
 * `compute_feature_specificity` backed/in-mem parity
+* Fix memory usage in `compute_network_diffusion()` (in-memory)
+  * Probably fixed???
+* Speed up plot/impute features
+  * I/O bound. Probably as good as it's gonna get
+* Add run_lpa/propagate_labels
+* Decouple archetype specificity from run_actionet
+  * Compute specificity on the fly for `impuimpute_from_archetypes()`
