@@ -12,14 +12,14 @@ todos:
     content: Fuse X0_scaled into the power iteration loop in diffusionPowerIter and diffusionPowerIterSparse
     status: completed
   - id: 2d-chebyshev-inplace
-    content: Apply in-place normalizeGraph to diffusionChebyshev path
-    status: pending
+    content: Apply in-place normalizeGraph and buffer rotation to diffusionChebyshev path
+    status: completed
   - id: 1a-omp-take-columns
     content: Add OpenMP parallelization to take_columns_dense_csr_ inner loop
-    status: pending
+    status: completed
   - id: 1b-chunk-size-takecolumns
     content: Use full chunk_size_ (skip NNZ cap) for takeColumns reads
-    status: pending
+    status: completed
 isProject: false
 ---
 
@@ -63,6 +63,15 @@ flowchart LR
 - File: [backed_sparse_matrix_operator.cpp](src/libactionet/src/io/backed_h5ad/backed_sparse_matrix_operator.cpp)
 - `next_block_end_` throttles I/O via `target_chunk_nnz_`, which is tuned for repeated matvec passes. For a single-pass column extraction, larger reads reduce HDF5 call overhead.
 - Add a `takeColumns`-specific block-end helper (or a flag) that uses `chunk_size_` directly without the NNZ cap.
+
+### Gap: CSR column extraction is fundamentally O(total NNZ)
+
+Fixes 1a and 1b improve the CSR `takeColumns` path but don't change its algorithmic complexity: it still scans every row of the matrix even when extracting a handful of columns. CSC `takeColumns` is O(NNZ of selected columns only) — orders of magnitude faster for small column subsets. For CSR-stored h5ad files (the common case), a true fix would require one of:
+- Preferring an existing CSC dataset/layer if present in the h5ad
+- Building a column→row inverted index at operator construction time (one upfront full scan, then O(selected NNZ) random reads for each extraction)
+- Writing a CSC companion dataset to the h5ad on first access
+
+This is left as a future optimization.
 
 ---
 
