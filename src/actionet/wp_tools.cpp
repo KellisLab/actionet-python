@@ -236,12 +236,11 @@ py::object scale_matrix_sparse(py::object X, py::array_t<double> v, unsigned int
 
 py::object normalize_graph(py::object G, int norm_method = 0) {
     arma::sp_mat G_sp = scipy_to_arma_sparse(G);
-    arma::sp_mat Gn;
     {
         py::gil_scoped_release release;
-        Gn = actionet::normalizeGraph(G_sp, norm_method);
+        actionet::normalizeGraph(G_sp, norm_method);
     }
-    return arma_sparse_to_scipy(Gn);
+    return arma_sparse_to_scipy(G_sp);
 }
 
 // mwm =================================================================================================================

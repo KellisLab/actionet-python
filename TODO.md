@@ -12,6 +12,9 @@
 * Fix memory usage in `compute_network_diffusion()` (in-memory)
 * Reorganize and consolidate code
 * * Audit for dead functions.
+* Speed up plot/impute features
+* Interactive cell selector
+* Optionally omit C_* and specificity matrices to reduce object size
 
 ## Secondary
 * Consolidate normalization code-paths
@@ -23,6 +26,7 @@
 * `lazy_logcounts` in `_validate_lazy_logcounts_params()` does nothing?
 * compute_transparency() use scale()
 * Explore more accurate and faster log approximations for JSD and lazy transform
+* Combine plot_umap* paths with `raster=bool`
 
 ## Done
 * ARMA_DONT_USE_WRAPPER multiple redefinition
