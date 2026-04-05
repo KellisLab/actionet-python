@@ -73,14 +73,16 @@ def decompose_action(
     dict with keys:
         - C: List of C matrices for k=k_min to k_max
         - H: List of H matrices for k=k_min to k_max
+        - C_stacked: All C matrices column-stacked (n_cells x T)
+        - H_stacked: All H matrices row-stacked (T x n_cells)
     """
     result = _core.decomp_action(S_r, k_min, k_max, max_iter, tolerance, n_threads)
     return result
 
 
 def collect_archetypes(
-    C_trace: List[np.ndarray],
-    H_trace: List[np.ndarray],
+    C_stacked: np.ndarray,
+    H_stacked: np.ndarray,
     specificity_threshold: float = -3.0,
     min_observations: int = 3,
 ) -> dict:
@@ -89,10 +91,10 @@ def collect_archetypes(
 
     Parameters
     ----------
-    C_trace
-        List of C matrices from ACTION decomposition.
-    H_trace
-        List of H matrices from ACTION decomposition.
+    C_stacked
+        Pre-stacked C matrix from decomp_action (n_cells x T).
+    H_stacked
+        Pre-stacked H matrix from decomp_action (T x n_cells).
     specificity_threshold
         Minimum threshold (z-score) to filter archetypes.
     min_observations
@@ -102,11 +104,11 @@ def collect_archetypes(
     -------
     dict with keys:
         - selected_archs: Indices of selected archetypes
-        - C_stacked: Stacked C matrix
-        - H_stacked: Stacked H matrix
+        - C_stacked: Filtered stacked C matrix
+        - H_stacked: Filtered stacked H matrix
     """
     result = _core.collect_archetypes(
-        C_trace, H_trace, specificity_threshold, min_observations
+        C_stacked, H_stacked, specificity_threshold, min_observations
     )
     return result
 

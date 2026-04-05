@@ -43,15 +43,21 @@ py::dict decomp_action(py::array_t<double> S_r, int k_min = 2, int k_max = 30,
     py::list C_list;
     py::list H_list;
 
-    for (int i = k_min; i <= k_max; i++) {
-        arma::mat cur_C = trace.C[i];
-        arma::mat cur_H = trace.H[i];
+    // Extract per-k slices from the pre-stacked buffers.
+    // C_stacked is n_cells x T (columns); H_stacked is T x n_cells (rows).
+    // Column offset for level k = sum_{j=k_min}^{k-1} j  = (k - k_min) * (k_min + k - 1) / 2
+    for (int k = k_min; k <= k_max; k++) {
+        size_t off = (size_t)(k - k_min) * (k_min + k - 1) / 2;
+        arma::mat cur_C = trace.C_stacked.cols(off, off + k - 1);
+        arma::mat cur_H = trace.H_stacked.rows(off, off + k - 1);
         C_list.append(arma_mat_to_numpy(cur_C));
         H_list.append(arma_mat_to_numpy(cur_H));
     }
 
     res["C"] = C_list;
     res["H"] = H_list;
+    res["C_stacked"] = arma_mat_to_numpy(trace.C_stacked);
+    res["H_stacked"] = arma_mat_to_numpy(trace.H_stacked);
 
     return res;
 }
@@ -90,22 +96,15 @@ py::dict run_action(py::array_t<double> S_r, int k_min = 2, int k_max = 30,
 
 // action_post =========================================================================================================
 
-py::dict collect_archetypes(py::list C_trace, py::list H_trace, double spec_th = -3.0, int min_obs = 3) {
-    int n_list = py::len(H_trace);
-    arma::field<arma::mat> C_trace_vec(n_list + 1);
-    arma::field<arma::mat> H_trace_vec(n_list + 1);
-
-    for (int i = 0; i < n_list; i++) {
-        if (!C_trace[i].is_none() && !H_trace[i].is_none()) {
-            C_trace_vec[i + 1] = numpy_to_arma_mat(C_trace[i].cast<py::array_t<double>>());
-            H_trace_vec[i + 1] = numpy_to_arma_mat(H_trace[i].cast<py::array_t<double>>());
-        }
-    }
+py::dict collect_archetypes(py::array_t<double> C_stacked, py::array_t<double> H_stacked,
+                            double spec_th = -3.0, int min_obs = 3) {
+    arma::mat C_mat = numpy_to_arma_mat(C_stacked);
+    arma::mat H_mat = numpy_to_arma_mat(H_stacked);
 
     actionet::ResCollectArch results;
     {
         py::gil_scoped_release release;
-        results = actionet::collectArchetypes(C_trace_vec, H_trace_vec, spec_th, min_obs);
+        results = actionet::collectArchetypes(C_mat, H_mat, spec_th, min_obs);
     }
 
     py::dict out;
@@ -324,7 +323,7 @@ void init_action(py::module_ &m) {
 
     // action_post
     m.def("collect_archetypes", &collect_archetypes, "Collect and filter archetypes",
-          py::arg("C_trace"), py::arg("H_trace"), py::arg("spec_th") = -3.0, py::arg("min_obs") = 3);
+          py::arg("C_stacked"), py::arg("H_stacked"), py::arg("spec_th") = -3.0, py::arg("min_obs") = 3);
 
     m.def("merge_archetypes", &merge_archetypes, "Merge redundant archetypes",
           py::arg("S_r"), py::arg("C_stacked"), py::arg("H_stacked"), py::arg("thread_no") = 0);
