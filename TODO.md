@@ -1,12 +1,11 @@
 ## Primary
-* Python `compute_feature_specificity()` in-mem is still garbage
+* Add 3D to plotly
 * recreate LazyTransform from uns
 * Numerical percision inconsistency
   * Mix of float64 and float64 (mainly in operator, sometimes in-mem) causes drift within and across modes
   * C++ uses 64-bit, R/Rcpp does also - always consistent
 * Fix R/Python result parity
 * Document everything
-* Decouple compute_network_diffusion from anndata
 * Change output from numpy to pandas (annotate_*)
 * Reorganize and consolidate code
 * * Audit for dead functions.
@@ -23,6 +22,7 @@
 * compute_transparency() use scale()
 * Explore more accurate and faster log approximations for JSD and lazy transform
 * Combine plot_umap* paths with `raster=bool`
+* Python `compute_feature_specificity()` in-mem is still garbage (maybe not?)
 
 ## Done
 * ARMA_DONT_USE_WRAPPER multiple redefinition
@@ -42,3 +42,4 @@
 * Add run_lpa/propagate_labels
 * Decouple archetype specificity from run_actionet
   * Compute specificity on the fly for `impuimpute_from_archetypes()`
+* Decouple compute_network_diffusion from anndata

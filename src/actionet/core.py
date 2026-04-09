@@ -488,7 +488,7 @@ def build_network(
 
 
 def compute_network_diffusion(
-    adata: AnnData,
+    X: Union[AnnData, sp.spmatrix],
     scores: Union[str, np.ndarray],
     norm_method: Literal["pagerank", "pagerank_sym"] = "pagerank",
     alpha: float = 0.85,
@@ -498,19 +498,27 @@ def compute_network_diffusion(
     tol = 1e-8,
     network_key: str = "actionet",
     key_added: str = "diffused",
+    return_raw: bool = False,
     inplace: bool = True,
-) -> Optional[AnnData]:
+) -> Optional[Union[AnnData, np.ndarray]]:
     """
     Compute network diffusion/smoothing over ACTIONet graph.
 
     Parameters
     ----------
-    adata
-        Annotated data matrix with network.
+    X
+        Either an AnnData object (network looked up from ``X.obsp[network_key]``)
+        or a raw sparse graph matrix to diffuse over directly.  When a sparse
+        matrix is passed, the result is always returned as a raw array regardless
+        of ``return_raw``; ``inplace``, ``key_added``, and ``network_key`` are
+        ignored.
     scores
-        Either key in adata.obsm or array of scores to diffuse.
+        Score matrix to diffuse.  When ``X`` is an AnnData, this may also be a
+        string key into ``X.obsm``; a string is not accepted for a raw matrix
+        input.
     network_key
-        Key in adata.obsp containing network.
+        Key in ``X.obsp`` containing the graph.  Ignored when ``X`` is a sparse
+        matrix.
     alpha
         Diffusion parameter (0-1).
     max_iter
@@ -518,51 +526,78 @@ def compute_network_diffusion(
     n_threads
         Number of threads.
     key_added
-        Key to store diffused scores.
+        Key to store diffused scores in ``X.obsm``.
+        Ignored when ``return_raw=True`` or when ``X`` is a sparse matrix.
+    return_raw : bool, default ``False``
+        If ``True``, return the diffused scores array directly instead of
+        writing to the AnnData.  Always treated as ``True`` when ``X`` is a
+        sparse matrix.  When ``True``, ``adata`` is never modified and
+        ``inplace`` is ignored.
     inplace
-        If True, modifies the AnnData object in place. If False, returns a new AnnData object with the results.
+        If True, modifies the AnnData object in place. If False, returns a new
+        AnnData object with the results.  Ignored when ``return_raw=True`` or
+        when ``X`` is a sparse matrix.
 
     Returns
     -------
-    None or AnnData
-        If inplace=True, returns None and modifies adata in place. If inplace=False, returns a new AnnData object with the results.
+    None
+        When ``X`` is AnnData and ``inplace=True`` (default).
+    AnnData
+        A modified copy when ``X`` is AnnData and ``inplace=False``.
+    np.ndarray
+        Diffused scores array (cells × features or cells × 1) when
+        ``return_raw=True`` or when ``X`` is a sparse matrix.
 
     Updates AnnData
     --------------
     adata.obsm[key_added] : np.ndarray
         Diffused scores (cells × features or cells × 1).
     """
-    if not inplace:
-        adata = adata.copy()
-    if network_key not in adata.obsp:
-        raise ValueError(f"Network '{network_key}' not found. Run build_network first.")
-    
-    G = adata.obsp[network_key]
-    
-    if isinstance(scores, str):
-        if scores not in adata.obsm:
-            raise ValueError(f"Scores '{scores}' not found in adata.obsm.")
-        X0 = adata.obsm[scores]
-    else:
-        X0 = np.asarray(scores)
-    
-    if X0.ndim == 1:
-        X0 = X0.reshape(-1, 1)
+    if norm_method not in ("pagerank", "pagerank_sym"):
+        raise ValueError(f"Invalid norm_method '{norm_method}'. Must be 'pagerank' or 'pagerank_sym'.")
 
-    # Ensure C-contiguous memory layout for C++ compatibility
-    X0 = np.ascontiguousarray(X0)
+    is_anndata = isinstance(X, AnnData)
+
+    if is_anndata:
+        if network_key not in X.obsp:
+            raise ValueError(f"Network '{network_key}' not found. Run build_network first.")
+        G = X.obsp[network_key]
+    else:
+        G = X
+
+    if isinstance(scores, str):
+        if not is_anndata:
+            raise ValueError(
+                "`scores` must be an array when `X` is a sparse matrix, not a string key."
+            )
+        if scores not in X.obsm:
+            raise ValueError(f"Scores '{scores}' not found in adata.obsm.")
+        X0 = X.obsm[scores]
+    else:
+        X0 = scores
+
+    if X0.ndim == 1:
+        X0 = np.ascontiguousarray(X0.reshape(-1, 1))
+    elif not X0.flags["C_CONTIGUOUS"]:
+        X0 = np.ascontiguousarray(X0)
 
     X_diffused = _core.compute_network_diffusion(
-        G = G,
-        X0 = X0,
-        alpha = alpha,
-        max_it = max_iter,
-        thread_no = n_threads,
-        approx = approx,
-        norm_method = 2 if norm_method == "pagerank_sym" else 0,
-        tol = tol
+        G=G,
+        X0=X0,
+        alpha=alpha,
+        max_it=max_iter,
+        thread_no=n_threads,
+        approx=approx,
+        norm_method=2 if norm_method == "pagerank_sym" else 0,
+        tol=tol,
     )
 
+    if not is_anndata or return_raw:
+        return X_diffused
+
+    # Defer the AnnData copy until after all validation and computation, so we
+    # never pay for a full copy on a validation failure or a raw-return path.
+    adata = X if inplace else X.copy()
     persist_updates(adata, obsm={key_added: X_diffused})
     if not inplace:
         return adata
