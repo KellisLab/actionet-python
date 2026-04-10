@@ -2,11 +2,7 @@
 
 ## Purpose of this repository
 
-This repository provides the **Python user-facing interface** to the Actionet C++ core via **pybind11**. It is also the primary interface used by the Illumina perturb-seq preprocessing pipeline and is the forward-looking, performance-first front-end.
-
-Downstream dependencies:
-
-- `perturbseq_preprocessing` pipeline (private; HPC-deployed)
+This repository provides the **Python user-facing interface** to the ACTIONet C++ core via **pybind11**. It is also the primary interface used by the Illumina perturb-seq preprocessing pipeline and is the forward-looking, performance-first front-end.
 
 Upstream dependency:
 
@@ -16,24 +12,23 @@ Upstream dependency:
 
 ## Repository layout (high level)
 
-- `src/` — Python package source, pybind11 bindings, and `libactionet` submodule
-- `tests/` — tests (import, API sanity, regressions)
-- `docs/` — user and developer documentation
-- `data/` — example or reference datasets (not synced; lives locally)
-- `scripts/` — helper scripts
-- `CMakeLists.txt` — CMake build for extension module
-- `pyproject.toml`, `setup.py`, `MANIFEST.in` — packaging and build configuration
-- `install_optimized.sh` — optimized build/install helper
+- `src/` — Python package source, pybind11 bindings, and `libactionet` submodule.
+- `tests/` — tests (import, API sanity, regressions).
+- `docs/` — user and developer documentation.
+- `data/` — example or reference datasets (not synced; lives locally).
+- `CMakeLists.txt` — CMake build for extension module.
+- `pyproject.toml`, `setup.py`, `MANIFEST.in` — packaging and build configuration.
+- `install_optimized.sh` — optimized build/install helper.
 
 ---
 
 ## What success looks like
 
-- Python API is complete enough to support core analysis functionality and current pipeline needs
-- Stable and well-documented public interfaces
-- Reliable builds using CMake + pybind11 within conda environments
-- Tests that protect against regressions and wrapper/core mismatch
-- Behavior parity with `actionet-r` where applicable and intentional divergence where documented
+- Python API is complete enough to support core analysis functionality and current pipeline needs.
+- Stable and well-documented public interfaces.
+- Reliable builds using CMake + pybind11 within conda/venv environments.
+- Tests that protect against regressions and wrapper/core mismatch.
+- Behavior parity with `actionet-r` where applicable and intentional divergence where documented.
 
 ---
 
@@ -56,7 +51,7 @@ Upstream dependency:
 
 ### Coordinating with the C++ core
 
-- Treat `libactionet` APIs as a contract.
+- Treat `libactionet` APIs as a contract
 - If a core change is required:
   - propose the C++ change explicitly
   - note required wrapper updates
@@ -66,11 +61,11 @@ Upstream dependency:
 
 ## Parity with R front-end
 
-The R package (`actionet-r`) serves as a living **reference implementation** for many behaviors.
+The R package (`actionet-r`) serves as a living **reference implementation** for many behaviors. Subject to change as this package develops.
 
 When implementing or modifying features:
 
-- Match R semantics and outputs when feasible.
+- Match R semantics and outputs when feasible
 - If Python diverges intentionally (e.g., performance-driven changes):
   - document the difference clearly
   - ensure downstream pipeline expectations are updated accordingly

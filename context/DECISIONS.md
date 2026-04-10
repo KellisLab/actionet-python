@@ -48,13 +48,13 @@ This document records **deliberate architectural and operational decisions** for
 **Decision:**
 
 - Python front-end is the **performance-first and pipeline-critical interface**
-- R front-end remains supported and serves as a **reference for semantics and outputs**
+- R front-end remains supported and is more feature-complete
 
 **Rationale:**
 
 - R performance and ecosystem limitations at scale
 - Python integration with pipeline and HPC workflows
-- Preserve backward compatibility for existing R users
+- Preserve compatibility with R users
 
 ---
 

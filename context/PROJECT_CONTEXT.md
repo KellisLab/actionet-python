@@ -20,16 +20,17 @@ This work aims to develop a multi-language computational biology data analysis t
 
 - All branches are usable but still in active development.
 - Remaining work:
-  - libactionet: Optimize and add critical features
-  - actionet-python: Port and test core R functions
+  - libactionet: Optimize and add critical features. Add GPU support.
+  - actionet-python: Optimize and port remaining core R functions.
   - actionet-r: Modernize and consolidate codebase. Improve build system. Fix bugs
   - all: Document
 
 ## Build/Binding Stack
 
-- C++: CMake
+- C++: CMake (≥ 3.19, C++17)
 - R bindings: Rcpp
 - Python bindings: pybind11
+- Runtime dependencies: BLAS/LAPACK, HDF5 (C), OpenMP
 - No containerization
 
 ## Key Principles (for humans + agents)
