@@ -322,6 +322,7 @@ def run_action(
     specificity_threshold: float = -3.0,
     min_observations: int = 2,
     n_threads: int = 0,
+    return_c_matrices: bool = True,
     inplace: bool = True,
 ) -> Optional[AnnData]:
     """
@@ -347,6 +348,9 @@ def run_action(
         Minimum observations per archetype.
     n_threads
         Number of threads (0=auto).
+    return_c_matrices
+        If True, persist ``C_stacked`` and ``C_merged`` in ``adata.obsm``.
+        If False, only ``H`` matrices and assignments are returned/stored.
     inplace
         If True, modifies the AnnData object in place. If False, returns a new AnnData object with the results.
 
@@ -381,17 +385,20 @@ def run_action(
 
     result = _core.run_action(
         S_r, k_min, k_max, max_iter, tolerance,
-        specificity_threshold, min_observations, n_threads
+        specificity_threshold, min_observations, n_threads, return_c_matrices
     )
+
+    obsm_updates = {
+        "H_stacked": result["H_stacked"],    # cells x archetypes, direct
+        "H_merged": result["H_merged"],      # direct
+    }
+    if return_c_matrices:
+        obsm_updates["C_stacked"] = result["C_stacked"]
+        obsm_updates["C_merged"] = result["C_merged"]
 
     persist_updates(
         adata,
-        obsm={
-            "H_stacked": result["H_stacked"],    # cells x archetypes, direct
-            "H_merged": result["H_merged"],      # direct
-            "C_stacked": result["C_stacked"],
-            "C_merged": result["C_merged"],
-        },
+        obsm=obsm_updates,
         obs={"assigned_archetype": result["assigned_archetypes"]},
     )
     if not inplace:

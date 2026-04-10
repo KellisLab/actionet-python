@@ -191,6 +191,102 @@ def test_run_actionet_forwards_knn_network_params(monkeypatch):
     assert forwarded["k"] == 7
 
 
+def test_run_actionet_default_disables_c_matrices(monkeypatch):
+    adata = ad.AnnData(np.zeros((4, 1), dtype=np.float64))
+    run_action_kwargs = {}
+
+    def fake_run_action(adata, **kwargs):
+        run_action_kwargs.update(kwargs)
+        H = np.array(
+            [
+                [1.0, 0.0],
+                [0.8, 0.2],
+                [0.2, 0.8],
+                [0.0, 1.0],
+            ],
+            dtype=np.float64,
+        )
+        adata.obsm["H_stacked"] = H
+        adata.obsm["H_merged"] = H.copy()
+
+    def fake_build_network(adata, **kwargs):
+        adata.obsp[kwargs["key_added"]] = sp.eye(adata.n_obs, format="csr")
+
+    def fake_compute_network_diffusion(adata, **kwargs):
+        adata.obsm["archetype_footprint"] = np.array(
+            [
+                [1.0, 0.0],
+                [0.7, 0.3],
+                [0.3, 0.7],
+                [0.0, 1.0],
+            ],
+            dtype=np.float64,
+        )
+
+    def fake_layout_network(adata, *, key_added, n_components, **kwargs):
+        adata.obsm[key_added] = np.zeros((adata.n_obs, n_components), dtype=np.float64)
+
+    monkeypatch.setattr(pipeline, "run_action", fake_run_action)
+    monkeypatch.setattr(pipeline, "build_network", fake_build_network)
+    monkeypatch.setattr(pipeline, "compute_network_diffusion", fake_compute_network_diffusion)
+    monkeypatch.setattr(pipeline, "layout_network", fake_layout_network)
+
+    pipeline.run_actionet(adata, layout_3d=False, n_threads=1, inplace=True)
+
+    assert run_action_kwargs["return_c_matrices"] is False
+
+
+def test_run_actionet_forwards_return_c_matrices_true(monkeypatch):
+    adata = ad.AnnData(np.zeros((4, 1), dtype=np.float64))
+    run_action_kwargs = {}
+
+    def fake_run_action(adata, **kwargs):
+        run_action_kwargs.update(kwargs)
+        H = np.array(
+            [
+                [1.0, 0.0],
+                [0.8, 0.2],
+                [0.2, 0.8],
+                [0.0, 1.0],
+            ],
+            dtype=np.float64,
+        )
+        adata.obsm["H_stacked"] = H
+        adata.obsm["H_merged"] = H.copy()
+
+    def fake_build_network(adata, **kwargs):
+        adata.obsp[kwargs["key_added"]] = sp.eye(adata.n_obs, format="csr")
+
+    def fake_compute_network_diffusion(adata, **kwargs):
+        adata.obsm["archetype_footprint"] = np.array(
+            [
+                [1.0, 0.0],
+                [0.7, 0.3],
+                [0.3, 0.7],
+                [0.0, 1.0],
+            ],
+            dtype=np.float64,
+        )
+
+    def fake_layout_network(adata, *, key_added, n_components, **kwargs):
+        adata.obsm[key_added] = np.zeros((adata.n_obs, n_components), dtype=np.float64)
+
+    monkeypatch.setattr(pipeline, "run_action", fake_run_action)
+    monkeypatch.setattr(pipeline, "build_network", fake_build_network)
+    monkeypatch.setattr(pipeline, "compute_network_diffusion", fake_compute_network_diffusion)
+    monkeypatch.setattr(pipeline, "layout_network", fake_layout_network)
+
+    pipeline.run_actionet(
+        adata,
+        layout_3d=False,
+        n_threads=1,
+        return_c_matrices=True,
+        inplace=True,
+    )
+
+    assert run_action_kwargs["return_c_matrices"] is True
+
+
 def test_run_actionet_forwards_lazy_specificity_params(monkeypatch):
     adata = ad.AnnData(np.zeros((4, 1), dtype=np.float64))
     specificity_kwargs = {}

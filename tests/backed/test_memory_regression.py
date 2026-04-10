@@ -50,7 +50,7 @@ def _prepare_pair(tmp_path):
     return adata_mem, adata_backed
 
 
-def _run_through_build_network(adata, *, backed_chunk_size=None):
+def _run_through_build_network(adata, *, backed_chunk_size=None, return_c_matrices=True):
     """Run reduce_kernel -> run_action -> build_network on *adata*."""
     kw = {"backed_chunk_size": backed_chunk_size} if backed_chunk_size else {}
     an.reduce_kernel(adata, n_components=_N_COMPONENTS, seed=1, inplace=True, **kw)
@@ -60,6 +60,7 @@ def _run_through_build_network(adata, *, backed_chunk_size=None):
         k_min=_K_MIN,
         k_max=_K_MAX,
         n_threads=1,
+        return_c_matrices=return_c_matrices,
         inplace=True,
     )
     an.build_network(adata, obsm_key="H_stacked", key_added="actionet", n_threads=1, inplace=True)
@@ -138,6 +139,9 @@ class TestBuildNetworkParity:
         _run_through_build_network(adata_mem)
         _run_through_build_network(adata_backed, backed_chunk_size=_CHUNK)
 
+        assert "C_stacked" in adata_mem.obsm and "C_merged" in adata_mem.obsm
+        assert "C_stacked" in adata_backed.obsm and "C_merged" in adata_backed.obsm
+
         g_mem = adata_mem.obsp["actionet"]
         g_bak = adata_backed.obsp["actionet"]
 
@@ -145,6 +149,69 @@ class TestBuildNetworkParity:
         # NNZ may differ slightly due to different SVD bases; check within 30%.
         ratio = g_bak.nnz / max(g_mem.nnz, 1)
         assert 0.7 <= ratio <= 1.3, f"Graph NNZ ratio out of range: {ratio:.2f}"
+
+    def test_parity_without_c_matrices(self, tmp_path):
+        adata_mem, adata_backed = _prepare_pair(tmp_path)
+
+        _run_through_build_network(adata_mem, return_c_matrices=False)
+        _run_through_build_network(
+            adata_backed, backed_chunk_size=_CHUNK, return_c_matrices=False
+        )
+
+        assert "C_stacked" not in adata_mem.obsm and "C_merged" not in adata_mem.obsm
+        assert "C_stacked" not in adata_backed.obsm and "C_merged" not in adata_backed.obsm
+
+        g_mem = adata_mem.obsp["actionet"]
+        g_bak = adata_backed.obsp["actionet"]
+        assert g_mem.shape == g_bak.shape, "Graph shape mismatch (no-C mode)"
+
+    def test_h_outputs_match_with_and_without_c_matrices(self, tmp_path):
+        adata_base = make_test_adata(n_cells=_N_CELLS, n_genes=_N_GENES, sparse_fmt="csr", seed=_SEED)
+        an.normalize_anndata(adata_base, target_sum=1e4, inplace=True)
+        an.reduce_kernel(adata_base, n_components=_N_COMPONENTS, seed=1, inplace=True)
+
+        adata_with_c = adata_base.copy()
+        adata_without_c = adata_base.copy()
+
+        an.run_action(
+            adata_with_c,
+            reduction_key="action",
+            k_min=_K_MIN,
+            k_max=_K_MAX,
+            n_threads=1,
+            return_c_matrices=True,
+            inplace=True,
+        )
+        an.run_action(
+            adata_without_c,
+            reduction_key="action",
+            k_min=_K_MIN,
+            k_max=_K_MAX,
+            n_threads=1,
+            return_c_matrices=False,
+            inplace=True,
+        )
+
+        np.testing.assert_allclose(
+            np.asarray(adata_with_c.obsm["H_stacked"]),
+            np.asarray(adata_without_c.obsm["H_stacked"]),
+            atol=1e-10,
+            err_msg="H_stacked changed when C matrices were disabled",
+        )
+        np.testing.assert_allclose(
+            np.asarray(adata_with_c.obsm["H_merged"]),
+            np.asarray(adata_without_c.obsm["H_merged"]),
+            atol=1e-10,
+            err_msg="H_merged changed when C matrices were disabled",
+        )
+        np.testing.assert_array_equal(
+            np.asarray(adata_with_c.obs["assigned_archetype"]),
+            np.asarray(adata_without_c.obs["assigned_archetype"]),
+            err_msg="Assignments changed when C matrices were disabled",
+        )
+
+        assert "C_stacked" in adata_with_c.obsm and "C_merged" in adata_with_c.obsm
+        assert "C_stacked" not in adata_without_c.obsm and "C_merged" not in adata_without_c.obsm
 
 
 @requires_ext

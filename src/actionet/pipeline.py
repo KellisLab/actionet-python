@@ -173,6 +173,7 @@ def run_actionet(
         specificity_threshold=specificity_threshold,
         min_observations=min_observations,
         n_threads=n_threads,
+        return_c_matrices=False,
         inplace=True,
     )
 

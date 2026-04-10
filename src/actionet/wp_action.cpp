@@ -64,22 +64,25 @@ py::dict decomp_action(py::array_t<double> S_r, int k_min = 2, int k_max = 30,
 
 py::dict run_action(py::array_t<double> S_r, int k_min = 2, int k_max = 30,
                     int max_it = 100, double tol = 1e-16,
-                    double spec_th = -3.0, int min_obs = 3, int thread_no = 0) {
+                    double spec_th = -3.0, int min_obs = 3, int thread_no = 0,
+                    bool return_c_matrices = true) {
     arma::mat S_r_mat = numpy_to_arma_mat(S_r);
 
     arma::field<arma::mat> res;
     {
         py::gil_scoped_release release;
         res = actionet::runACTION(
-            S_r_mat, k_min, k_max, max_it, tol, spec_th, min_obs, thread_no
+            S_r_mat, k_min, k_max, max_it, tol, spec_th, min_obs, thread_no, return_c_matrices
         );
     }
 
     py::dict out;
     out["H_stacked"] = arma_mat_to_numpy_c(res(0));
-    out["C_stacked"] = arma_mat_to_numpy_c(res(1));
     out["H_merged"] = arma_mat_to_numpy_c(res(2));
-    out["C_merged"] = arma_mat_to_numpy_c(res(3));
+    if (return_c_matrices) {
+        out["C_stacked"] = arma_mat_to_numpy_c(res(1));
+        out["C_merged"] = arma_mat_to_numpy_c(res(3));
+    }
 
     // Convert assigned_archetypes
     arma::mat assigned_mat = res(4);
@@ -319,7 +322,8 @@ void init_action(py::module_ &m) {
     m.def("run_action", &run_action, "Run ACTION decomposition",
           py::arg("S_r"), py::arg("k_min") = 2, py::arg("k_max") = 30,
           py::arg("max_it") = 100, py::arg("tol") = 1e-16,
-          py::arg("spec_th") = -3.0, py::arg("min_obs") = 3, py::arg("thread_no") = 0);
+          py::arg("spec_th") = -3.0, py::arg("min_obs") = 3, py::arg("thread_no") = 0,
+          py::arg("return_c_matrices") = true);
 
     // action_post
     m.def("collect_archetypes", &collect_archetypes, "Collect and filter archetypes",

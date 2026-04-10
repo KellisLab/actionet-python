@@ -1,5 +1,4 @@
 ## Primary
-* Add 3D to plotly
 * recreate LazyTransform from uns
 * Numerical percision inconsistency
   * Mix of float64 and float64 (mainly in operator, sometimes in-mem) causes drift within and across modes
@@ -10,7 +9,6 @@
 * Reorganize and consolidate code
 * * Audit for dead functions.
 * Interactive cell selector
-* Optionally omit C_* and specificity matrices to reduce object size
 
 ## Secondary
 * Consolidate normalization code-paths
@@ -43,3 +41,5 @@
 * Decouple archetype specificity from run_actionet
   * Compute specificity on the fly for `impuimpute_from_archetypes()`
 * Decouple compute_network_diffusion from anndata
+* Add 3D to plotly
+* Optionally omit C_* and specificity matrices to reduce object size

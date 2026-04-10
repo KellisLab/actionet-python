@@ -98,8 +98,10 @@ def add_action_results(
     adata.obsm["H_stacked"] = result["H_stacked"]
     adata.obsm["H_merged"] = result["H_merged"]
 
-    adata.obsm["C_stacked"] = result["C_stacked"]
-    adata.obsm["C_merged"] = result["C_merged"]
+    if "C_stacked" in result:
+        adata.obsm["C_stacked"] = result["C_stacked"]
+    if "C_merged" in result:
+        adata.obsm["C_merged"] = result["C_merged"]
 
     # Store archetype assignments
     adata.obs["assigned_archetype"] = result["assigned_archetypes"]
