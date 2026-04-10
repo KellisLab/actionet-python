@@ -858,6 +858,7 @@ def plot_umap_interactive(
     trans_attr: Optional[Union[str, Sequence[float], np.ndarray]] = None,
     trans_fac: float = 3.0,
     trans_th: float = -0.5,
+    plot_3d: bool = False,
 ):
     """Plot an interactive UMAP embedding using Plotly WebGL.
 
@@ -906,6 +907,10 @@ def plot_umap_interactive(
         Transparency scale factor for the logistic mapping.
     trans_th
         Z-score threshold for transparency mapping.
+    plot_3d
+        If True, render as a 3D scatter plot. Requires the basis to have at least 3
+        columns. When enabled, the function first tries ``basis`` with 3+ columns; if
+        the basis only has 2 columns it falls back to ``umap_3d_actionet`` if available.
 
     Returns
     -------
@@ -926,8 +931,29 @@ def plot_umap_interactive(
         color_type=color_type,
     )
 
-    coords = resolve_embedding(adata, basis)
-    plot_df = pd.DataFrame({"x": coords[:, 0], "y": coords[:, 1]})
+    if basis not in adata.obsm:
+        raise ValueError(
+            f"Embedding '{basis}' not found in adata.obsm. Available keys: {list(adata.obsm.keys())}"
+        )
+    raw_coords = np.asarray(adata.obsm[basis])
+    if raw_coords.shape[1] < 2:
+        raise ValueError(f"Embedding '{basis}' must have at least 2 columns.")
+
+    if plot_3d:
+        if raw_coords.shape[1] < 3:
+            fallback = "umap_3d_actionet"
+            if fallback in adata.obsm:
+                raw_coords = np.asarray(adata.obsm[fallback])
+            else:
+                raise ValueError(
+                    f"plot_3d=True but '{basis}' has fewer than 3 columns and "
+                    f"'umap_3d_actionet' was not found in adata.obsm."
+                )
+        coords = raw_coords[:, :3]
+        plot_df = pd.DataFrame({"x": coords[:, 0], "y": coords[:, 1], "z": coords[:, 2]})
+    else:
+        coords = raw_coords[:, :2]
+        plot_df = pd.DataFrame({"x": coords[:, 0], "y": coords[:, 1]})
 
     scalar_alpha = float(alpha) if not isinstance(alpha, (list, tuple, np.ndarray, pd.Series)) else 1.0
     if trans_attr is not None:
@@ -935,6 +961,7 @@ def plot_umap_interactive(
         scalar_alpha = float(scalar_alpha) * float(np.mean(compute_transparency(trans_vals, trans_fac, trans_th)))
 
     color_args = {}
+    category_orders_arg: dict = {}
     if kind == "none":
         plot_df["color"] = "default"
         color_args["color_discrete_map"] = {"default": "#4c72b0"}
@@ -946,7 +973,7 @@ def plot_umap_interactive(
         }
         color_key = "color"
     elif kind == "categorical":
-        _, labels, _, color_map = _prepare_categorical_payload(
+        _, labels, categories_out, color_map = _prepare_categorical_payload(
             values,
             categories=categories,
             palette=palette,
@@ -955,7 +982,9 @@ def plot_umap_interactive(
         plot_df["color"] = labels
         if hide_na and "NA" in plot_df["color"].values:
             plot_df = plot_df[plot_df["color"] != "NA"].copy()
+            categories_out = [c for c in categories_out if c != "NA"]
         color_args["color_discrete_map"] = color_map
+        category_orders_arg = {"color": categories_out}
         color_key = "color"
     else:
         values = _prepare_continuous_values(values, vmin=vmin, vmax=vmax)
@@ -968,27 +997,65 @@ def plot_umap_interactive(
             )
         color_key = "value"
 
-    fig = px.scatter(
-        plot_df,
-        x="x",
-        y="y",
-        color=color_key,
-        hover_data=list(hover_data) if hover_data else None,
-        render_mode="webgl",
-        **color_args,
-    )
-    fig.update_traces(marker={"size": size, "opacity": scalar_alpha})
-    fig.update_layout(
-        width=width,
-        height=height,
-        xaxis={"visible": False},
-        yaxis={"visible": False},
-        plot_bgcolor="white",
-        paper_bgcolor="white",
-        showlegend=legend,
-        legend_title_text="",
-        coloraxis_colorbar_title_text="",
-    )
+    _axis_hidden = {"title": "", "showgrid": False, "showticklabels": False, "zeroline": False}
+    _axis_hidden_3d = {
+        "title": "",
+        "showgrid": False,
+        "showticklabels": False,
+        "zeroline": False,
+        "backgroundcolor": "white",
+    }
+
+    if plot_3d:
+        fig = px.scatter_3d(
+            plot_df,
+            x="x",
+            y="y",
+            z="z",
+            color=color_key,
+            hover_data=list(hover_data) if hover_data else None,
+            category_orders=category_orders_arg or None,
+            **color_args,
+        )
+        fig.update_traces(marker={"size": size, "opacity": scalar_alpha, "line": {"width": 0}})
+        fig.update_layout(
+            width=width,
+            height=height,
+            scene={
+                "xaxis": _axis_hidden_3d,
+                "yaxis": _axis_hidden_3d,
+                "zaxis": _axis_hidden_3d,
+                "bgcolor": "white",
+            },
+            paper_bgcolor="white",
+            showlegend=legend,
+            legend_title_text="",
+            coloraxis_colorbar_title_text="",
+        )
+    else:
+        fig = px.scatter(
+            plot_df,
+            x="x",
+            y="y",
+            color=color_key,
+            hover_data=list(hover_data) if hover_data else None,
+            render_mode="webgl",
+            category_orders=category_orders_arg or None,
+            **color_args,
+        )
+        fig.update_traces(marker={"size": size, "opacity": scalar_alpha})
+        fig.update_layout(
+            width=width,
+            height=height,
+            xaxis=_axis_hidden,
+            yaxis=_axis_hidden,
+            plot_bgcolor="white",
+            paper_bgcolor="white",
+            showlegend=legend,
+            legend_title_text="",
+            coloraxis_colorbar_title_text="",
+        )
+
     if title:
         fig.update_layout(title=title)
     return fig
