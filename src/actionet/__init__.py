@@ -1,4 +1,11 @@
-"""ACTIONet: Single-cell multi-resolution data analysis toolkit."""
+"""ACTIONet: Single-cell multi-resolution data analysis toolkit.
+
+Python bindings for the ACTIONet C++ backend (libactionet) via pybind11.
+Uses AnnData as the core data container, integrates with the scanpy ecosystem.
+
+System build requirements: CMake >= 3.19, C++17 compiler, BLAS/LAPACK,
+HDF5 (C library), and OpenMP.
+"""
 
 from importlib.metadata import version, PackageNotFoundError
 

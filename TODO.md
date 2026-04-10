@@ -1,13 +1,12 @@
 ## Primary
-* recreate LazyTransform from uns
-* Numerical percision inconsistency
-  * Mix of float64 and float64 (mainly in operator, sometimes in-mem) causes drift within and across modes
-  * C++ uses 64-bit, R/Rcpp does also - always consistent
+* Recreate LazyTransform from uns
+* Numerical precision inconsistency
+  * Mix of float32 and float64 (mainly in operator, sometimes in-mem) causes drift within and across modes
+  * C++ uses 64-bit, R/Rcpp does also — always consistent
 * Fix R/Python result parity
-* Document everything
 * Change output from numpy to pandas (annotate_*)
 * Reorganize and consolidate code
-* * Audit for dead functions.
+  * Audit for dead functions
 * Interactive cell selector
 
 ## Secondary
@@ -28,18 +27,18 @@
 * Standardize key args
 * Test impute features
 * Implement plotFeatures
-* test backed SVD
+* Test backed SVD
 * MatrixSource supports layers, but layers can't be backed.
   * Added validation logic
 * Add pseudocount to `normalize_anndata()`
 * `compute_feature_specificity` backed/in-mem parity
 * Fix memory usage in `compute_network_diffusion()` (in-memory)
-  * Probably fixed???
 * Speed up plot/impute features
   * I/O bound. Probably as good as it's gonna get
 * Add run_lpa/propagate_labels
 * Decouple archetype specificity from run_actionet
-  * Compute specificity on the fly for `impuimpute_from_archetypes()`
+  * Compute specificity on the fly for `impute_from_archetypes()`
 * Decouple compute_network_diffusion from anndata
 * Add 3D to plotly
 * Optionally omit C_* and specificity matrices to reduce object size
+* Document everything (OpenMP hard requirement, README overhaul, context files updated)

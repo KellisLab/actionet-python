@@ -7,15 +7,19 @@ This package wraps the C++ backend `libactionet` without modifications, providin
 ## Features
 
 - **Full C++ backend**: Leverages the high-performance `libactionet` C++ library
+- **OpenMP parallelism**: Multi-threaded C++ execution via OpenMP for all compute-intensive operations
 - **AnnData integration**: Native support for AnnData objects used throughout the Python single-cell ecosystem
 - **Scanpy compatibility**: Works alongside standard scanpy workflows
 - **Multi-resolution analysis**: ACTION decomposition for multi-scale archetype discovery
 - **Network-based analysis**: Build and analyze cell-cell interaction networks
-- **Cross-platform**: Supports macOS (Intel & Apple Silicon) and Linux (manylinux2014)
+- **Out-of-core computation**: Backed (HDF5-streamed) operator paths for datasets larger than RAM
+- **Cross-platform**: Supports macOS (Intel & Apple Silicon) and Linux
 
 ## Installation
 
 ### Prerequisites
+
+A C++17 compiler, CMake (≥ 3.19), BLAS/LAPACK, HDF5 (C library), and **OpenMP** are required. OpenMP is a hard build requirement — the build will fail without it.
 
 **macOS:**
 ```bash
@@ -23,18 +27,18 @@ This package wraps the C++ backend `libactionet` without modifications, providin
 xcode-select --install
 
 # Install dependencies via Homebrew
-brew install cmake openblas lapack
+brew install cmake openblas lapack libomp hdf5
 ```
 
 **Linux (Debian/Ubuntu):**
 ```bash
 sudo apt-get update
-sudo apt-get install build-essential cmake libopenblas-dev liblapack-dev
+sudo apt-get install build-essential cmake libopenblas-dev liblapack-dev libhdf5-dev libgomp1
 ```
 
 **Conda (rootless / HPC):**
 ```bash
-conda install -c conda-forge cmake openblas lapack
+conda install -c conda-forge cmake compilers openblas lapack hdf5
 ```
 
 ### Install from source
@@ -165,7 +169,7 @@ With Intel MKL, you should see:
 **Mixed OpenMP runtime warnings:**
 - Set `MKL_THREADING_LAYER=GNU` for conda environments
 - Set `MKL_THREADING_LAYER=INTEL` for Intel oneAPI builds
-- Or disable OpenMP: `pip install . -C cmake.define.LIBACTIONET_OPENMP_RUNTIME=OFF`
+- OpenMP is required and cannot be disabled; ensure a compatible runtime is installed
 
 **Link errors with Intel compiler:**
 - Ensure `setvars.sh` is sourced before building
@@ -174,15 +178,14 @@ With Intel MKL, you should see:
 ## Quick Start
 
 ```python
-import scanpy as sc
 import actionet as an
+import anndata as ad
 
 # Load data
-adata = sc.read_h5ad("your_data.h5ad")
+adata = ad.read_h5ad("your_data.h5ad")
 
-# Preprocess
-sc.pp.normalize_total(adata, target_sum=1e4)
-sc.pp.log1p(adata)
+# Preprocess (if not already done)
+an.normalize_anndata(adata)
 
 # ACTIONet pipeline
 an.reduce_kernel(adata, n_components=50)  # Kernel reduction
@@ -193,8 +196,8 @@ an.layout_network(adata)                   # UMAP layout
 # Feature specificity
 an.compute_feature_specificity(adata, labels='assigned_archetype')
 
-# Visualize
-sc.pl.embedding(adata, basis='X_umap', color='assigned_archetype')
+# Or run the full pipeline in one call
+an.run_actionet(adata, k_min=2, k_max=30)
 ```
 
 ## QC Plotting
@@ -215,6 +218,18 @@ an.plot_qc_violin(
 
 ## Core Functions
 
+### Preprocessing
+
+```python
+an.normalize_anndata(adata, target_sum=1e4, pseudocount=0.5, log_base=None)
+```
+Normalize and log-transform count data. Stores normalized counts in `adata.layers['logcounts']`.
+
+```python
+an.filter_anndata(adata, min_genes=200, min_cells=3)
+```
+Filter cells and genes by minimum thresholds.
+
 ### Dimensionality Reduction
 
 ```python
@@ -223,7 +238,7 @@ an.reduce_kernel(adata, n_components=50, layer=None, key_added='action')
 Compute reduced kernel matrix using SVD. **Automatically selects the optimal SVD algorithm** based on matrix properties (sparse vs dense, size, sparsity) with negligible overhead (~1-2 microseconds).
 
 New in OOM v1:
-- Backed sparse AnnData `.X` is executed through an out-of-memory operator path (PRIMME only).
+- Backed sparse AnnData `.X` is executed through an out-of-memory operator path (Halko by default; IRLB, PRIMME, and Feng also supported).
 - You can reuse an external SVD via `precomputed_svd`:
   `an.reduce_kernel(adata, precomputed_svd=an.run_svd(adata.X, n_components=50))`
 - Explicit helper for this workflow: `an.reduce_kernel_from_svd(...)`.
@@ -233,9 +248,9 @@ New in OOM v1:
   (`0` = auto, `1` = serial debug path).
 
 Available algorithms:
-- **IRLB** (default for sparse): Implicitly Restarted Lanczos Bidiagonalization
-- **Halko** (default for dense): Randomized SVD (fastest for dense matrices)
-- **PRIMME** (auto-selected for large sparse): Memory-efficient for huge sparse matrices
+- **IRLB** (default for in-memory sparse): Implicitly Restarted Lanczos Bidiagonalization
+- **Halko** (default for dense and backed): Randomized SVD (fastest for dense; predictable I/O cost for backed)
+- **PRIMME** (auto-selected for large in-memory sparse): Memory-efficient for huge sparse matrices
 - **Feng**: Alternative randomized method
 
 ### ACTION Decomposition
@@ -248,7 +263,7 @@ Multi-resolution archetypal analysis to identify cell states.
 ### Network Construction
 
 ```python
-an.build_network(adata, archetype_key='H_stacked', 
+an.build_network(adata, obsm_key='H_stacked', 
                  algorithm='k*nn', distance_metric='jsd')
 ```
 Build cell-cell interaction network from archetype footprints.
@@ -301,7 +316,7 @@ an.impute_features(adata, features=['GENE1', 'GENE2'],
 Impute gene expression using network diffusion.
 
 ```python
-an.impute_from_archetypes(adata, features=['GENE1', 'GENE2'],
+an.impute_features_from_archetypes(adata, features=['GENE1', 'GENE2'],
                           H_key='H_merged')
 ```
 Impute expression from archetype profiles.
@@ -311,6 +326,25 @@ an.smooth_kernel(adata, reduction_key='action',
                  smoothed_key='action_smoothed', alpha=0.85)
 ```
 Smooth reduced representation using network diffusion.
+
+### Annotation
+
+```python
+an.find_markers(adata, labels='assigned_archetype', layer='logcounts')
+```
+Identify marker genes for each group.
+
+```python
+an.annotate_cells(adata, marker_dict={'CellType': ['GENE1', 'GENE2']})
+```
+Annotate cells using marker gene dictionaries.
+
+### Clustering
+
+```python
+an.cluster_network(adata, network_key='actionet', resolution=1.0)
+```
+Leiden clustering on the ACTIONet graph.
 
 ## AnnData Structure
 
@@ -345,13 +379,21 @@ ACTIONet stores results in standard AnnData slots:
 | `buildNetwork()` | `an.build_network()` | Network construction |
 | `computeNetworkDiffusion()` | `an.compute_network_diffusion()` | Network smoothing |
 | `compute_archetype_feature_specificity()` | `an.compute_feature_specificity()` | Marker genes |
+| `compute_archetype_feature_specificity()` | `an.compute_archetype_feature_specificity()` | Per-archetype specificity |
 | `layoutNetwork()` | `an.layout_network()` | UMAP/t-SNE layout |
 | `runSVD()` | `an.run_svd()` | SVD decomposition |
 | `orthogonalizeBatchEffect()` | `an.correct_batch_effect()` | Batch correction |
 | `orthogonalizeBasal()` | `an.correct_basal_expression()` | Basal correction |
 | `imputeFeatures()` | `an.impute_features()` | Network diffusion imputation |
-| `imputeFromArchetypes()` | `an.impute_from_archetypes()` | Archetype-based imputation |
+| `imputeFromArchetypes()` | `an.impute_features_from_archetypes()` | Archetype-based imputation |
 | `smoothKernel()` | `an.smooth_kernel()` | Kernel smoothing |
+| `findMarkers()` | `an.find_markers()` | Marker detection |
+| `annotateCells()` | `an.annotate_cells()` | Cell annotation |
+| `annotateClusters()` | `an.annotate_clusters()` | Cluster annotation |
+| `clusterNetwork()` | `an.cluster_network()` | Leiden clustering |
+| `run_SPA()` | `an.run_spa()` | Sparse archetypal analysis |
+| `run_simplex_regression()` | `an.run_simplex_regression()` | Simplex regression |
+| `run_label_propagation()` | `an.run_label_propagation()` | Label propagation |
 | `colMaps(ace)` | `adata.obsm` | Cell-level embeddings |
 | `colNets(ace)` | `adata.obsp` | Cell-level networks |
 | `metadata(ace)` | `adata.obs` | Cell annotations |
@@ -368,15 +410,6 @@ ACTIONet stores results in standard AnnData slots:
 | `colNets(ace)$ACTIONet` | `adata.obsp['actionet']` |
 | `metadata(ace)$assigned_archetype` | `adata.obs['assigned_archetype']` |
 | `rowMaps(ace)$specificity` | `adata.varm['specificity_upper']` |
-
-## Examples
-
-See `examples/` directory for complete workflows:
-
-- `01_basic_pipeline.py`: End-to-end ACTIONet analysis
-- `02_graph_building.py`: Network construction strategies
-- `03_integration_with_scanpy.py`: Integration with scanpy workflows
-- `04_batch_correction_imputation.py`: Batch correction and imputation workflows
 
 ## Building From Source
 
@@ -401,11 +434,12 @@ pip install . -v
 - Default deployment target: macOS 11.0
 - Builds native architecture (x86_64 or arm64)
 - Uses Accelerate framework for BLAS/LAPACK
+- OpenMP via Homebrew `libomp` (required: `brew install libomp`)
 - Set `CMAKE_OSX_ARCHITECTURES` for cross-compilation
 
 **Linux:**
-- Targets manylinux2014 (glibc ≥ 2.17)
-- OpenMP runtime defaults to `AUTO` (compiler-selected); override with `-C cmake.define.LIBACTIONET_OPENMP_RUNTIME=GNU|INTEL|LLVM|OFF`
+- Targets glibc ≥ 2.17
+- OpenMP via `libgomp` (GCC) by default; override with `-C cmake.define.LIBACTIONET_OPENMP_RUNTIME=GNU|INTEL|LLVM`
 - **For best performance**, consider building with Intel MKL (see installation section above)
 
 ### Troubleshooting
@@ -418,8 +452,12 @@ git submodule update --init --recursive
 **Missing Armadillo:**
 Armadillo headers are bundled in `libactionet/include/extern`. If CMake can't find them, check submodule status.
 
-**OpenMP warnings:**
-OpenMP is optional. If unavailable, the package builds with single-threaded C++ code (you can still use `n_threads` parameter via Python's multiprocessing).
+**OpenMP errors:**
+OpenMP is a hard requirement. The build will fail if no OpenMP runtime is found.
+- **Linux:** Install `libgomp` (`apt install libgomp1` or `yum install libgomp`).
+- **macOS:** Install `libomp` via Homebrew (`brew install libomp`).
+- **Conda:** Install compilers (`conda install -c conda-forge compilers`).
+
 If using MKL (e.g., conda numpy), avoid mixed OpenMP runtimes by setting `MKL_THREADING_LAYER=GNU` when using GNU OpenMP, or by selecting Intel OpenMP with an Intel toolchain.
 
 Examples:
@@ -510,9 +548,16 @@ The following R package components are **not implemented** in this Python transl
 ✅ **Network construction**: Full graph building pipeline  
 ✅ **Network diffusion**: Smoothing and propagation  
 ✅ **Feature specificity**: Marker gene identification  
-✅ **SVD/Kernel reduction**: Dimensionality reduction  
+✅ **SVD/Kernel reduction**: Dimensionality reduction (in-memory and backed/out-of-core)  
 ✅ **Visualization layouts**: UMAP/t-SNE via C++ backend  
 ✅ **Matrix operations**: Aggregation, normalization, transforms  
+✅ **Batch correction**: Orthogonalization-based batch effect and basal expression correction  
+✅ **Imputation**: Network diffusion and archetype-based gene expression imputation  
+✅ **Clustering**: Leiden clustering via igraph  
+✅ **Annotation**: Marker detection and cell/cluster annotation  
+✅ **Preprocessing**: Filtering, normalization, backed decompression  
+✅ **Plotting**: UMAP, feature expression overlays, QC violin plots (lets-plot, matplotlib, Plotly)  
+✅ **Pipeline**: End-to-end `run_actionet()` orchestration
 
 ## License
 

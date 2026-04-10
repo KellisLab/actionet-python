@@ -30,7 +30,7 @@ This work aims to develop a multi-language computational biology data analysis t
 - C++: CMake (≥ 3.19, C++17)
 - R bindings: Rcpp
 - Python bindings: pybind11
-- Runtime dependencies: BLAS/LAPACK, HDF5 (C), OpenMP
+- Runtime dependencies: BLAS/LAPACK, HDF5 (C library), OpenMP
 - No containerization
 
 ## Key Principles (for humans + agents)

@@ -108,7 +108,7 @@ target_include_directories(_core PRIVATE
 
 # Link against libactionet
 # This provides access to all libactionet functions and transitively links
-# BLAS, LAPACK, and OpenMP (if available)
+# BLAS, LAPACK, and OpenMP (required)
 target_link_libraries(_core PRIVATE actionet)
 
 # ==============================================================================

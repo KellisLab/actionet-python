@@ -16,6 +16,8 @@ authors = [
     {name = "Sebastian Pineda", email = "spineda@mit.edu"},
 ]
 requires-python = ">=3.12"
+# System (non-pip) build requirements: CMake >= 3.19, C++17 compiler,
+# BLAS/LAPACK, HDF5 (C library), and OpenMP (hard requirement).
 dependencies = [
     "numpy>=2.0.0",
     "scipy>=1.11.0",

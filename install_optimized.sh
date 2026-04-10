@@ -5,6 +5,9 @@ set -euo pipefail
 # - Linux x86_64: native tuning enabled by default.
 # - macOS: portable by default; opt into native tuning with --native-macos
 #   or ACTIONET_MACOS_NATIVE=1.
+# OpenMP runtime is always required. Set ACTIONET_OPENMP_RUNTIME to
+# GNU, INTEL, or LLVM to force a specific runtime; AUTO (default) lets
+# CMake detect the compiler's preferred runtime.
 # Usage:
 #   ./install_optimized.sh [--native-macos] [pip args...]
 #   ACTIONET_MACOS_NATIVE=1 ./install_optimized.sh [pip args...]

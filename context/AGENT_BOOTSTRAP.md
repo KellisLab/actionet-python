@@ -9,8 +9,9 @@ Before proposing changes:
 1) Read `context/PROJECT_CONTEXT.md`.
 2) Read `context/AGENT_PLAYBOOK.md` in this repository.
 3) Assume the following constraints:
-   - Core C++ library built with CMake.
+   - Core C++ library built with CMake (≥ 3.19, C++17).
    - R bindings via Rcpp; Python bindings via pybind11.
+   - System dependencies: BLAS/LAPACK, HDF5 (C library), OpenMP.
    - ACTIONet packages/modules/libraries usually installed by standard means, but via conda isolation when used in pipeline.
 
 Rules of engagement:

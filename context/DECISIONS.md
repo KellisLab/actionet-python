@@ -71,6 +71,22 @@ This document records **deliberate architectural and operational decisions** for
 
 --- -->
 
+## OpenMP as hard requirement
+
+**Decision:**
+
+- OpenMP is a **hard build requirement** for `libactionet` and all front-ends.
+- The CMake build emits `FATAL_ERROR` if no OpenMP runtime is found.
+- Valid runtime options are `AUTO`, `GNU`, `INTEL`, `LLVM`. There is no `OFF` option.
+
+**Rationale:**
+
+- OpenMP is used pervasively in C++ for parallel loops across decomposition, network, annotation, I/O, and tool code paths.
+- Removing OpenMP would leave the library single-threaded with no practical benefit.
+- HPC environments universally provide OpenMP via GCC (`libgomp`), Intel (`libiomp5`), or LLVM (`libomp`).
+
+---
+
 ## Backed SVD algorithm default
 
 ### Backed operator path: Halko as default
@@ -102,7 +118,7 @@ This document records **deliberate architectural and operational decisions** for
 
 **Decision:**
 
-- Avoid breaking changes are allowed if justifed.
+- Breaking changes are allowed if justified.
 - Such changes must substantially improve:
   - Performance
   - Resource usage

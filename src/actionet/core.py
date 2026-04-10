@@ -128,10 +128,52 @@ def reduce_kernel(
 ) -> Optional[AnnData]:
     """Compute low-rank kernel reduction and persist outputs to AnnData.
 
-    Notes
-    -----
-    `backed_n_threads` is used only for backed (operator) execution paths.
-    In-memory dense/sparse paths continue to use existing BLAS/library threading.
+    Parameters
+    ----------
+    adata : AnnData
+        Annotated data matrix (cells x features). Supports both in-memory and
+        backed (HDF5-streamed) AnnData objects.
+    n_components : int
+        Number of SVD components to retain.
+    layer : str or None
+        Layer to use (None uses ``.X``).
+    key_added : str
+        Base key under which to store results in ``adata.obsm``, ``adata.varm``,
+        and ``adata.uns``.
+    svd_algorithm : str or None
+        SVD algorithm: ``"auto"``, ``"irlb"``, ``"halko"``, ``"feng"``, or
+        ``"primme"``.  ``"auto"`` selects based on matrix properties.
+    max_iter : int
+        Maximum iterations for iterative SVD solvers (0 = solver default).
+    seed : int
+        Random seed for reproducibility.
+    verbose : bool
+        Print progress messages.
+    precomputed_svd : dict or None
+        Pre-computed SVD with keys ``"u"``, ``"d"``, ``"v"`` (as returned by
+        :func:`run_svd`).  If provided, SVD is skipped.
+    backed_chunk_size : int
+        Row chunk size for backed sparse streaming.
+    allow_compressed : bool
+        If True, allow compressed backed storage (may be slower). If False
+        (default), auto-decompresses to a temporary file.
+    inplace : bool
+        Modify adata in place or return a copy.
+    backed_target_chunk_mb : float or None
+        Target chunk size in MiB for backed I/O (None = auto).
+    backed_n_threads : int
+        Thread count for backed operator compute loops (0 = auto).
+        Only used for backed (operator) execution paths; in-memory paths
+        use BLAS/library threading.
+    lazy_transform : LazyTransform or None
+        Pre-computed lazy transform for backed inputs on ``.X`` only.
+        Applies row-level normalization and log1p on-the-fly during
+        operator matvec, avoiding materialization.
+
+    Returns
+    -------
+    None or AnnData
+        None if ``inplace=True``; modified copy if ``inplace=False``.
     """
     if backed_n_threads < 0:
         raise ValueError("`backed_n_threads` must be >= 0")
@@ -863,10 +905,45 @@ def run_svd(
 ) -> dict:
     """Compute truncated SVD decomposition.
 
-    Notes
-    -----
-    `backed_n_threads` is used only for backed (operator) execution paths.
-    In-memory dense/sparse paths continue to use existing BLAS/library threading.
+    Parameters
+    ----------
+    X : AnnData, np.ndarray, scipy.sparse matrix, or backed matrix
+        Input data.  AnnData inputs support backed mode (HDF5-streamed).
+    n_components : int
+        Number of singular values/vectors to compute.
+    algorithm : str or None
+        SVD algorithm: ``"auto"``, ``"irlb"``, ``"halko"``, ``"feng"``, or
+        ``"primme"``.  ``"auto"`` selects based on matrix properties and
+        storage mode.
+    max_iter : int
+        Maximum iterations for iterative solvers (0 = solver default).
+    seed : int
+        Random seed.
+    verbose : bool
+        Print progress messages.
+    return_operator_compatible : bool
+        If True, return only ``{"u", "d", "v"}`` suitable for
+        :func:`reduce_kernel_from_svd`.
+    backed_chunk_size : int
+        Row chunk size for backed sparse streaming.
+    layer : str or None
+        Layer to use when ``X`` is an AnnData (None uses ``.X``).
+    allow_compressed : bool
+        Allow compressed backed storage without decompression.
+    backed_target_chunk_mb : float or None
+        Target chunk size in MiB for backed I/O (None = auto).
+    backed_n_threads : int
+        Thread count for backed operator compute loops (0 = auto).
+        Only used for backed (operator) execution paths.
+    lazy_transform : LazyTransform or None
+        Pre-computed lazy transform for backed AnnData inputs.
+
+    Returns
+    -------
+    dict
+        SVD result with keys ``"u"`` (left singular vectors, cells x k),
+        ``"d"`` (singular values), ``"v"`` (right singular vectors,
+        features x k).
     """
     if backed_n_threads < 0:
         raise ValueError("`backed_n_threads` must be >= 0")

@@ -12,8 +12,10 @@ Upstream dependency:
 
 ## Repository layout (high level)
 
-- `src/` — Python package source, pybind11 bindings, and `libactionet` submodule.
-- `tests/` — tests (import, API sanity, regressions).
+- `src/actionet/` — Python package source and pybind11 C++ wrappers.
+- `src/libactionet/` — `libactionet` C++ core library (git submodule).
+- `tests/` — tests (import, API sanity, regressions) and benchmarks.
+- `context/` — agent context files (playbook, decisions, project context).
 - `docs/` — user and developer documentation.
 - `data/` — example or reference datasets (not synced; lives locally).
 - `CMakeLists.txt` — CMake build for extension module.
@@ -84,6 +86,8 @@ Recommended parity dimensions to track:
 - Build system: CMake + pybind11
 - Typical environment: virtualenv or conda-based Python environment
 - Must compile with common HPC toolchains (GCC/Clang)
+- **OpenMP is a hard build requirement** — the build will fail without it
+- Runtime dependencies: BLAS/LAPACK, HDF5 (C library), OpenMP
 
 Avoid:
 
