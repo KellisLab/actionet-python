@@ -17,6 +17,7 @@ from .lazy_transform import (
     _resolve_lazy_backed_transform,
     _validate_lazy_transform,
 )
+from .reduction import smooth_kernel
 
 
 def impute_features(
@@ -298,94 +299,3 @@ def impute_features_from_archetypes(
     imputed_expr = np.maximum(imputed_expr, 0)
 
     return pd.DataFrame(imputed_expr, index=adata.obs_names, columns=matched_features)
-
-
-def smooth_kernel(
-    adata: AnnData,
-    network_key: str = "actionet",
-    reduction_key: str = "action",
-    alpha: float = 0.85,
-    max_iter: int = 5,
-    norm_method: Union[int, Literal["pagerank", "pagerank_sym"]] = "pagerank",
-    n_threads: int = 0,
-    key_added: str = "action_smoothed",
-    return_raw: bool = False,
-) -> Union[AnnData, dict]:
-    """
-    Smooth the reduced kernel over the network.
-
-    This function applies network diffusion to the reduced representation,
-    which can improve downstream analysis by leveraging local structure.
-
-    Parameters
-    ----------
-    adata
-        Annotated data matrix with network and reduction.
-    network_key
-        Key in adata.obsp containing network.
-    reduction_key
-        Key in adata.obsm containing reduction to smooth.
-    alpha
-        Diffusion parameter.
-    max_iter
-        Number of iterations.
-    norm_method
-        Normalization method.
-    n_threads
-        Number of threads.
-    key_added
-        Key to store smoothed reduction.
-    return_raw
-        If True, return raw diffusion outputs instead of updating adata.
-
-    Returns
-    -------
-    Updates adata with:
-        - adata.obsm[key_added]: Smoothed reduction
-    Or, if return_raw=True:
-        - Dictionary with raw outputs from diffusion and SVD.
-    """
-    if isinstance(norm_method, str):
-        norm_method_code = 2 if norm_method == "pagerank_sym" else 0
-    else:
-        norm_method_code = int(norm_method)
-
-    if network_key not in adata.obsp:
-        raise ValueError(f"Network '{network_key}' not found.")
-
-    if reduction_key not in adata.obsm:
-        raise ValueError(f"Reduction '{reduction_key}' not found.")
-
-    params_key = f"{reduction_key}_params"
-    if params_key not in adata.uns:
-        raise ValueError(f"Parameters '{params_key}' not found. Run reduce_kernel first.")
-
-    G = adata.obsp[network_key]
-    S_r = np.asarray(adata.obsm[reduction_key], dtype=float, order="C")
-    sigma = np.asarray(adata.uns[params_key]["sigma"], dtype=float).reshape(-1)
-
-    U_left = np.asarray(adata.varm[f"{reduction_key}_U"], dtype=float, order="C")
-    A = np.asarray(adata.varm[f"{reduction_key}_A"], dtype=float, order="C")
-    B = np.asarray(adata.obsm[f"{reduction_key}_B"], dtype=float, order="C")
-
-    if sigma.shape[0] != S_r.shape[1]:
-        raise ValueError("Size of 'sigma' does not match number of components in reduction.")
-
-    V_right = S_r / sigma[np.newaxis, :]
-    svd_out = _core.perturbed_svd(U_left, sigma, V_right, -A, B)
-
-    V_smooth = _core.compute_network_diffusion(
-        G, svd_out["v"], alpha, max_iter, n_threads, True, norm_method_code, 1e-8
-    )
-    H = V_smooth @ np.diag(svd_out["d"])
-
-    if return_raw:
-        return {
-            "U": U_left,
-            "SVD_out": svd_out,
-            "V_smooth": V_smooth,
-            "H": H,
-        }
-
-    persist_updates(adata, obsm={key_added: H})
-    return adata

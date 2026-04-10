@@ -16,15 +16,17 @@ except PackageNotFoundError:
 
 # Import will happen after building the C++ extension
 from .core import (
-    LazyTransform,
-    create_lazy_transform,
-    reduce_kernel,
-    reduce_kernel_from_svd,
     run_action,
     build_network,
     compute_network_diffusion,
     layout_network,
+)
+from .lazy_transform import LazyTransform, create_lazy_transform
+from .reduction import (
+    reduce_kernel,
+    reduce_kernel_from_svd,
     run_svd,
+    smooth_kernel,
 )
 from .specificity import (
     compute_feature_specificity,
@@ -47,7 +49,6 @@ from .batch_correction import (
 from .imputation import (
     impute_features,
     impute_features_from_archetypes,
-    smooth_kernel,
 )
 from .advanced import (
     run_archetypal_analysis,
