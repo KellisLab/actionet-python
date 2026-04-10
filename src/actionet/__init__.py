@@ -70,8 +70,11 @@ from .visualization import (
     compute_node_colors,
 )
 from .plotting import (
+    get_feature_abundance,
+    get_mito_feats,
     plot_feature_expression,
     plot_feature_expression_raster,
+    plot_mito_violin,
     plot_qc_violin,
     plot_umap,
     plot_umap_interactive,
@@ -133,8 +136,11 @@ __all__ = [
     "annotate_clusters",
     # Visualization
     "compute_node_colors",
+    "get_feature_abundance",
+    "get_mito_feats",
     "plot_feature_expression",
     "plot_feature_expression_raster",
+    "plot_mito_violin",
     "plot_qc_violin",
     "plot_umap",
     "plot_umap_interactive",
