@@ -94,25 +94,14 @@ def _classify_color_values(
     return categorical, "categorical", list(categorical.cat.categories)
 
 
-def _resolve_var_values(adata: AnnData, key: str, layer: Optional[str]) -> np.ndarray:
-    if key not in adata.var_names:
-        raise KeyError(f"Feature {key} not found in adata.var_names.")
-    idx = int(adata.var_names.get_loc(key))
-    matrix = adata.layers[layer] if layer else adata.X
-    col = matrix[:, idx]
-    if hasattr(col, "toarray"):
-        col = col.toarray()
-    return np.asarray(col).ravel()
-
 
 def _resolve_color_input(
     adata: AnnData,
     *,
     color: Optional[Union[str, Sequence, np.ndarray, pd.Series]],
-    color_source: Optional[Literal["obs", "var", "obsm"]],
+    color_source: Optional[Literal["obs", "obsm"]],
     color_slot: Optional[str],
     color_type: Optional[Literal["auto", "categorical", "continuous"]] = "auto",
-    layer: Optional[str] = None,
 ) -> tuple[Optional[Union[np.ndarray, pd.Series]], Literal["none", "rgb", "categorical", "continuous"], Optional[list[str]]]:
     force = None if (color_type is None or color_type == "auto") else color_type
     if isinstance(color, str):
@@ -120,8 +109,6 @@ def _resolve_color_input(
             raise ValueError("color_source must be set when color is a key string.")
         if color_source == "obs":
             return _classify_color_values(adata.obs[color], force=force)
-        if color_source == "var":
-            return _classify_color_values(_resolve_var_values(adata, color, layer), force=force)
         if color_source == "obsm":
             values = np.asarray(adata.obsm[color])
             if values.ndim == 2 and values.shape[1] == 3:
@@ -129,7 +116,6 @@ def _resolve_color_input(
             if values.ndim == 1:
                 return _classify_color_values(values, force=force)
             raise ValueError("Unsupported obsm color shape; expected 1D or Nx3.")
-        raise ValueError("color_source must be one of obs, var, or obsm.")
 
     if color is not None:
         return _classify_color_values(color, force=force)
@@ -146,7 +132,7 @@ def _prepare_umap_context(
     adata: AnnData,
     *,
     color: Optional[Union[str, Sequence, np.ndarray, pd.Series]],
-    color_source: Optional[Literal["obs", "var", "obsm"]],
+    color_source: Optional[Literal["obs", "obsm"]],
     color_type: Optional[Literal["auto", "categorical", "continuous"]],
     basis: str,
     alpha: Union[float, Sequence[float]],
@@ -164,7 +150,6 @@ def _prepare_umap_context(
         color_source=color_source,
         color_slot=color_slot,
         color_type=color_type,
-        layer=None,
     )
 
     alpha_values = _prepare_alpha(alpha, adata.n_obs)
@@ -551,7 +536,7 @@ def _render_umap_raster(
 def plot_umap(
     adata: AnnData,
     color: Optional[Union[str, Sequence, np.ndarray, pd.Series]] = None,
-    color_source: Optional[Literal["obs", "var", "obsm"]] = "obs",
+    color_source: Optional[Literal["obs", "obsm"]] = "obs",
     color_type: Optional[Literal["auto", "categorical", "continuous"]] = "auto",
     basis: str = "umap_2d_actionet",
     cmap: Optional[Union[str, Sequence[str]]] = "magma",
@@ -567,7 +552,7 @@ def plot_umap(
     order: Optional[Union[str, Sequence[int]]] = None,
     na_color: str = "#cccccc",
     trans_attr: Optional[Union[str, Sequence[float], np.ndarray]] = None,
-    trans_fac: float = 1.5,
+    trans_fac: float = 3.0,
     trans_th: float = -0.5,
     hide_na: bool = False,
     color_slot: Optional[str] = "colors_actionet",
@@ -785,7 +770,7 @@ def plot_umap(
 def plot_umap_raster(
     adata: AnnData,
     color: Optional[Union[str, Sequence, np.ndarray, pd.Series]] = None,
-    color_source: Optional[Literal["obs", "var", "obsm"]] = "obs",
+    color_source: Optional[Literal["obs", "obsm"]] = "obs",
     color_type: Optional[Literal["auto", "categorical", "continuous"]] = "auto",
     basis: str = "umap_2d_actionet",
     cmap: Optional[Union[str, Sequence[str]]] = "magma",
@@ -801,7 +786,7 @@ def plot_umap_raster(
     order: Optional[Union[str, Sequence[int]]] = None,
     na_color: str = "#cccccc",
     trans_attr: Optional[Union[str, Sequence[float], np.ndarray]] = None,
-    trans_fac: float = 1.5,
+    trans_fac: float = 3.0,
     trans_th: float = -0.5,
     hide_na: bool = False,
     color_slot: Optional[str] = "colors_actionet",
@@ -853,9 +838,8 @@ def plot_umap_raster(
 def plot_umap_interactive(
     adata: AnnData,
     color: Optional[Union[str, Sequence, np.ndarray, pd.Series]] = None,
-    color_source: Optional[Literal["obs", "var", "obsm"]] = "obs",
+    color_source: Optional[Literal["obs", "obsm"]] = "obs",
     color_type: Optional[Literal["auto", "categorical", "continuous"]] = "auto",
-    layer: Optional[str] = None,
     basis: str = "umap_2d_actionet",
     palette: Optional[Union[str, Sequence[str], dict]] = "tab20",
     cmap: Optional[Union[str, Sequence[str]]] = "magma",
@@ -872,7 +856,7 @@ def plot_umap_interactive(
     hide_na: bool = False,
     color_slot: Optional[str] = "colors_actionet",
     trans_attr: Optional[Union[str, Sequence[float], np.ndarray]] = None,
-    trans_fac: float = 1.5,
+    trans_fac: float = 3.0,
     trans_th: float = -0.5,
 ):
     """Plot an interactive UMAP embedding using Plotly WebGL.
@@ -884,13 +868,10 @@ def plot_umap_interactive(
     color
         Color key string or vector-like values with length ``adata.n_obs``.
     color_source
-        When ``color`` is a key string, where to resolve it from: ``"obs"``, ``"var"``,
-        or ``"obsm"``.
+        When ``color`` is a key string, where to resolve it from: ``"obs"`` or ``"obsm"``.
     color_type
         Override the automatic color classification. ``"auto"`` (default) infers the type
         from the data. Use ``"categorical"`` or ``"continuous"`` to force a specific mode.
-    layer
-        AnnData layer to use when ``color_source="var"``.
     basis
         Key in ``adata.obsm`` containing 2D coordinates.
     palette
@@ -943,7 +924,6 @@ def plot_umap_interactive(
         color_source=color_source,
         color_slot=color_slot,
         color_type=color_type,
-        layer=layer,
     )
 
     coords = resolve_embedding(adata, basis)

@@ -118,12 +118,12 @@ def plot_feature_expression(
     trans_attr: Optional[Union[str, Sequence, np.ndarray]] = None,
     trans_th: float = -0.5,
     trans_fac: float = 3.0,
-    grad_palette: Union[str, Sequence[str]] = "magma",
-    point_size: float = 1.0,
+    cmap: Union[str, Sequence[str]] = "magma",
+    size: float = 1.0,
     net_slot: str = "actionet",
     basis: str = "umap_2d_actionet",
     single_plot: bool = False,
-    show_legend: bool = False,
+    legend: bool = False,
     sort_features: bool = True,
     n_threads: int = 0,
     backed_chunk_size: int = 4096,
@@ -151,9 +151,9 @@ def plot_feature_expression(
         Z-score threshold for transparency mapping.
     trans_fac
         Transparency scale factor for the logistic mapping.
-    grad_palette
+    cmap
         Continuous palette for expression values.
-    point_size
+    size
         Marker size for UMAP scatter.
     net_slot
         Key in ``adata.obsp`` for the ACTIONet network.
@@ -161,7 +161,7 @@ def plot_feature_expression(
         Key in ``adata.obsm`` containing 2D coordinates.
     single_plot
         If True, arrange multiple plots into a grid.
-    show_legend
+    legend
         Whether to show the color legend.
     sort_features
         If True, sort matched features.
@@ -220,13 +220,13 @@ def plot_feature_expression(
             adata,
             color=values,
             color_source=None,
-            cmap=grad_palette,
-            size=point_size,
+            cmap=cmap,
+            size=size,
             trans_attr=trans_attr,
             trans_fac=trans_fac,
             trans_th=trans_th,
             basis=basis,
-            legend=show_legend,
+            legend=legend,
             title=feat_name,
         )
 
@@ -236,7 +236,7 @@ def plot_feature_expression(
         except ImportError as exc:  # pragma: no cover - optional dependency
             raise ImportError("lets-plot is required for plot grids.") from exc
         nrow, ncol = _grid_shape(len(out))
-        scale_size = point_size / max(nrow, 1)
+        scale_size = size / max(nrow, 1)
         plots = []
         for key in list(out.keys()):
             plots.append(
@@ -244,13 +244,13 @@ def plot_feature_expression(
                     adata,
                     color=expr_profile[key].to_numpy(),
                     color_source=None,
-                    cmap=grad_palette,
+                    cmap=cmap,
                     size=scale_size,
                     trans_attr=trans_attr,
                     trans_fac=trans_fac,
                     trans_th=trans_th,
                     basis=basis,
-                    legend=show_legend,
+                    legend=legend,
                     title=key,
                 )
             )
@@ -274,12 +274,12 @@ def plot_feature_expression_raster(
     trans_attr: Optional[Union[str, Sequence, np.ndarray]] = None,
     trans_th: float = -0.5,
     trans_fac: float = 3.0,
-    grad_palette: Union[str, Sequence[str]] = "magma",
-    point_size: float = 1.0,
+    cmap: Union[str, Sequence[str]] = "magma",
+    size: float = 1.0,
     net_slot: str = "actionet",
     basis: str = "umap_2d_actionet",
     single_plot: bool = False,
-    show_legend: bool = False,
+    legend: bool = False,
     sort_features: bool = True,
     n_threads: int = 0,
     backed_chunk_size: int = 4096,
@@ -307,9 +307,9 @@ def plot_feature_expression_raster(
         Z-score threshold for transparency mapping.
     trans_fac
         Transparency scale factor for the logistic mapping.
-    grad_palette
+    cmap
         Continuous palette for expression values.
-    point_size
+    size
         Marker size for UMAP scatter.
     net_slot
         Key in ``adata.obsp`` for the ACTIONet network.
@@ -317,7 +317,7 @@ def plot_feature_expression_raster(
         Key in ``adata.obsm`` containing 2D coordinates.
     single_plot
         If True, arrange multiple plots into a grid.
-    show_legend
+    legend
         Whether to show the color legend.
     sort_features
         If True, sort matched features.
@@ -371,13 +371,13 @@ def plot_feature_expression_raster(
             adata,
             color=values,
             color_source=None,
-            cmap=grad_palette,
-            size=point_size,
+            cmap=cmap,
+            size=size,
             trans_attr=trans_attr,
             trans_fac=trans_fac,
             trans_th=trans_th,
             basis=basis,
-            legend=show_legend,
+            legend=legend,
             title=feat_name,
         )
 
@@ -390,7 +390,7 @@ def plot_feature_expression_raster(
             fig_dpi=100.0,
         )
         axes = np.asarray(fig.subplots(nrow, ncol, squeeze=False))
-        scale_size = point_size / max(nrow, 1)
+        scale_size = size / max(nrow, 1)
 
         for ax, key in zip(axes.flat, list(expr_profile.columns)):
             ctx = _prepare_umap_context(
@@ -410,10 +410,10 @@ def plot_feature_expression_raster(
             _render_umap_raster(
                 ax,
                 ctx,
-                cmap=grad_palette,
+                cmap=cmap,
                 palette="tab20",
                 size=scale_size,
-                legend=show_legend,
+                legend=legend,
                 title=key,
                 vmin=None,
                 vmax=None,
