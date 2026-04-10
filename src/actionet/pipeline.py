@@ -31,7 +31,7 @@ def run_actionet(
     network_ef: float = 200,
     network_k: int = 100,
     mutual_edges_only: bool = True,
-    layout_method: Literal["umap", "tumap"] = "umap",
+    layout_method: Literal["umap", "tumap", "largevis"] = "umap",
     layout_epochs: int = 100,
     layout_spread: float = 1.0,
     layout_min_dist: float = 1.0,
@@ -96,8 +96,8 @@ def run_actionet(
         Number of nearest neighbors for ``network_algorithm="knn"``.
     mutual_edges_only : bool, optional (default: True)
         Keep only mutual nearest neighbors.
-    layout_method : {"umap", "tumap"}, optional (default: "umap")
-        Layout algorithm (UMAP or t-UMAP).
+    layout_method : {"umap", "tumap", "largevis"}, optional (default: "umap")
+        Layout algorithm (UMAP, t-UMAP, or LargeVis).
     layout_epochs : int, optional (default: 100)
         Number of optimization epochs for layout.
     layout_spread : float, optional (default: 1.0)

@@ -616,11 +616,28 @@ def layout_network(
     network_key: str = "actionet",
     initial_coords: Optional[Union[str, np.ndarray]] = None,
     layer: Optional[str] = None,
-    method: Literal["umap", "tumap"] = "umap",
+    method: Literal["umap", "tumap", "largevis", "leopold", "leopold2"] = "umap",
     n_components: int = 2,
     spread: float = 1.0,
     min_dist: float = 1.0,
     n_epochs: int = 0,
+    learning_rate: float = 1.0,
+    repulsion_strength: float = 1.0,
+    negative_sample_rate: float = 5.0,
+    approx_pow: bool = False,
+    pcg_rand: bool = True,
+    rng_type: Optional[str] = None,
+    batch: bool = True,
+    grain_size: int = 1,
+    a: float = 0.0,
+    b: float = 0.0,
+    opt_method: Literal["adam", "sgd"] = "adam",
+    alpha: float = -1.0,
+    beta1: float = 0.5,
+    beta2: float = 0.9,
+    eps: float = 1e-7,
+    ai: Optional[np.ndarray] = None,
+    aj: Optional[np.ndarray] = None,
     seed: int = 0,
     n_threads: int = 0,
     verbose: bool = True,
@@ -628,7 +645,7 @@ def layout_network(
     inplace: bool = True,
 ) -> Optional[AnnData]:
     """
-    Compute 2D/3D layout of ACTIONet graph using UMAP.
+    Compute 2D/3D layout of ACTIONet graph using uwot methods.
 
     Parameters
     ----------
@@ -643,7 +660,7 @@ def layout_network(
         Layer to use for computing initial coordinates via SVD (if initial_coords is None).
         If None, uses adata.X.
     method
-        Layout method.
+        Layout method: "umap", "tumap", "largevis", "leopold", or "leopold2".
     n_components
         Number of dimensions (2 or 3).
     spread
@@ -652,6 +669,32 @@ def layout_network(
         UMAP min_dist parameter.
     n_epochs
         Number of optimization epochs (0=auto).
+    learning_rate
+        Base learning rate.
+    repulsion_strength
+        Repulsion strength (uwot gamma).
+    negative_sample_rate
+        Negative sample rate.
+    approx_pow
+        Use approximate power function in UMAP gradient.
+    pcg_rand
+        Legacy RNG toggle (kept for backward compatibility).
+    rng_type
+        RNG implementation ("pcg", "tausworthe", "deterministic"). If provided,
+        it takes precedence over `pcg_rand`.
+    batch
+        Use batch updates.
+    grain_size
+        Parallel grain size.
+    a, b
+        UMAP shape parameters. Zero values auto-compute from spread/min_dist.
+    opt_method
+        Optimizer: "adam" or "sgd".
+    alpha, beta1, beta2, eps
+        Optimizer hyperparameters.
+    ai, aj
+        Per-vertex coefficient vectors required for "leopold" (`ai`) and
+        "leopold2" (`ai` and `aj`).
     seed
         Random seed.
     n_threads
@@ -673,6 +716,43 @@ def layout_network(
     adata.obsm[key_added] : np.ndarray
         Layout coordinates (cells × n_components).
     """
+    valid_methods = {"umap", "tumap", "largevis", "leopold", "leopold2"}
+    method = method.lower()
+    if method not in valid_methods:
+        raise ValueError(
+            f"Invalid `method` '{method}'. Must be one of {sorted(valid_methods)}."
+        )
+
+    rng_value = ""
+    if rng_type is not None:
+        if not isinstance(rng_type, str):
+            raise TypeError("`rng_type` must be a string when provided.")
+        rng_value = rng_type.strip().lower()
+        valid_rng = {"pcg", "tausworthe", "deterministic"}
+        if rng_value not in valid_rng:
+            raise ValueError(
+                f"Invalid `rng_type` '{rng_type}'. Must be one of {sorted(valid_rng)}."
+            )
+
+    def _coerce_optional_vector(values: Optional[np.ndarray], name: str) -> Optional[np.ndarray]:
+        if values is None:
+            return None
+        arr = np.asarray(values, dtype=np.float64).reshape(-1)
+        if arr.shape[0] != adata.n_obs:
+            raise ValueError(
+                f"`{name}` must have length {adata.n_obs} (number of observations), "
+                f"got {arr.shape[0]}."
+            )
+        return np.ascontiguousarray(arr, dtype=np.float64)
+
+    ai_arr = _coerce_optional_vector(ai, "ai")
+    aj_arr = _coerce_optional_vector(aj, "aj")
+
+    if method == "leopold" and ai_arr is None:
+        raise ValueError("`ai` must be provided when `method='leopold'`.")
+    if method == "leopold2" and (ai_arr is None or aj_arr is None):
+        raise ValueError("`ai` and `aj` must be provided when `method='leopold2'`.")
+
     if not inplace:
         adata = adata.copy()
     if network_key not in adata.obsp:
@@ -731,8 +811,33 @@ def layout_network(
     initial_coords = np.ascontiguousarray(initial_coords, dtype=np.float64)
 
     coords = _core.layout_network(
-        G, initial_coords, method, n_components,
-        spread, min_dist, n_epochs, seed, n_threads, verbose
+        G=G,
+        initial_coords=initial_coords,
+        method=method,
+        n_components=n_components,
+        spread=spread,
+        min_dist=min_dist,
+        n_epochs=n_epochs,
+        seed=seed,
+        thread_no=n_threads,
+        verbose=verbose,
+        learning_rate=learning_rate,
+        repulsion_strength=repulsion_strength,
+        negative_sample_rate=negative_sample_rate,
+        approx_pow=approx_pow,
+        pcg_rand=pcg_rand,
+        rng_type=rng_value,
+        batch=batch,
+        grain_size=grain_size,
+        a=a,
+        b=b,
+        opt_method=opt_method,
+        alpha=alpha,
+        beta1=beta1,
+        beta2=beta2,
+        eps=eps,
+        ai=ai_arr,
+        aj=aj_arr,
     )
 
     persist_updates(adata, obsm={key_added: coords})
