@@ -9,7 +9,7 @@ import pandas as pd
 import scipy.sparse as sp
 from anndata import AnnData
 
-from .utils import build_discrete_color_map
+from .utils import build_discrete_color_map, sort_categories
 
 if TYPE_CHECKING:
     from .._matrix_source import MatrixSource
@@ -422,7 +422,7 @@ def _resolve_group_labels(
     labels = labels.astype("category")
     if labels.isna().any():
         labels = labels.cat.add_categories(["NA"]).fillna("NA")
-    categories = list(labels.cat.categories)
+    categories = sort_categories(list(labels.cat.categories))
     return labels.astype(str), categories
 
 
@@ -703,11 +703,11 @@ def plot_qc_violin(
 
     # abundance is a dict; flatten into a long-form DataFrame
     assert isinstance(abundance, dict)
-    categories = list(abundance.keys())
+    categories = sort_categories(list(abundance.keys()))
     all_labels: list[str] = []
     all_values_list: list[np.ndarray] = []
-    for grp, vals in abundance.items():
-        vals = _apply_log_transform(np.asarray(vals, dtype=np.float64), log_trans)
+    for grp in categories:
+        vals = _apply_log_transform(np.asarray(abundance[grp], dtype=np.float64), log_trans)
         all_labels.extend([grp] * len(vals))
         all_values_list.append(vals)
 
@@ -759,6 +759,7 @@ def _build_violin_plot(
             ggsize,
             labs,
             scale_fill_manual,
+            scale_x_discrete,
             theme,
         )
     except ImportError as exc:
@@ -779,6 +780,7 @@ def _build_violin_plot(
     if show_boxplot:
         base = base + geom_boxplot(width=0.2, fill="white", alpha=0.7)
     base = base + scale_fill_manual(values=color_map)
+    base = base + scale_x_discrete(limits=[str(c) for c in categories])
 
     plot = base + labs(
         x="" if x_label is None else x_label,

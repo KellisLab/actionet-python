@@ -18,6 +18,7 @@ from .utils import (
     normalize_cmap_spec,
     resolve_embedding,
     resolve_numeric_vector,
+    sort_categories,
 )
 
 
@@ -194,6 +195,7 @@ def _prepare_categorical_payload(
     categories_out = list(series.cat.categories) if categories is None else list(categories)
     if had_na and "NA" not in categories_out:
         categories_out.append("NA")
+    categories_out = sort_categories(categories_out)
     color_map = build_discrete_color_map(categories_out, palette)
     if "NA" in color_map:
         color_map["NA"] = na_color
@@ -984,7 +986,7 @@ def plot_umap_interactive(
             plot_df = plot_df[plot_df["color"] != "NA"].copy()
             categories_out = [c for c in categories_out if c != "NA"]
         color_args["color_discrete_map"] = color_map
-        category_orders_arg = {"color": categories_out}
+        category_orders_arg = {"color": [str(c) for c in categories_out]}
         color_key = "color"
     else:
         values = _prepare_continuous_values(values, vmin=vmin, vmax=vmax)

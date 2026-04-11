@@ -295,6 +295,34 @@ def ensure_rgb_hex(values: np.ndarray) -> list[str]:
     return _rgb_to_hex(values)
 
 
+def sort_categories(categories: Sequence) -> list:
+    """Sort a list of category labels, using numeric order when all are numeric.
+
+    When every label in *categories* (after stripping whitespace) can be parsed
+    as a finite float, they are sorted by their numeric value.  Otherwise the
+    original lexicographic order from ``pd.Categorical`` is preserved.  NA/NaN
+    labels are always placed last.
+    """
+    na_labels = [c for c in categories if pd.isna(c) or str(c).strip().upper() == "NA"]
+    non_na = [c for c in categories if c not in na_labels]
+
+    def _try_float(v) -> Optional[float]:
+        try:
+            f = float(v)
+            return f if np.isfinite(f) else None
+        except (TypeError, ValueError):
+            return None
+
+    floats = [_try_float(c) for c in non_na]
+    if non_na and all(f is not None for f in floats):
+        paired = sorted(zip(floats, non_na), key=lambda x: x[0])
+        sorted_non_na = [c for _, c in paired]
+    else:
+        sorted_non_na = sorted(non_na, key=str)
+
+    return sorted_non_na + na_labels
+
+
 def apply_point_order(
     df: pd.DataFrame,
     order: Optional[Union[str, Sequence[int]]],
