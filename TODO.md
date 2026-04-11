@@ -9,6 +9,7 @@
   * Audit for dead functions
 * Interactive cell selector
 * UMAP points have no stroke
+* `compute_archetype_feature_specificity()`: `key_added` > `key_prefix`
 
 ## Secondary
 * Consolidate normalization code-paths
