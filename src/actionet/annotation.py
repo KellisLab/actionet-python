@@ -5,7 +5,7 @@ import numpy as np
 import pandas as pd
 from anndata import AnnData
 from scipy.stats import rankdata
-from scipy.sparse import issparse, csr_matrix
+from scipy.sparse import issparse, csr_matrix, csc_matrix
 
 from .specificity import (
     _cluster_names_for_specificity_labels,
@@ -15,6 +15,36 @@ from .lazy_transform import LazyTransform, _validate_lazy_transform, _resolve_la
 from .backed_io import _backed_group_path
 from . import _core
 from ._matrix_source import MatrixSource
+
+
+def _sparse_row_sum_sq(S) -> np.ndarray:
+    """Compute sum of squared values per row without materializing S.power(2).
+
+    Returns a float64 1-D array of length ``S.shape[0]``.
+
+    For CSR: bincount over row indices derived from indptr, weighted by
+    squared data values.  Handles empty rows and trailing-empty-row edge
+    cases correctly.
+    For CSC: bincount on row indices weighted by squared values.
+    Other formats are converted to CSR first.
+    """
+    n_rows = S.shape[0]
+    if isinstance(S, csr_matrix):
+        data_sq = S.data.astype(np.float64, copy=False) ** 2
+        if len(data_sq) == 0:
+            return np.zeros(n_rows, dtype=np.float64)
+        row_indices = np.repeat(np.arange(n_rows), np.diff(S.indptr))
+        return np.bincount(row_indices, weights=data_sq, minlength=n_rows).astype(
+            np.float64, copy=False
+        )
+    if isinstance(S, csc_matrix):
+        data_sq = S.data.astype(np.float64, copy=False) ** 2
+        if len(data_sq) == 0:
+            return np.zeros(n_rows, dtype=np.float64)
+        return np.bincount(S.indices, weights=data_sq, minlength=n_rows).astype(
+            np.float64, copy=False
+        )
+    return _sparse_row_sum_sq(csr_matrix(S))
 
 
 def find_markers(
@@ -410,7 +440,7 @@ def annotate_cells(
                 stats = np.asarray(stats, dtype=np.float64)
 
                 row_sums = np.asarray(S.sum(axis=1), dtype=np.float64).ravel()
-                row_sum_sq = np.asarray(S.power(2).sum(axis=1), dtype=np.float64).ravel()
+                row_sum_sq = _sparse_row_sum_sq(S)
             else:
                 S_arr = np.asarray(S, dtype=np.float64)
                 X_dense = X_markers.toarray() if issparse(X_markers) else np.asarray(X_markers)
