@@ -5,6 +5,8 @@
 #include "libactionet.hpp"
 #include "io/backed_h5ad/backed_sparse_matrix_operator.hpp"
 #include "io/backed_h5ad/backed_dense_matrix_operator.hpp"
+#include "tools/matrix_transform.hpp"
+#include "tools/enrichment.hpp"
 
 namespace py = pybind11;
 
@@ -68,6 +70,91 @@ py::array_t<double> compute_feature_stats_vision_from_stats(
     }
 
     return arma_mat_to_numpy(result);
+}
+
+// Fused VISION annotation: marker_stats + enrichment in one call.
+// G is converted once from scipy → arma and reused for both diffusion
+// and enrichment, eliminating redundant pybind boundary crossings.
+py::dict annotate_cells_vision_fused(
+        py::object G_obj,
+        py::array_t<double> stats_arr,
+        py::array_t<double> mu_arr,
+        py::array_t<double> sigma_sq_arr,
+        py::object X_obj,
+        int norm_method,
+        double alpha, int max_it, bool approx,
+        int enrichment_norm_method,
+        int thread_no) {
+    arma::sp_mat G_sp = scipy_to_arma_sparse(G_obj);
+    arma::mat stats_mat = numpy_to_arma_mat(stats_arr);
+    arma::vec mu_vec = numpy_to_arma_vec(mu_arr);
+    arma::vec sigma_sq_vec = numpy_to_arma_vec(sigma_sq_arr);
+    arma::sp_mat X_sp = scipy_to_arma_sparse(X_obj);
+
+    arma::mat marker_stats;
+    arma::mat log_pvals;
+    {
+        py::gil_scoped_release release;
+
+        marker_stats = actionet::computeFeatureStatsVisionFromStats(
+            G_sp, stats_mat, mu_vec, sigma_sq_vec, X_sp,
+            norm_method, alpha, max_it, approx, thread_no);
+
+        arma::sp_mat Gn = G_sp;
+        actionet::normalizeGraph(Gn, enrichment_norm_method);
+        arma::sp_mat Gn_t = Gn.t();
+
+        arma::mat marker_stats_pos = marker_stats;
+        marker_stats_pos.replace(arma::datum::nan, 0.0);
+        marker_stats_pos.transform([](double v) { return v > 0.0 ? v : 0.0; });
+
+        log_pvals = actionet::computeGraphLabelEnrichment(Gn_t, marker_stats_pos, thread_no);
+    }
+
+    py::dict out;
+    out["marker_stats"] = arma_mat_to_numpy(marker_stats);
+    out["log_pvals"] = arma_mat_to_numpy(log_pvals);
+    return out;
+}
+
+// Fused ACTIONet annotation: marker_stats + enrichment in one call.
+py::dict annotate_cells_actionet_fused(
+        py::object G_obj,
+        py::object S_obj,
+        py::object X_obj,
+        int norm_method,
+        double alpha, int max_it, bool approx,
+        int enrichment_norm_method,
+        int thread_no,
+        bool ignore_baseline) {
+    arma::sp_mat G_sp = scipy_to_arma_sparse(G_obj);
+    arma::sp_mat S_sp = scipy_to_arma_sparse(S_obj);
+    arma::sp_mat X_sp = scipy_to_arma_sparse(X_obj);
+
+    arma::mat marker_stats;
+    arma::mat log_pvals;
+    {
+        py::gil_scoped_release release;
+
+        marker_stats = actionet::computeFeatureStats(
+            G_sp, S_sp, X_sp, norm_method, alpha, max_it, approx,
+            thread_no, ignore_baseline);
+
+        arma::sp_mat Gn = G_sp;
+        actionet::normalizeGraph(Gn, enrichment_norm_method);
+        arma::sp_mat Gn_t = Gn.t();
+
+        arma::mat marker_stats_pos = marker_stats;
+        marker_stats_pos.replace(arma::datum::nan, 0.0);
+        marker_stats_pos.transform([](double v) { return v > 0.0 ? v : 0.0; });
+
+        log_pvals = actionet::computeGraphLabelEnrichment(Gn_t, marker_stats_pos, thread_no);
+    }
+
+    py::dict out;
+    out["marker_stats"] = arma_mat_to_numpy(marker_stats);
+    out["log_pvals"] = arma_mat_to_numpy(log_pvals);
+    return out;
 }
 
 // specificity =========================================================================================================
@@ -221,6 +308,21 @@ void init_annotation(py::module_ &m) {
           py::arg("alpha") = 0.85, py::arg("max_it") = 5, py::arg("approx") = false,
           py::arg("thread_no") = 0);
 
+    m.def("annotate_cells_vision_fused", &annotate_cells_vision_fused,
+          "Fused VISION annotation: marker_stats + enrichment in one G crossing",
+          py::arg("G"), py::arg("stats"), py::arg("mu"), py::arg("sigma_sq"),
+          py::arg("X"), py::arg("norm_method") = 2,
+          py::arg("alpha") = 0.85, py::arg("max_it") = 5, py::arg("approx") = false,
+          py::arg("enrichment_norm_method") = 1,
+          py::arg("thread_no") = 0);
+
+    m.def("annotate_cells_actionet_fused", &annotate_cells_actionet_fused,
+          "Fused ACTIONet annotation: marker_stats + enrichment in one G crossing",
+          py::arg("G"), py::arg("S"), py::arg("X"), py::arg("norm_method") = 2,
+          py::arg("alpha") = 0.85, py::arg("max_it") = 5, py::arg("approx") = false,
+          py::arg("enrichment_norm_method") = 1,
+          py::arg("thread_no") = 0, py::arg("ignore_baseline") = false);
+
     // specificity
     m.def("archetype_feature_specificity_sparse", &archetype_feature_specificity_sparse,
           "Compute archetype feature specificity (sparse)",
@@ -338,5 +440,58 @@ void init_annotation(py::module_ &m) {
           py::arg("op"), py::arg("G"), py::arg("X"),
           py::arg("norm_method") = 2, py::arg("alpha") = 0.85,
           py::arg("max_it") = 5, py::arg("approx") = false,
+          py::arg("thread_no") = 0);
+
+    // Fused backed vision: marker_stats + enrichment in one G crossing
+    m.def("annotate_cells_vision_backed_fused",
+          [](std::shared_ptr<actionet::MatrixOperator> op_base,
+             py::object G_obj, py::object X_obj,
+             int norm_method, double alpha, int max_it,
+             bool approx, int enrichment_norm_method,
+             int thread_no) -> py::dict {
+              if (!op_base) {
+                  throw std::runtime_error("annotate_cells_vision_backed_fused: operator is null");
+              }
+              arma::sp_mat G_sp = scipy_to_arma_sparse(G_obj);
+              arma::sp_mat X_sp = scipy_to_arma_sparse(X_obj);
+
+              auto* sparse_op = dynamic_cast<actionet::BackedSparseMatrixOperator*>(op_base.get());
+              auto* dense_op = dynamic_cast<actionet::BackedDenseMatrixOperator*>(op_base.get());
+
+              arma::mat marker_stats;
+              arma::mat log_pvals;
+              {
+                  py::gil_scoped_release release;
+                  if (sparse_op) {
+                      marker_stats = actionet::computeFeatureStatsVision(
+                          *sparse_op, G_sp, X_sp, norm_method, alpha, max_it, approx, thread_no);
+                  } else if (dense_op) {
+                      marker_stats = actionet::computeFeatureStatsVision(
+                          *dense_op, G_sp, X_sp, norm_method, alpha, max_it, approx, thread_no);
+                  } else {
+                      throw std::runtime_error("annotate_cells_vision_backed_fused: unsupported operator type");
+                  }
+
+                  arma::sp_mat Gn = G_sp;
+                  actionet::normalizeGraph(Gn, enrichment_norm_method);
+                  arma::sp_mat Gn_t = Gn.t();
+
+                  arma::mat marker_stats_pos = marker_stats;
+                  marker_stats_pos.replace(arma::datum::nan, 0.0);
+                  marker_stats_pos.transform([](double v) { return v > 0.0 ? v : 0.0; });
+
+                  log_pvals = actionet::computeGraphLabelEnrichment(Gn_t, marker_stats_pos, thread_no);
+              }
+
+              py::dict out;
+              out["marker_stats"] = arma_mat_to_numpy(marker_stats);
+              out["log_pvals"] = arma_mat_to_numpy(log_pvals);
+              return out;
+          },
+          "Fused backed VISION annotation: marker_stats + enrichment in one G crossing",
+          py::arg("op"), py::arg("G"), py::arg("X"),
+          py::arg("norm_method") = 2, py::arg("alpha") = 0.85,
+          py::arg("max_it") = 5, py::arg("approx") = false,
+          py::arg("enrichment_norm_method") = 1,
           py::arg("thread_no") = 0);
 }

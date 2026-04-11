@@ -359,6 +359,13 @@ def annotate_cells(
     ... }
     >>> result = annotate_cells(adata, markers)
     """
+
+    # This function is much more verbose than the R version and generally disgusting
+    # because pybind cannot pass matrices by reference and have them be modified
+    # in memory like with Rcpp. Objects must be translated and passed by copy.
+    # Low cost operations that can be done by libactionet are done here because
+    # the cost to compute is cheaper than the cost to translate and pass by copy.
+
     # Get feature labels
     from ._feature_lookup import resolve_feature_space
     space = resolve_feature_space(adata, features_use, context="annotate_cells")
@@ -415,16 +422,32 @@ def annotate_cells(
                 apply_log1p=apply_log1p,
                 log_scale=log_scale,
             )
-            marker_stats = _core.compute_feature_stats_vision_backed_operator(
-                op=op,
-                G=G,
-                X=X_markers,
-                norm_method=norm_method_code,
-                alpha=alpha,
-                max_it=max_it,
-                approx=approx,
-                thread_no=n_threads,
-            )
+            if use_enrichment:
+                fused = _core.annotate_cells_vision_backed_fused(
+                    op=op,
+                    G=G,
+                    X=X_markers,
+                    norm_method=norm_method_code,
+                    alpha=alpha,
+                    max_it=max_it,
+                    approx=approx,
+                    enrichment_norm_method=1,
+                    thread_no=n_threads,
+                )
+                marker_stats = fused["marker_stats"]
+                _fused_log_pvals = fused["log_pvals"]
+            else:
+                marker_stats = _core.compute_feature_stats_vision_backed_operator(
+                    op=op,
+                    G=G,
+                    X=X_markers,
+                    norm_method=norm_method_code,
+                    alpha=alpha,
+                    max_it=max_it,
+                    approx=approx,
+                    thread_no=n_threads,
+                )
+                _fused_log_pvals = None
         else:
             # ----------------------------------------------------------
             # Vision · in-memory
@@ -454,18 +477,36 @@ def annotate_cells(
             sigma_sq = (row_sum_sq - 2.0 * mu * row_sums
                         + n_vars * mu ** 2) / (n_vars - 1)
 
-            marker_stats = _core.compute_feature_stats_vision_from_stats(
-                G=G,
-                stats=stats,
-                mu=mu,
-                sigma_sq=sigma_sq,
-                X=X_markers,
-                norm_method=norm_method_code,
-                alpha=alpha,
-                max_it=max_it,
-                approx=approx,
-                thread_no=n_threads,
-            )
+            if use_enrichment:
+                fused = _core.annotate_cells_vision_fused(
+                    G=G,
+                    stats=stats,
+                    mu=mu,
+                    sigma_sq=sigma_sq,
+                    X=X_markers,
+                    norm_method=norm_method_code,
+                    alpha=alpha,
+                    max_it=max_it,
+                    approx=approx,
+                    enrichment_norm_method=1,
+                    thread_no=n_threads,
+                )
+                marker_stats = fused["marker_stats"]
+                _fused_log_pvals = fused["log_pvals"]
+            else:
+                marker_stats = _core.compute_feature_stats_vision_from_stats(
+                    G=G,
+                    stats=stats,
+                    mu=mu,
+                    sigma_sq=sigma_sq,
+                    X=X_markers,
+                    norm_method=norm_method_code,
+                    alpha=alpha,
+                    max_it=max_it,
+                    approx=approx,
+                    thread_no=n_threads,
+                )
+                _fused_log_pvals = None
 
     elif method == "actionet":
         # ----------------------------------------------------------
@@ -492,17 +533,34 @@ def annotate_cells(
         if not issparse(S_sub):
             S_sub = csr_matrix(np.asarray(S_sub))
 
-        marker_stats = _core.compute_feature_stats(
-            G=G,
-            S=S_sub,
-            X=X_sub,
-            norm_method=norm_method_code,
-            alpha=alpha,
-            max_it=max_it,
-            approx=approx,
-            thread_no=n_threads,
-            ignore_baseline=ignore_baseline,
-        )
+        if use_enrichment:
+            fused = _core.annotate_cells_actionet_fused(
+                G=G,
+                S=S_sub,
+                X=X_sub,
+                norm_method=norm_method_code,
+                alpha=alpha,
+                max_it=max_it,
+                approx=approx,
+                enrichment_norm_method=1,
+                thread_no=n_threads,
+                ignore_baseline=ignore_baseline,
+            )
+            marker_stats = fused["marker_stats"]
+            _fused_log_pvals = fused["log_pvals"]
+        else:
+            marker_stats = _core.compute_feature_stats(
+                G=G,
+                S=S_sub,
+                X=X_sub,
+                norm_method=norm_method_code,
+                alpha=alpha,
+                max_it=max_it,
+                approx=approx,
+                thread_no=n_threads,
+                ignore_baseline=ignore_baseline,
+            )
+            _fused_log_pvals = None
     else:
         raise ValueError(f"Unknown method: {method}")
 
@@ -512,10 +570,12 @@ def annotate_cells(
     # Compute labels and confidence
     celltype_arr = np.asarray(celltype_names)
     if use_enrichment:
-        Gn = _core.normalize_graph(G, norm_method=1).T
-        marker_stats_pos = np.maximum(enrichment, 0)
-
-        log_pvals = _core.compute_graph_label_enrichment(Gn, marker_stats_pos, n_threads)
+        if _fused_log_pvals is not None:
+            log_pvals = _fused_log_pvals
+        else:
+            Gn = _core.normalize_graph(G, norm_method=1).T
+            marker_stats_pos = np.maximum(enrichment, 0)
+            log_pvals = _core.compute_graph_label_enrichment(Gn, marker_stats_pos, n_threads)
 
         labels_idx = np.argmax(log_pvals, axis=1)
         confidence = np.max(log_pvals, axis=1)
