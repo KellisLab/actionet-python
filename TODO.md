@@ -9,6 +9,7 @@
   * Audit for dead functions
 * Interactive cell selector
 * UMAP points have no stroke
+* Remove violin boxplots? Quantiles don't align.
 * `compute_archetype_feature_specificity()`: `key_added` > `key_prefix`
 
 ## Secondary

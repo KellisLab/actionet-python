@@ -778,7 +778,7 @@ def _build_violin_plot(
         scale="width",
     )
     if show_boxplot:
-        base = base + geom_boxplot(width=0.2, fill="white", alpha=0.7)
+        base = base + geom_boxplot(width=0.2, fill="white", alpha=0.7, outlier_size=0.5)
     base = base + scale_fill_manual(values=color_map)
     base = base + scale_x_discrete(limits=[str(c) for c in categories])
 
