@@ -8,6 +8,7 @@
 * Reorganize and consolidate code
   * Audit for dead functions
 * Interactive cell selector
+* UMAP points have no stroke
 
 ## Secondary
 * Consolidate normalization code-paths
