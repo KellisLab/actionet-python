@@ -14,10 +14,14 @@ The typical call site is simply::
     persist_updates(adata, obsm={"key": array}, uns={"key": value})
 
 which transparently does both steps.
+
+For a full flush of all in-memory state, use :func:`checkpoint_backed`.
 """
 
 from __future__ import annotations
 
+import os
+import tempfile
 from typing import Any, Mapping, MutableMapping
 
 from anndata import AnnData
@@ -234,3 +238,183 @@ def persist_layer(
         validate=validate,
         verbose=verbose,
     )
+
+
+# ---------------------------------------------------------------------------
+# Checkpoint / compact
+# ---------------------------------------------------------------------------
+
+
+def _copy_h5_group_faithful(src_group, dst_group, chunk_size: int) -> None:
+    """Recursively copy an HDF5 group preserving compression settings."""
+    import h5py
+
+    for key, value in src_group.attrs.items():
+        dst_group.attrs[key] = value
+
+    for name, obj in src_group.items():
+        if isinstance(obj, h5py.Group):
+            child = dst_group.create_group(name)
+            _copy_h5_group_faithful(obj, child, chunk_size=chunk_size)
+        elif isinstance(obj, h5py.Dataset):
+            kwargs: dict[str, Any] = {
+                "shape": obj.shape,
+                "dtype": obj.dtype,
+            }
+            if obj.chunks is not None:
+                kwargs["chunks"] = obj.chunks
+            if obj.maxshape is not None:
+                kwargs["maxshape"] = obj.maxshape
+            if obj.compression is not None:
+                kwargs["compression"] = obj.compression
+            if obj.compression_opts is not None:
+                kwargs["compression_opts"] = obj.compression_opts
+            if obj.shuffle:
+                kwargs["shuffle"] = True
+            if obj.fletcher32:
+                kwargs["fletcher32"] = True
+
+            dst_ds = dst_group.create_dataset(name, **kwargs)
+
+            # Chunked copy along axis-0.
+            if obj.shape == () or obj.ndim == 0:
+                dst_ds[()] = obj[()]
+            else:
+                n_rows = obj.shape[0]
+                step = max(1, chunk_size)
+                for start in range(0, n_rows, step):
+                    end = min(start + step, n_rows)
+                    dst_ds[start:end, ...] = obj[start:end, ...]
+
+            for key, value in obj.attrs.items():
+                dst_ds.attrs[key] = value
+        else:
+            raise TypeError(
+                f"Unsupported HDF5 object type for key '{name}': {type(obj)}"
+            )
+
+
+def _repack_h5ad(
+    adata: AnnData,
+    *,
+    chunk_size: int = 4096,
+    verbose: bool = False,
+) -> None:
+    """Repack a backed H5AD file to reclaim dead space, then refresh the handle.
+
+    Performs an atomic copy to a temp file, replaces the original, and
+    re-opens the AnnData handle so it points at the compacted file.
+    """
+    import h5py
+
+    src_path = str(adata.filename)
+
+    parent_dir = os.path.dirname(src_path) or "."
+    fd, tmp_path = tempfile.mkstemp(
+        suffix=".h5ad", dir=parent_dir, prefix=".compact_"
+    )
+    os.close(fd)
+
+    try:
+        with h5py.File(src_path, "r") as src_f, h5py.File(tmp_path, "w") as dst_f:
+            _copy_h5_group_faithful(src_f, dst_f, chunk_size=chunk_size)
+
+        if hasattr(adata, "file") and adata.file is not None:
+            adata.file.close()
+
+        os.replace(tmp_path, src_path)
+    except BaseException:
+        if os.path.exists(tmp_path):
+            os.unlink(tmp_path)
+        raise
+
+    import anndata as ad
+
+    reopened = ad.read_h5ad(src_path, backed="r+")
+    adata._init_as_actual(reopened)
+    adata.file = reopened.file
+
+    if verbose:
+        print(f"[INFO] Compacted {src_path}")
+
+
+def checkpoint_backed(
+    adata: AnnData,
+    *,
+    compact: bool = False,
+    chunk_size: int = 4096,
+    validate: bool = False,
+    verbose: bool = False,
+) -> None:
+    """Flush all in-memory annotations to the backing HDF5 file.
+
+    This is the recommended way to checkpoint a backed AnnData object.
+    Unlike ``adata.write_h5ad()``, which rewrites the full object and
+    nearly doubles file size due to HDF5 dead-space accumulation,
+    ``checkpoint_backed`` writes only in-memory annotation slots and
+    optionally repacks the file to reclaim any dead space.
+
+    Parameters
+    ----------
+    adata : AnnData
+        A backed AnnData object opened in ``r+`` mode.
+    compact : bool, optional (default: False)
+        If ``True``, repack the HDF5 file after writing to reclaim
+        dead space from prior delete-then-create overwrites.  This
+        requires a full file copy and is expensive for large files.
+    chunk_size : int, optional (default: 4096)
+        Row-chunk size used during the compact file copy.
+    validate : bool, optional (default: False)
+        Run ``_anndata_io`` validation before writing.
+    verbose : bool, optional (default: False)
+        Print progress messages.
+
+    Raises
+    ------
+    ValueError
+        If *adata* is not backed or is opened read-only.
+    RuntimeError
+        If the experimental IO module is unavailable.
+    """
+    if not is_backed_adata(adata):
+        raise ValueError(
+            "checkpoint_backed requires a backed AnnData object. "
+            "Open with ad.read_h5ad(path, backed='r+')."
+        )
+
+    _ensure_backed_writable(adata)
+
+    if _anndata_io is None:
+        raise RuntimeError(
+            "Backed persistence requested but actionet.experimental._anndata_io "
+            "could not be imported."
+        )
+
+    results = _anndata_io.collect_annotation_results(
+        adata,
+        obs_columns=list(adata.obs.columns),
+        var_columns=list(adata.var.columns),
+        obsm_keys=list(adata.obsm.keys()),
+        varm_keys=list(adata.varm.keys()),
+        obsp_keys=list(adata.obsp.keys()),
+        varp_keys=list(adata.varp.keys()),
+        layers_keys=[],
+        uns_keys=list(adata.uns.keys()),
+        verbose=verbose,
+    )
+
+    has_data = any(len(v) > 0 for v in results.values())
+
+    if has_data:
+        if verbose:
+            print(f"[INFO] Checkpointing to {adata.filename}")
+
+        _anndata_io.append_to_anndata(
+            str(adata.filename),
+            results,
+            verbose=verbose,
+            validate=validate,
+        )
+
+    if compact:
+        _repack_h5ad(adata, chunk_size=chunk_size, verbose=verbose)

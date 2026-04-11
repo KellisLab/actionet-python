@@ -93,6 +93,8 @@ from .preprocessing import (
     decompress_backed_storage,
 )
 
+from ._backed_persist import checkpoint_backed
+
 from .tools import (
     scale,
     aggregate_matrix,
@@ -160,4 +162,5 @@ __all__ = [
     "apply_filter",
     "normalize_anndata",
     "decompress_backed_storage",
+    "checkpoint_backed",
 ]
