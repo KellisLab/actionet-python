@@ -112,8 +112,8 @@ def plot_feature_expression(
     adata: AnnData,
     features: Union[str, Sequence[Union[str, Iterable[str]]]],
     features_use: Optional[str] = None,
+    method: Literal["diffusion", "pca", "archetypes", "none"] = "diffusion",
     alpha: float = 0.9,
-    algorithm: Literal["actionet", "pca"] = "actionet",
     layer: Optional[str] = None,
     trans_attr: Optional[Union[str, Sequence, np.ndarray]] = None,
     trans_th: float = -0.5,
@@ -125,6 +125,8 @@ def plot_feature_expression(
     single_plot: bool = False,
     legend: bool = False,
     sort_features: bool = True,
+    archetype_profile_key: str = "archetype_feat_profile",
+    archetype_matrix_key: str = "H_merged",
     n_threads: int = 0,
     backed_chunk_size: int = 4096,
     lazy_transform: Optional[LazyTransform] = None,
@@ -139,12 +141,25 @@ def plot_feature_expression(
         Feature name or collection of features to plot.
     features_use
         Column in ``adata.var`` to use for feature matching.
+    method : {"diffusion", "pca", "archetypes", "none"}, default ``"diffusion"``
+        Imputation method passed to :func:`~actionet.imputation.impute_features`.
+
+        - ``"diffusion"`` — network diffusion smoothing.
+        - ``"pca"`` — PCA-based kernel smoothing.
+        - ``"archetypes"`` — fast archetype interpolation; requires
+          pre-computed profiles (run
+          :func:`~actionet.specificity.compute_archetype_feature_specificity`
+          first).
+        - ``"none"`` — raw expression, no imputation.
+
+        Setting ``alpha=0`` also forces raw mode regardless of ``method``
+        (except ``"archetypes"``), for backward compatibility.
     alpha
-        Diffusion parameter; if > 0, impute expression using network diffusion.
-    algorithm
-        Imputation algorithm (``"actionet"`` or ``"pca"``).
+        Diffusion parameter used by ``method="diffusion"`` and ``method="pca"``.
+        Setting ``alpha=0`` disables imputation (equivalent to ``method="none"``).
     layer
-        Layer to read expression values from when alpha == 0.
+        Layer to read expression from (``None`` uses ``.X``).
+        Used by ``method="diffusion"``, ``method="pca"``, and ``method="none"``.
     trans_attr
         Optional continuous attribute controlling transparency.
     trans_th
@@ -164,17 +179,20 @@ def plot_feature_expression(
     legend
         Whether to show the color legend.
     sort_features
-        If True, sort matched features.
+        If True, sort matched features alphabetically.
+    archetype_profile_key : str, default ``"archetype_feat_profile"``
+        Key in ``adata.varm`` for archetype expression profiles.
+        Used only by ``method="archetypes"``.
+    archetype_matrix_key : str, default ``"H_merged"``
+        Key in ``adata.obsm`` for cell-archetype membership weights.
+        Used only by ``method="archetypes"``.
     n_threads
         Number of threads for imputation.
-    backed_chunk_size : int, optional (default: 4096)
+    backed_chunk_size : int, default 4096
         Number of rows per chunk when streaming backed AnnData.
         Ignored for in-memory objects.
     lazy_transform : LazyTransform, optional
         Pre-built lazy logcount transform for backed AnnData inputs.
-        When provided, the backed operator applies per-row normalization
-        and log1p on-the-fly without requiring a persisted ``logcounts``
-        layer.  Only valid when ``layer=None`` and the input is backed.
         Create with :func:`~actionet.lazy_transform.create_lazy_transform`.
 
     Returns
@@ -188,14 +206,19 @@ def plot_feature_expression(
     if len(marker_set) == 0:
         raise ValueError("No features found in 'features_use'.")
 
-    if len(marker_set) == 1 and alpha != 0:
-        alpha = 0
+    use_raw = method == "none" or (alpha == 0 and method != "archetypes")
 
-    if alpha > 0:
+    if use_raw:
+        expr_profile = _extract_expression(
+            adata, marker_set, features_use, layer,
+            lazy_transform=lazy_transform,
+            backed_chunk_size=backed_chunk_size,
+        )
+    else:
         expr_profile = impute_features(
             adata,
             features=requested,
-            algorithm=algorithm,
+            method=method,
             features_use=features_use,
             network_key=net_slot,
             layer=layer,
@@ -203,15 +226,11 @@ def plot_feature_expression(
             n_threads=n_threads,
             backed_chunk_size=backed_chunk_size,
             lazy_transform=lazy_transform,
+            archetype_profile_key=archetype_profile_key,
+            archetype_matrix_key=archetype_matrix_key,
         )
         if sort_features:
-            expr_profile = expr_profile.loc[:, [feat for feat in marker_set if feat in expr_profile.columns]]
-    else:
-        expr_profile = _extract_expression(
-            adata, marker_set, features_use, layer,
-            lazy_transform=lazy_transform,
-            backed_chunk_size=backed_chunk_size,
-        )
+            expr_profile = expr_profile.loc[:, [f for f in marker_set if f in expr_profile.columns]]
 
     out = {}
     for feat_name in expr_profile.columns:
@@ -268,8 +287,8 @@ def plot_feature_expression_raster(
     adata: AnnData,
     features: Union[str, Sequence[Union[str, Iterable[str]]]],
     features_use: Optional[str] = None,
+    method: Literal["diffusion", "pca", "archetypes", "none"] = "diffusion",
     alpha: float = 0.9,
-    algorithm: Literal["actionet", "pca"] = "actionet",
     layer: Optional[str] = None,
     trans_attr: Optional[Union[str, Sequence, np.ndarray]] = None,
     trans_th: float = -0.5,
@@ -281,6 +300,8 @@ def plot_feature_expression_raster(
     single_plot: bool = False,
     legend: bool = False,
     sort_features: bool = True,
+    archetype_profile_key: str = "archetype_feat_profile",
+    archetype_matrix_key: str = "H_merged",
     n_threads: int = 0,
     backed_chunk_size: int = 4096,
     lazy_transform: Optional[LazyTransform] = None,
@@ -295,12 +316,25 @@ def plot_feature_expression_raster(
         Feature name or collection of features to plot.
     features_use
         Column in ``adata.var`` to use for feature matching.
+    method : {"diffusion", "pca", "archetypes", "none"}, default ``"diffusion"``
+        Imputation method passed to :func:`~actionet.imputation.impute_features`.
+
+        - ``"diffusion"`` — network diffusion smoothing.
+        - ``"pca"`` — PCA-based kernel smoothing.
+        - ``"archetypes"`` — fast archetype interpolation; requires
+          pre-computed profiles (run
+          :func:`~actionet.specificity.compute_archetype_feature_specificity`
+          first).
+        - ``"none"`` — raw expression, no imputation.
+
+        Setting ``alpha=0`` also forces raw mode regardless of ``method``
+        (except ``"archetypes"``), for backward compatibility.
     alpha
-        Diffusion parameter; if > 0, impute expression using network diffusion.
-    algorithm
-        Imputation algorithm (``"actionet"`` or ``"pca"``).
+        Diffusion parameter used by ``method="diffusion"`` and ``method="pca"``.
+        Setting ``alpha=0`` disables imputation (equivalent to ``method="none"``).
     layer
-        Layer to read expression values from when alpha == 0.
+        Layer to read expression from (``None`` uses ``.X``).
+        Used by ``method="diffusion"``, ``method="pca"``, and ``method="none"``.
     trans_attr
         Optional continuous attribute controlling transparency.
     trans_th
@@ -316,21 +350,24 @@ def plot_feature_expression_raster(
     basis
         Key in ``adata.obsm`` containing 2D coordinates.
     single_plot
-        If True, arrange multiple plots into a grid.
+        If True, arrange multiple plots into a single matplotlib figure.
     legend
         Whether to show the color legend.
     sort_features
-        If True, sort matched features.
+        If True, sort matched features alphabetically.
+    archetype_profile_key : str, default ``"archetype_feat_profile"``
+        Key in ``adata.varm`` for archetype expression profiles.
+        Used only by ``method="archetypes"``.
+    archetype_matrix_key : str, default ``"H_merged"``
+        Key in ``adata.obsm`` for cell-archetype membership weights.
+        Used only by ``method="archetypes"``.
     n_threads
         Number of threads for imputation.
-    backed_chunk_size : int, optional (default: 4096)
+    backed_chunk_size : int, default 4096
         Number of rows per chunk when streaming backed AnnData.
         Ignored for in-memory objects.
     lazy_transform : LazyTransform, optional
         Pre-built lazy logcount transform for backed AnnData inputs.
-        When provided, the backed operator applies per-row normalization
-        and log1p on-the-fly without requiring a persisted ``logcounts``
-        layer.  Only valid when ``layer=None`` and the input is backed.
         Create with :func:`~actionet.lazy_transform.create_lazy_transform`.
     """
 
@@ -339,14 +376,19 @@ def plot_feature_expression_raster(
     if len(marker_set) == 0:
         raise ValueError("No features found in 'features_use'.")
 
-    if len(marker_set) == 1 and alpha != 0:
-        alpha = 0
+    use_raw = method == "none" or (alpha == 0 and method != "archetypes")
 
-    if alpha > 0:
+    if use_raw:
+        expr_profile = _extract_expression(
+            adata, marker_set, features_use, layer,
+            lazy_transform=lazy_transform,
+            backed_chunk_size=backed_chunk_size,
+        )
+    else:
         expr_profile = impute_features(
             adata,
             features=requested,
-            algorithm=algorithm,
+            method=method,
             features_use=features_use,
             network_key=net_slot,
             layer=layer,
@@ -354,15 +396,11 @@ def plot_feature_expression_raster(
             n_threads=n_threads,
             backed_chunk_size=backed_chunk_size,
             lazy_transform=lazy_transform,
+            archetype_profile_key=archetype_profile_key,
+            archetype_matrix_key=archetype_matrix_key,
         )
         if sort_features:
-            expr_profile = expr_profile.loc[:, [feat for feat in marker_set if feat in expr_profile.columns]]
-    else:
-        expr_profile = _extract_expression(
-            adata, marker_set, features_use, layer,
-            lazy_transform=lazy_transform,
-            backed_chunk_size=backed_chunk_size,
-        )
+            expr_profile = expr_profile.loc[:, [f for f in marker_set if f in expr_profile.columns]]
 
     out = {}
     for feat_name in expr_profile.columns:
