@@ -89,11 +89,12 @@ from .preprocessing import (
     filter_anndata,
     compute_filter_masks,
     apply_filter,
+    subset_anndata,
     normalize_anndata,
     decompress_backed_storage,
 )
 
-from ._backed_persist import checkpoint_backed
+from ._backed_persist import checkpoint_backed, subset_backed_inplace
 
 from .tools import (
     scale,
@@ -160,7 +161,9 @@ __all__ = [
     "filter_anndata",
     "compute_filter_masks",
     "apply_filter",
+    "subset_anndata",
     "normalize_anndata",
     "decompress_backed_storage",
     "checkpoint_backed",
+    "subset_backed_inplace",
 ]

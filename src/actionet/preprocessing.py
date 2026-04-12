@@ -4,6 +4,7 @@ import os
 import pathlib
 import shutil
 import tempfile
+import warnings
 from typing import Optional, Union
 
 import anndata as ad
@@ -15,6 +16,15 @@ from scipy.io import mmread
 from scipy.sparse import csr_matrix, issparse
 
 from ._backed_compression import get_matrix_compression_policy
+from ._backed_persist import (
+    is_backed_adata,
+    _ensure_backed_writable,
+    _refresh_backed_handle,
+    _adaptive_sparse_chunk_size,
+    _write_filtered_backed,
+    _write_subsetted_matrix,
+    subset_backed_inplace,
+)
 from ._matrix_source import MatrixSource
 
 
@@ -859,55 +869,6 @@ def _compute_filter_stats(
     return row_sums, row_nnz, col_nnz
 
 
-def _adaptive_sparse_chunk_size(
-    matrix,
-    obs_idx: np.ndarray,
-    var_idx: np.ndarray | None,
-    requested_chunk_size: int,
-    *,
-    target_block_mb: int = 192,
-    overhead_factor: float = 8.0,
-    sample_rows: int = 256,
-    min_chunk_size: int = 64,
-) -> int:
-    """Estimate a safer chunk size for backed sparse row operations.
-
-    The default ``backed_chunk_size=4096`` can create very large temporary
-    sparse blocks for moderately dense matrices.  This helper samples a small
-    number of rows and scales chunk size to keep temporary block payloads near
-    ``target_block_mb``.
-    """
-    req = int(max(1, requested_chunk_size))
-    if obs_idx.size == 0:
-        return req
-
-    sample_n = int(min(sample_rows, obs_idx.size))
-    rows = obs_idx[:sample_n]
-    block = matrix[rows, :]
-
-    if var_idx is not None:
-        n_vars = block.shape[1]
-        is_full_var = (
-            var_idx.size == n_vars
-            and np.array_equal(var_idx, np.arange(n_vars, dtype=np.int64))
-        )
-        if not is_full_var:
-            block = block[:, var_idx]
-
-    block = sp.csr_matrix(block)
-    if block.shape[0] == 0 or block.nnz == 0:
-        return req
-
-    nnz_per_row = float(block.nnz) / float(block.shape[0])
-    bytes_per_nnz = float(block.data.dtype.itemsize + block.indices.dtype.itemsize)
-    est_bytes_per_row = max(1.0, nnz_per_row * bytes_per_nnz * float(max(overhead_factor, 1.0)))
-    target_bytes = float(max(1, target_block_mb)) * 1024.0 * 1024.0
-
-    safe = int(target_bytes / est_bytes_per_row)
-    safe = max(int(max(1, min_chunk_size)), safe)
-    return min(req, safe)
-
-
 def compute_filter_masks(
     adata: AnnData,
     layer_name: str | None = None,
@@ -997,347 +958,6 @@ def compute_filter_masks(
     obs_mask[obs_idx] = True
     var_mask[var_idx] = True
     return obs_mask, var_mask
-
-
-# ---------------------------------------------------------------------------
-# Chunked h5py write for backed subsetting
-# ---------------------------------------------------------------------------
-
-
-def _dataset_create_kwargs_from_spec(spec: dict | None) -> dict:
-    """Translate compression metadata into h5py create_dataset kwargs."""
-    if not spec:
-        return {}
-
-    kwargs: dict = {}
-    codec = spec.get("compression")
-    if codec is not None:
-        kwargs["compression"] = codec
-        if spec.get("compression_opts") is not None:
-            kwargs["compression_opts"] = spec["compression_opts"]
-    return kwargs
-
-
-def _dense_compression_kwargs(compression_policy: dict | None) -> dict:
-    """Return compression kwargs for dense datasets."""
-    if not compression_policy:
-        return {}
-    datasets = compression_policy.get("datasets", {})
-    if not datasets:
-        return {}
-    first_spec = next(iter(datasets.values()))
-    return _dataset_create_kwargs_from_spec(first_spec)
-
-
-def _sparse_dataset_compression_kwargs(
-    compression_policy: dict | None,
-    dataset_name: str,
-) -> dict:
-    """Return compression kwargs for one sparse component dataset."""
-    if not compression_policy:
-        return {}
-    spec = (compression_policy.get("datasets", {}) or {}).get(dataset_name)
-    return _dataset_create_kwargs_from_spec(spec)
-
-
-def _write_sparse_subsetted(
-    f,
-    h5_key: str,
-    matrix,
-    obs_idx: np.ndarray,
-    var_idx: np.ndarray | None,
-    chunk_size: int,
-    encoding: str = "csr_matrix",
-    compression_policy: dict | None = None,
-):
-    """Write a row/col-subsetted sparse matrix to *f[h5_key]* in chunks.
-
-    Only ``chunk_size`` rows are loaded into memory at a time.
-    """
-    source_mat = matrix
-    n_out = obs_idx.size
-    n_vars_out = var_idx.size if var_idx is not None else source_mat.shape[1]
-    chunk_size = _adaptive_sparse_chunk_size(
-        source_mat,
-        obs_idx,
-        var_idx,
-        chunk_size,
-        target_block_mb=128,
-        overhead_factor=8.0,
-    )
-
-    def _iter_blocks():
-        for pos in range(0, n_out, chunk_size):
-            end = min(pos + chunk_size, n_out)
-            rows = obs_idx[pos:end]
-            block = source_mat[rows, :]
-            if var_idx is not None:
-                block = block[:, var_idx]
-            yield sp.csr_matrix(block)
-
-    blocks = _iter_blocks()
-    first_block = next(blocks, None)
-    data_dtype = source_mat.dtype if hasattr(source_mat, "dtype") else np.float64
-    indices_dtype = np.int32
-    initial_capacity = 1024
-    if first_block is not None and first_block.nnz > 0:
-        data_dtype = first_block.data.dtype
-        indices_dtype = first_block.indices.dtype
-        initial_capacity = max(initial_capacity, int(first_block.nnz) * 2)
-
-    grp = f.create_group(h5_key)
-    data_ds = grp.create_dataset(
-        "data",
-        shape=(initial_capacity,),
-        maxshape=(None,),
-        dtype=data_dtype,
-        **_sparse_dataset_compression_kwargs(compression_policy, "data"),
-    )
-    indices_ds = grp.create_dataset(
-        "indices",
-        shape=(initial_capacity,),
-        maxshape=(None,),
-        dtype=indices_dtype,
-        **_sparse_dataset_compression_kwargs(compression_policy, "indices"),
-    )
-
-    # Single-pass stream write with extensible datasets.
-    indptr = np.zeros(n_out + 1, dtype=np.int64)
-    row_pos = 0
-    nnz_pos = 0
-
-    def _ensure_capacity(required: int) -> None:
-        if required <= data_ds.shape[0]:
-            return
-        new_size = data_ds.shape[0]
-        while new_size < required:
-            new_size = max(new_size * 2, required)
-        data_ds.resize((new_size,))
-        indices_ds.resize((new_size,))
-
-    def _write_block(block: sp.csr_matrix) -> None:
-        nonlocal row_pos, nnz_pos
-        n_rows = block.shape[0]
-        block_nnz = int(block.nnz)
-
-        if block_nnz > 0:
-            _ensure_capacity(nnz_pos + block_nnz)
-            data_ds[nnz_pos:nnz_pos + block_nnz] = block.data
-            indices_ds[nnz_pos:nnz_pos + block_nnz] = block.indices
-
-        row_nnz = np.diff(block.indptr).astype(np.int64, copy=False)
-        if n_rows > 0:
-            indptr[row_pos + 1:row_pos + 1 + n_rows] = nnz_pos + np.cumsum(row_nnz, dtype=np.int64)
-
-        row_pos += n_rows
-        nnz_pos += block_nnz
-
-    if first_block is not None:
-        _write_block(first_block)
-    for block in blocks:
-        _write_block(block)
-
-    data_ds.resize((nnz_pos,))
-    indices_ds.resize((nnz_pos,))
-
-    grp.create_dataset(
-        "indptr",
-        data=indptr,
-        **_sparse_dataset_compression_kwargs(compression_policy, "indptr"),
-    )
-    grp.attrs["shape"] = np.array([n_out, n_vars_out])
-    grp.attrs["encoding-type"] = encoding
-    grp.attrs["encoding-version"] = "0.1.0"
-
-
-def _write_dense_subsetted(
-    f,
-    h5_key: str,
-    matrix,
-    obs_idx: np.ndarray,
-    var_idx: np.ndarray | None,
-    chunk_size: int,
-    compression_policy: dict | None = None,
-):
-    """Write a row/col-subsetted dense matrix to *f[h5_key]* in chunks."""
-    n_out = obs_idx.size
-    n_vars_out = var_idx.size if var_idx is not None else matrix.shape[1]
-
-    ds = f.create_dataset(
-        h5_key,
-        shape=(n_out, n_vars_out),
-        dtype=np.float64,
-        **_dense_compression_kwargs(compression_policy),
-    )
-    ds.attrs["encoding-type"] = "array"
-    ds.attrs["encoding-version"] = "0.2.0"
-
-    for pos in range(0, n_out, chunk_size):
-        end = min(pos + chunk_size, n_out)
-        rows = obs_idx[pos:end]
-        block = matrix[rows, :]
-        if var_idx is not None:
-            block = block[:, var_idx]
-        if sp.issparse(block):
-            block = block.toarray()
-        ds[pos:end, :] = np.asarray(block, dtype=np.float64)
-
-
-def _write_subsetted_matrix(
-    f,
-    h5_key: str,
-    matrix,
-    obs_idx: np.ndarray,
-    var_idx: np.ndarray | None,
-    chunk_size: int,
-    compression_policy: dict | None = None,
-):
-    """Dispatch to sparse or dense chunked writer."""
-    from ._matrix_source import _is_sparse_matrix_like
-
-    policy = compression_policy if compression_policy is not None else get_matrix_compression_policy(matrix)
-
-    if _is_sparse_matrix_like(matrix):
-        _write_sparse_subsetted(
-            f,
-            h5_key,
-            matrix,
-            obs_idx,
-            var_idx,
-            chunk_size,
-            compression_policy=policy,
-        )
-    else:
-        _write_dense_subsetted(
-            f,
-            h5_key,
-            matrix,
-            obs_idx,
-            var_idx,
-            chunk_size,
-            compression_policy=policy,
-        )
-
-
-def _write_filtered_backed(
-    adata: AnnData,
-    obs_idx: np.ndarray,
-    var_idx: np.ndarray,
-    dest_path: str,
-    chunk_size: int,
-) -> None:
-    """Write a row/col-subsetted backed AnnData to *dest_path* via h5py.
-
-    Only ``chunk_size`` rows of the expression matrix are in memory at any
-    time, so peak RAM is proportional to ``chunk_size * n_vars_filtered``
-    rather than the full filtered matrix.
-    """
-    import h5py
-    from .experimental._anndata_io import _write_dataframe_to_h5
-
-    obs_sub = adata.obs.iloc[obs_idx].copy()
-    var_sub = adata.var.iloc[var_idx].copy()
-    h5file = adata.file._file if bool(getattr(adata, "isbacked", False) and getattr(adata, "filename", None)) else None
-
-    with h5py.File(dest_path, "w") as f:
-        # -- X -----------------------------------------------------------
-        x_policy = get_matrix_compression_policy(h5file["X"]) if h5file is not None and "X" in h5file else None
-        _write_subsetted_matrix(
-            f,
-            "X",
-            adata.X,
-            obs_idx,
-            var_idx,
-            chunk_size,
-            compression_policy=x_policy,
-        )
-
-        # -- obs / var (small DataFrames) --------------------------------
-        _write_dataframe_to_h5(f, "obs", obs_sub)
-        _write_dataframe_to_h5(f, "var", var_sub)
-
-        # -- layers ------------------------------------------------------
-        layer_keys = list(adata.layers.keys())
-        if layer_keys:
-            lg = f.create_group("layers")
-            lg.attrs["encoding-type"] = "dict"
-            lg.attrs["encoding-version"] = "0.1.0"
-            for lk in layer_keys:
-                layer_policy = None
-                if h5file is not None and "layers" in h5file and lk in h5file["layers"]:
-                    layer_policy = get_matrix_compression_policy(h5file["layers"][lk])
-                _write_subsetted_matrix(
-                    f,
-                    f"layers/{lk}",
-                    adata.layers[lk],
-                    obs_idx,
-                    var_idx,
-                    chunk_size,
-                    compression_policy=layer_policy,
-                )
-
-        # -- obsm / varm (typically small dense arrays) ------------------
-        for container, idx, name in [
-            (adata.obsm, obs_idx, "obsm"),
-            (adata.varm, var_idx, "varm"),
-        ]:
-            keys = list(container.keys())
-            if keys:
-                f.create_group(name)
-                for k in keys:
-                    mat = container[k]
-                    sub = mat[idx] if mat is not None else None
-                    if sub is not None:
-                        h5k = f"{name}/{k}"
-                        if sp.issparse(sub):
-                            sub = sub.tocsr()
-                            grp = f.create_group(h5k)
-                            grp.create_dataset("data", data=sub.data, compression="gzip")
-                            grp.create_dataset("indices", data=sub.indices, compression="gzip")
-                            grp.create_dataset("indptr", data=sub.indptr, compression="gzip")
-                            grp.attrs["shape"] = np.array(sub.shape)
-                            grp.attrs["encoding-type"] = "csr_matrix"
-                            grp.attrs["encoding-version"] = "0.1.0"
-                        else:
-                            ds = f.create_dataset(h5k, data=np.asarray(sub), compression="gzip")
-                            ds.attrs["encoding-type"] = "array"
-                            ds.attrs["encoding-version"] = "0.2.0"
-
-        # -- obsp / varp (pairwise, row+col subsetted) -------------------
-        for container, idx, name in [
-            (adata.obsp, obs_idx, "obsp"),
-            (adata.varp, var_idx, "varp"),
-        ]:
-            keys = list(container.keys())
-            if keys:
-                f.create_group(name)
-                for k in keys:
-                    mat = container[k]
-                    if mat is not None:
-                        sub = mat[np.ix_(idx, idx)]
-                        h5k = f"{name}/{k}"
-                        if sp.issparse(sub):
-                            sub = sub.tocsr()
-                            grp = f.create_group(h5k)
-                            grp.create_dataset("data", data=sub.data, compression="gzip")
-                            grp.create_dataset("indices", data=sub.indices, compression="gzip")
-                            grp.create_dataset("indptr", data=sub.indptr, compression="gzip")
-                            grp.attrs["shape"] = np.array(sub.shape)
-                            grp.attrs["encoding-type"] = "csr_matrix"
-                            grp.attrs["encoding-version"] = "0.1.0"
-                        else:
-                            ds = f.create_dataset(h5k, data=np.asarray(sub), compression="gzip")
-                            ds.attrs["encoding-type"] = "array"
-                            ds.attrs["encoding-version"] = "0.2.0"
-
-        # -- uns (copy verbatim via anndata's own write) -----------------
-        if adata.uns:
-            from .experimental._anndata_io import _write_dict_value
-            uns_grp = f.create_group("uns")
-            uns_grp.attrs["encoding-type"] = "dict"
-            uns_grp.attrs["encoding-version"] = "0.1.0"
-            for k, v in adata.uns.items():
-                _write_dict_value(uns_grp, k, v)
 
 
 # ---------------------------------------------------------------------------
@@ -1513,15 +1133,6 @@ def _is_writable_backed(adata: AnnData) -> bool:
     return "+" in getattr(mode, "mode", "")
 
 
-def _refresh_backed_handle(adata: AnnData, path: str, mode: str = "r+") -> None:
-    """Close and re-open a backed AnnData handle in-place."""
-    if hasattr(adata, "file") and adata.file is not None:
-        adata.file.close()
-    reopened = ad.read_h5ad(path, backed=mode)
-    adata._init_as_actual(reopened)
-    adata.file = reopened.file
-
-
 def decompress_backed_storage(
     adata: AnnData,
     *,
@@ -1626,6 +1237,140 @@ def decompress_backed_storage(
 
 
 # ---------------------------------------------------------------------------
+# Generic backed-safe subsetting
+# ---------------------------------------------------------------------------
+
+
+def _coerce_to_int_idx(
+    mask_or_idx: np.ndarray,
+    axis_size: int,
+    *,
+    name: str,
+) -> np.ndarray:
+    """Normalise a boolean mask **or** integer index array to int64 indices.
+
+    Parameters
+    ----------
+    mask_or_idx : ndarray
+        Boolean mask of length *axis_size*, or integer index array.
+    axis_size : int
+        Length of the axis being subsetted (for validation).
+    name : str
+        Human-readable axis name for error messages.
+    """
+    arr = np.asarray(mask_or_idx).ravel()
+    if arr.dtype == bool:
+        if arr.size != axis_size:
+            raise ValueError(
+                f"Boolean {name} mask has length {arr.size} but axis has {axis_size} elements"
+            )
+        return np.where(arr)[0].astype(np.int64)
+
+    idx = arr.astype(np.int64)
+    if idx.size > 0:
+        if idx.min() < 0:
+            raise ValueError(f"{name} indices contain negative values")
+        if idx.max() >= axis_size:
+            raise ValueError(
+                f"{name} indices contain values >= axis size ({axis_size})"
+            )
+        n_dupes = idx.size - np.unique(idx).size
+        if n_dupes > 0:
+            warnings.warn(
+                f"{name} indices contain {n_dupes} duplicate(s); "
+                "rows/columns will be repeated in the output",
+                UserWarning,
+                stacklevel=3,
+            )
+    return idx
+
+
+def subset_anndata(
+    adata: AnnData,
+    obs_idx: np.ndarray | None = None,
+    var_idx: np.ndarray | None = None,
+    *,
+    inplace: bool = True,
+    backed_chunk_size: int = 4096,
+) -> AnnData | None:
+    """Subset an AnnData safely on both axes (backed and in-memory).
+
+    This is the recommended way to shrink a backed AnnData object.
+    For backed objects the HDF5 file is atomically rewritten so that the
+    on-disk dimensions match the Python object.  For in-memory objects
+    the subset is a standard copy.
+
+    Parameters
+    ----------
+    adata : AnnData
+        Annotated data matrix.
+    obs_idx : ndarray or None, optional
+        Cells to keep -- boolean mask *or* integer index array.
+        ``None`` keeps all cells.
+    var_idx : ndarray or None, optional
+        Features to keep -- boolean mask *or* integer index array.
+        ``None`` keeps all features.
+    inplace : bool, optional (default: True)
+        If ``True``, modify *adata* in place and return ``None``.
+        If ``False``, return a new AnnData.
+    backed_chunk_size : int, optional (default: 4096)
+        Rows per chunk during backed writes.
+
+    Returns
+    -------
+    AnnData or None
+        ``None`` when ``inplace=True``; modified copy otherwise.
+    """
+    obs_int = (
+        _coerce_to_int_idx(obs_idx, adata.n_obs, name="obs")
+        if obs_idx is not None
+        else np.arange(adata.n_obs, dtype=np.int64)
+    )
+    var_int = (
+        _coerce_to_int_idx(var_idx, adata.n_vars, name="var")
+        if var_idx is not None
+        else np.arange(adata.n_vars, dtype=np.int64)
+    )
+
+    if obs_int.size == 0 or var_int.size == 0:
+        raise ValueError(
+            "Subset selects zero observations or variables; empty AnnData is not supported"
+        )
+
+    backed = is_backed_adata(adata)
+
+    if backed:
+        if inplace:
+            subset_backed_inplace(adata, obs_int, var_int, chunk_size=backed_chunk_size)
+            return None
+
+        filepath = str(adata.filename)
+        parent_dir = os.path.dirname(filepath) or "."
+        tmp_fd, tmp_path = tempfile.mkstemp(dir=parent_dir, suffix=".h5ad")
+        os.close(tmp_fd)
+        try:
+            _write_filtered_backed(adata, obs_int, var_int, tmp_path, backed_chunk_size)
+        except Exception:
+            if os.path.exists(tmp_path):
+                os.unlink(tmp_path)
+            raise
+        return ad.read_h5ad(tmp_path, backed="r+")
+
+    # In-memory path.
+    obs_mask = np.zeros(adata.n_obs, dtype=bool)
+    obs_mask[obs_int] = True
+    var_mask = np.zeros(adata.n_vars, dtype=bool)
+    var_mask[var_int] = True
+
+    if inplace:
+        subset = adata[obs_mask, var_mask].copy()
+        adata._init_as_actual(subset)
+        return None
+
+    return adata[obs_mask, var_mask].copy()
+
+
+# ---------------------------------------------------------------------------
 # apply_filter
 # ---------------------------------------------------------------------------
 
@@ -1659,15 +1404,18 @@ def apply_filter(
     backed_chunk_size : int, optional (default: 4096)
         Rows per chunk during backed writes.
     """
-    is_backed = bool(getattr(adata, "isbacked", False) and getattr(adata, "filename", None))
     obs_idx = np.where(obs_mask)[0].astype(np.int64)
     var_idx = np.where(var_mask)[0].astype(np.int64)
+    backed = is_backed_adata(adata)
 
-    if is_backed:
+    if backed:
+        if inplace and output_file is None:
+            subset_backed_inplace(adata, obs_idx, var_idx, chunk_size=backed_chunk_size)
+            return None
+
         filepath = str(adata.filename)
         dest = output_file if output_file is not None else filepath
 
-        # Write to a temp file first (atomic replace).
         tmp_fd, tmp_path = tempfile.mkstemp(
             dir=str(pathlib.Path(dest).parent), suffix=".h5ad",
         )
@@ -1675,26 +1423,23 @@ def apply_filter(
         try:
             _write_filtered_backed(adata, obs_idx, var_idx, tmp_path, backed_chunk_size)
         except Exception:
-            os.unlink(tmp_path)
+            if os.path.exists(tmp_path):
+                os.unlink(tmp_path)
             raise
 
         if inplace:
-            # Close the old backing file, replace it, reopen.
             if hasattr(adata, "file") and adata.file is not None:
                 adata.file.close()
             shutil.move(tmp_path, dest)
-            reopened = ad.read_h5ad(dest, backed="r+")
-            adata._init_as_actual(reopened)
-            adata.file = reopened.file
+            _refresh_backed_handle(adata, dest, mode="r+")
             return None
 
-        # Not inplace: move temp to dest, return backed or in-memory.
         shutil.move(tmp_path, dest)
         if output_file is not None:
             return ad.read_h5ad(dest, backed="r+")
         return ad.read_h5ad(dest)
 
-    # In-memory path: single view-to-copy instead of two _inplace_subset calls.
+    # In-memory path.
     if inplace:
         subset = adata[obs_mask, var_mask].copy()
         adata._init_as_actual(subset)

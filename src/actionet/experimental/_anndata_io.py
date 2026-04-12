@@ -925,7 +925,7 @@ def _write_dataframe_to_h5(f, key, df):
     grp.attrs['encoding-type'] = 'dataframe'
     grp.attrs['encoding-version'] = '0.2.0'
     grp.attrs['_index'] = '_index'
-    grp.attrs['column-order'] = np.array(df.columns.tolist(), dtype=object)
+    grp.attrs['column-order'] = np.array(df.columns.tolist(), dtype='S') if len(df.columns) else np.array([], dtype='S')
 
     # Store index - convert to string array for HDF5
     index_values = np.array([str(x) for x in df.index], dtype='S')
