@@ -5,12 +5,9 @@ import numpy as np
 import scipy.sparse as sp
 from anndata import AnnData
 import pandas as pd
-import warnings
-
 from . import _core
 from .anndata_utils import anndata_to_matrix
 from ._matrix_source import MatrixSource
-from ._backed_persist import persist_updates
 from .backed_io import _backed_group_path
 from .lazy_transform import (
     LazyTransform,
@@ -166,13 +163,9 @@ def impute_features_from_archetypes(
     adata: AnnData,
     features: Union[List[str], np.ndarray],
     features_use: Optional[str] = None,
-    archetype_profile_key: Optional[str] = None,
+    archetype_profile_key: str = "archetype_feat_profile",
     archetype_matrix_key: str = "H_merged",
-    archetype_key: str = "archetype_footprint",
-    layer: Optional[str] = None,
     n_threads: int = 0,
-    backed_chunk_size: int = 4096,
-    lazy_transform: Optional[LazyTransform] = None,
 ) -> pd.DataFrame:
     """Impute gene expression by interpolating over archetype profiles.
 
@@ -180,59 +173,41 @@ def impute_features_from_archetypes(
     average expression profiles, where the weights come from the cell's
     archetype membership vector (``adata.obsm[archetype_matrix_key]``).
 
-    If ``archetype_profile_key`` is ``None`` (the default),
-    :func:`~actionet.specificity.compute_archetype_feature_specificity` is
-    called automatically with ``return_raw=True`` to compute the profiles
-    on-the-fly without modifying ``adata``.  The ``"archetypes"`` field of the
-    returned dict (genes x archetypes average expression profiles) is used
-    directly.
+    Archetype feature profiles must be pre-computed and stored in ``adata.varm``
+    before calling this function.  Use
+    :func:`~actionet.specificity.compute_archetype_feature_specificity` to
+    generate them:
+
+    .. code-block:: python
+
+        actionet.compute_archetype_feature_specificity(adata)
+        # writes adata.varm["archetype_feat_profile"] by default
 
     Parameters
     ----------
     adata : AnnData
-        Annotated data matrix with ACTION results.  Must contain the archetype
-        membership matrix in ``adata.obsm[archetype_matrix_key]``.
+        Annotated data matrix with ACTION results.  Must contain:
+
+        - ``adata.obsm[archetype_matrix_key]`` — cell-archetype membership
+          matrix (cells x archetypes).
+        - ``adata.varm[archetype_profile_key]`` — gene-archetype average
+          expression profiles (genes x archetypes).
     features : list of str or np.ndarray
         Gene names to impute.
     features_use : str, optional
         Column in ``adata.var`` to use for feature matching.  If ``None``,
         ``adata.var_names`` is used directly.
-    archetype_profile_key : str, optional
-        Key in ``adata.varm`` containing pre-computed gene-archetype average
-        expression profiles (genes x archetypes).  The default stored key from
-        :func:`~actionet.specificity.compute_archetype_feature_specificity` is
-        ``"archetype_feat_profile"`` (i.e. ``key_added="archetype"``).
-        When ``None`` (default), profiles are computed on-the-fly via
-        :func:`~actionet.specificity.compute_archetype_feature_specificity`.
+    archetype_profile_key : str, default ``"archetype_feat_profile"``
+        Key in ``adata.varm`` containing the gene-archetype average expression
+        profiles (genes x archetypes).  This is the key written by
+        :func:`~actionet.specificity.compute_archetype_feature_specificity`
+        when called with the default ``key_added="archetype"``.
     archetype_matrix_key : str, default ``"H_merged"``
         Key in ``adata.obsm`` containing the cell-archetype membership matrix
         (cells x archetypes) used as imputation weights.
-    archetype_key : str or np.ndarray, default ``"archetype_footprint"``
-        Key in ``adata.obsm`` holding the archetype membership matrix, or the
-        matrix itself, passed to
-        :func:`~actionet.specificity.compute_archetype_feature_specificity`
-        when profiles are computed on-the-fly.  This is the matrix used to
-        *score* feature specificity per archetype and may differ from
-        ``archetype_matrix_key``.  Ignored if ``archetype_profile_key`` is
-        provided.
-    layer : str, optional
-        Layer of ``adata`` to use as the expression matrix when computing
-        profiles on-the-fly.  If ``None``, ``adata.X`` is used.  Ignored if
-        ``archetype_profile_key`` is provided.
     n_threads : int, default 0
-        Number of threads for the C++ backend when computing profiles
-        on-the-fly.  ``0`` lets the backend choose.  Ignored if
-        ``archetype_profile_key`` is provided.
-    backed_chunk_size : int, default 4096
-        Row chunk size used when streaming a backed (HDF5-on-disk) AnnData
-        during on-the-fly profile computation.  Ignored if
-        ``archetype_profile_key`` is provided.
-    lazy_transform : LazyTransform, optional
-        Pre-built lazy logcount transform forwarded to
-        :func:`~actionet.specificity.compute_archetype_feature_specificity`
-        when profiles are computed on-the-fly.  Only valid when ``layer=None``
-        and the input is backed.  Ignored if ``archetype_profile_key`` is
-        provided.
+        Reserved for API symmetry with :func:`impute_features`.  Currently
+        unused (the computation is a dense matrix multiply).
 
     Returns
     -------
@@ -246,36 +221,21 @@ def impute_features_from_archetypes(
     See Also
     --------
     actionet.specificity.compute_archetype_feature_specificity :
-        Computes the per-archetype average expression profiles used here.
+        Computes the per-archetype average expression profiles required here.
     """
     if archetype_matrix_key not in adata.obsm:
-        raise ValueError(f"Archetype matrix '{archetype_matrix_key}' not found. Run run_action first.")
-
-    if archetype_profile_key is None:
-        from .specificity import compute_archetype_feature_specificity
-
-        print(
-            f"archetype_profile_key not provided — computing archetype feature "
-            f"specificity on-the-fly from adata.obsm['{archetype_key}']."
+        raise ValueError(
+            f"Archetype matrix '{archetype_matrix_key}' not found in adata.obsm. "
+            "Run run_action() first."
         )
-        raw = compute_archetype_feature_specificity(
-            adata,
-            archetype_key=archetype_key,
-            layer=layer,
-            n_threads=n_threads,
-            backed_chunk_size=backed_chunk_size,
-            return_raw=True,
-            lazy_transform=lazy_transform,
+
+    if archetype_profile_key not in adata.varm:
+        raise ValueError(
+            f"Archetype profiles '{archetype_profile_key}' not found in adata.varm. "
+            "Run compute_archetype_feature_specificity(adata) first."
         )
-        feat_profiles = raw["archetypes"]  # genes x archetypes
-    else:
-        if archetype_profile_key not in adata.varm:
-            raise ValueError(
-                f"Archetype profiles '{archetype_profile_key}' not found in adata.varm. "
-                "Run compute_archetype_feature_specificity first or leave "
-                "archetype_profile_key=None to compute on-the-fly."
-            )
-        feat_profiles = adata.varm[archetype_profile_key]  # genes x archetypes
+
+    feat_profiles = adata.varm[archetype_profile_key]  # genes x archetypes
 
     features = np.array(features)
     if features_use is None:
