@@ -10,11 +10,10 @@ import pandas as pd
 import pytest
 import scipy.sparse as sp
 import anndata as ad
-import tempfile
 import os
-import shutil
 
 import actionet
+import actionet._backed_persist as _backed_persist
 
 
 # ---------------------------------------------------------------------------
@@ -38,6 +37,20 @@ def _write_backed(adata: ad.AnnData, path: str) -> ad.AnnData:
     """Write an in-memory AnnData to disk and reopen as backed r+."""
     adata.write_h5ad(path)
     return ad.read_h5ad(path, backed="r+")
+
+
+def _make_dense_test_adata(
+    n_obs: int = 40,
+    n_var: int = 25,
+    *,
+    dtype=np.float32,
+) -> ad.AnnData:
+    """Create a minimal dense AnnData with configurable dtype."""
+    rng = np.random.default_rng(13)
+    X = rng.normal(size=(n_obs, n_var)).astype(dtype, copy=False)
+    obs = pd.DataFrame(index=[f"cell_{i}" for i in range(n_obs)])
+    var = pd.DataFrame(index=[f"gene_{i}" for i in range(n_var)])
+    return ad.AnnData(X=X, obs=obs, var=var)
 
 
 @pytest.fixture
@@ -154,6 +167,15 @@ class TestSubsetAnndataInMemory:
         assert result.n_vars == 50
         assert inmemory_adata.n_obs == 200  # unchanged
 
+    def test_preserves_order_and_duplicates(self, inmemory_adata):
+        obs_sel = np.array([5, 0, 0], dtype=np.int64)
+        var_sel = np.array([8, 3, 3, 1], dtype=np.int64)
+
+        result = actionet.subset_anndata(inmemory_adata, obs_idx=obs_sel, var_idx=var_sel, inplace=False)
+
+        assert list(result.obs_names) == ["cell_5", "cell_0", "cell_0"]
+        assert list(result.var_names) == ["gene_8", "gene_3", "gene_3", "gene_1"]
+
 
 # ---------------------------------------------------------------------------
 # subset_backed_inplace: error handling
@@ -201,6 +223,34 @@ class TestSubsetFilterParity:
         assert adata_a.shape == adata_b.shape
         assert list(adata_a.obs_names) == list(adata_b.obs_names)
         assert list(adata_a.var_names) == list(adata_b.var_names)
+
+    def test_apply_filter_backed_not_inplace_keeps_source(self, tmp_path):
+        adata = _make_test_adata(n_obs=80, n_var=30)
+        path = str(tmp_path / "source.h5ad")
+        adata.write_h5ad(path)
+        backed = ad.read_h5ad(path, backed="r+")
+        original_shape = backed.shape
+
+        obs_mask = np.zeros(backed.n_obs, dtype=bool)
+        obs_mask[:25] = True
+        var_mask = np.zeros(backed.n_vars, dtype=bool)
+        var_mask[:10] = True
+
+        result = actionet.apply_filter(
+            backed,
+            obs_mask,
+            var_mask,
+            inplace=False,
+            output_file=None,
+        )
+
+        assert result.shape == (25, 10)
+        assert not result.isbacked
+
+        reopened = ad.read_h5ad(path, backed="r")
+        assert reopened.shape == original_shape
+        reopened.file.close()
+        backed.file.close()
 
 
 # ---------------------------------------------------------------------------
@@ -269,10 +319,9 @@ class TestSubsetInputValidation:
 # ---------------------------------------------------------------------------
 
 class TestMaterializeBacked:
-    def test_view_creates_independent_file(self, backed_adata):
-        """Materializing a view gives it its own file; parent is untouched."""
+    def test_view_materializes_in_place_by_default(self, backed_adata):
+        """Default materialization rewrites parent file and refreshes handles."""
         parent_path = str(backed_adata.filename)
-        parent_shape = backed_adata.shape
         view = backed_adata[10:20, :5]
 
         actionet.materialize_backed(view)
@@ -281,9 +330,9 @@ class TestMaterializeBacked:
         assert view.isbacked
         assert view.n_obs == 10
         assert view.n_vars == 5
-        assert str(view.filename) != parent_path
+        assert str(view.filename) == parent_path
 
-        assert backed_adata.shape == parent_shape
+        assert backed_adata.shape == (10, 5)
         assert not backed_adata.is_view
 
     def test_reassigned_variable(self, tmp_path):
@@ -349,6 +398,43 @@ class TestMaterializeBacked:
         assert list(view.obs_names) == expected_obs_names
         assert list(view.var_names) == expected_var_names
 
+    def test_bool_view_materialization_preserves_selection(self, backed_adata):
+        """Boolean-backed views materialize to the intended obs/var subsets."""
+        obs_mask = np.zeros(backed_adata.n_obs, dtype=bool)
+        obs_mask[[0, 2, 5, 7, 11]] = True
+        var_mask = np.zeros(backed_adata.n_vars, dtype=bool)
+        var_mask[[1, 4, 9, 15]] = True
+
+        view = backed_adata[obs_mask, var_mask]
+        expected_obs_names = list(backed_adata.obs_names[obs_mask])
+        expected_var_names = list(backed_adata.var_names[var_mask])
+
+        actionet.materialize_backed(view)
+
+        assert not view.is_view
+        assert list(view.obs_names) == expected_obs_names
+        assert list(view.var_names) == expected_var_names
+
+    def test_custom_filename_failure_keeps_existing_file(self, backed_adata, tmp_path, monkeypatch):
+        """Writer failures must not delete or truncate a pre-existing destination."""
+        view = backed_adata[:20, :10]
+        dest = str(tmp_path / "existing_dest.h5ad")
+        original_payload = b"existing-content"
+        with open(dest, "wb") as fh:
+            fh.write(original_payload)
+
+        def _boom(*args, **kwargs):
+            raise RuntimeError("synthetic write failure")
+
+        monkeypatch.setattr(_backed_persist, "_write_filtered_backed", _boom)
+
+        with pytest.raises(RuntimeError, match="synthetic"):
+            actionet.materialize_backed(view, filename=dest)
+
+        assert os.path.exists(dest)
+        with open(dest, "rb") as fh:
+            assert fh.read() == original_payload
+
 
 # ---------------------------------------------------------------------------
 # subset_anndata on backed views
@@ -392,3 +478,73 @@ class TestSubsetAnndataBackedView:
         assert backed_adata.shape == (200, 100)
 
         result.file.close()
+
+
+# ---------------------------------------------------------------------------
+# Backed rewrite payload/regression checks
+# ---------------------------------------------------------------------------
+
+class TestBackedRewriteRegressions:
+    def test_subset_backed_preserves_raw_payload(self, tmp_path):
+        adata = _make_test_adata(n_obs=60, n_var=35)
+        adata.raw = adata.copy()
+        expected_raw_var_names = list(adata.raw.var_names)
+        path = str(tmp_path / "raw_payload.h5ad")
+        adata.write_h5ad(path)
+        backed = ad.read_h5ad(path, backed="r+")
+
+        actionet.subset_backed_inplace(
+            backed,
+            obs_idx=np.arange(25, dtype=np.int64),
+            var_idx=np.arange(10, dtype=np.int64),
+        )
+
+        reopened = ad.read_h5ad(path, backed="r")
+        assert reopened.shape == (25, 10)
+        assert reopened.raw is not None
+        assert reopened.raw.shape == (25, 35)
+        assert list(reopened.raw.var_names) == expected_raw_var_names
+        reopened.file.close()
+        backed.file.close()
+
+    @pytest.mark.parametrize("dtype", [np.float32, np.int32])
+    def test_subset_backed_dense_dtype_preserved(self, tmp_path, dtype):
+        adata = _make_dense_test_adata(dtype=dtype)
+        path = str(tmp_path / f"dense_{np.dtype(dtype).name}.h5ad")
+        backed = _write_backed(adata, path)
+        dtype_before = np.dtype(backed.X.dtype)
+
+        actionet.subset_backed_inplace(
+            backed,
+            obs_idx=np.arange(20, dtype=np.int64),
+            var_idx=np.arange(12, dtype=np.int64),
+        )
+
+        reopened = ad.read_h5ad(path, backed="r")
+        assert np.dtype(reopened.X.dtype) == dtype_before
+        reopened.file.close()
+        backed.file.close()
+
+    def test_pairwise_subsetting_path_does_not_use_np_ix(self, tmp_path, monkeypatch):
+        adata = _make_test_adata(n_obs=70, n_var=40)
+        obs_graph = sp.random(70, 70, density=0.15, random_state=0, format="csr")
+        adata.obsp["obs_graph"] = (obs_graph + obs_graph.T).tocsr()
+        var_graph = sp.random(40, 40, density=0.2, random_state=1, format="csr")
+        adata.varp["var_graph"] = (var_graph + var_graph.T).tocsr()
+
+        path = str(tmp_path / "pairwise.h5ad")
+        backed = _write_backed(adata, path)
+
+        def _forbid_ix(*args, **kwargs):
+            raise AssertionError("np.ix_ should not be used in pairwise rewrite path")
+
+        monkeypatch.setattr(_backed_persist.np, "ix_", _forbid_ix)
+
+        actionet.subset_backed_inplace(
+            backed,
+            obs_idx=np.arange(30, dtype=np.int64),
+            var_idx=np.arange(18, dtype=np.int64),
+        )
+
+        assert backed.obsp["obs_graph"].shape == (30, 30)
+        assert backed.varp["var_graph"].shape == (18, 18)

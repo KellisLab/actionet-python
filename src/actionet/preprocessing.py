@@ -18,11 +18,11 @@ from scipy.sparse import csr_matrix, issparse
 from ._backed_compression import get_matrix_compression_policy
 from ._backed_persist import (
     is_backed_adata,
-    _ensure_backed_writable,
     _refresh_backed_handle,
     _adaptive_sparse_chunk_size,
     _write_filtered_backed,
-    _write_subsetted_matrix,
+    _normalize_index_array,
+    _warn_if_duplicates,
     _view_idx_to_int,
     materialize_backed,
     subset_backed_inplace,
@@ -1261,29 +1261,16 @@ def _coerce_to_int_idx(
         Human-readable axis name for error messages.
     """
     arr = np.asarray(mask_or_idx).ravel()
-    if arr.dtype == bool:
-        if arr.size != axis_size:
-            raise ValueError(
-                f"Boolean {name} mask has length {arr.size} but axis has {axis_size} elements"
-            )
-        return np.where(arr)[0].astype(np.int64)
-
-    idx = arr.astype(np.int64)
-    if idx.size > 0:
-        if idx.min() < 0:
-            raise ValueError(f"{name} indices contain negative values")
-        if idx.max() >= axis_size:
-            raise ValueError(
-                f"{name} indices contain values >= axis size ({axis_size})"
-            )
-        n_dupes = idx.size - np.unique(idx).size
-        if n_dupes > 0:
-            warnings.warn(
-                f"{name} indices contain {n_dupes} duplicate(s); "
-                "rows/columns will be repeated in the output",
-                UserWarning,
-                stacklevel=3,
-            )
+    if arr.dtype != bool and arr.size > 0 and arr.astype(np.int64, copy=False).min() < 0:
+        raise ValueError(f"{name} indices contain negative values")
+    idx = _normalize_index_array(
+        mask_or_idx,
+        axis_size,
+        name=name,
+        allow_negative=False,
+    )
+    if arr.dtype != bool:
+        _warn_if_duplicates(idx, name=name)
     return idx
 
 
@@ -1386,17 +1373,12 @@ def subset_anndata(
         return ad.read_h5ad(tmp_path, backed="r+")
 
     # In-memory path.
-    obs_mask = np.zeros(adata.n_obs, dtype=bool)
-    obs_mask[obs_int] = True
-    var_mask = np.zeros(adata.n_vars, dtype=bool)
-    var_mask[var_int] = True
-
     if inplace:
-        subset = adata[obs_mask, var_mask].copy()
+        subset = adata[obs_int, var_int].copy()
         adata._init_as_actual(subset)
         return None
 
-    return adata[obs_mask, var_mask].copy()
+    return adata[obs_int, var_int].copy()
 
 
 # ---------------------------------------------------------------------------
@@ -1427,8 +1409,10 @@ def apply_filter(
         If False, return a new (possibly in-memory) AnnData.
     output_file : str or None, optional
         For backed AnnData, write the filtered result to this path using
-        chunked h5py I/O (constant-memory).  If ``None`` and the object
-        is backed, the backing file is overwritten in place.
+        chunked h5py I/O (constant-memory).  If ``None`` and ``inplace=True``,
+        the backing file is overwritten in place.  If ``None`` and
+        ``inplace=False``, an in-memory AnnData is returned and the source
+        backing file is left unchanged.
         Ignored for in-memory objects.
     backed_chunk_size : int, optional (default: 4096)
         Rows per chunk during backed writes.
@@ -1442,8 +1426,20 @@ def apply_filter(
             subset_backed_inplace(adata, obs_idx, var_idx, chunk_size=backed_chunk_size)
             return None
 
-        filepath = str(adata.filename)
-        dest = output_file if output_file is not None else filepath
+        if not inplace and output_file is None:
+            filepath = str(adata.filename)
+            tmp_fd, tmp_path = tempfile.mkstemp(
+                dir=str(pathlib.Path(filepath).parent), suffix=".h5ad",
+            )
+            os.close(tmp_fd)
+            try:
+                _write_filtered_backed(adata, obs_idx, var_idx, tmp_path, backed_chunk_size)
+                return ad.read_h5ad(tmp_path)
+            finally:
+                if os.path.exists(tmp_path):
+                    os.unlink(tmp_path)
+
+        dest = str(output_file)
 
         tmp_fd, tmp_path = tempfile.mkstemp(
             dir=str(pathlib.Path(dest).parent), suffix=".h5ad",
@@ -1464,9 +1460,7 @@ def apply_filter(
             return None
 
         shutil.move(tmp_path, dest)
-        if output_file is not None:
-            return ad.read_h5ad(dest, backed="r+")
-        return ad.read_h5ad(dest)
+        return ad.read_h5ad(dest, backed="r+")
 
     # In-memory path.
     if inplace:
