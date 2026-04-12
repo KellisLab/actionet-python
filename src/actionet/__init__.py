@@ -94,7 +94,7 @@ from .preprocessing import (
     decompress_backed_storage,
 )
 
-from ._backed_persist import checkpoint_backed, subset_backed_inplace
+from ._backed_persist import checkpoint_backed, materialize_backed, subset_backed_inplace
 
 from .tools import (
     scale,
@@ -165,5 +165,6 @@ __all__ = [
     "normalize_anndata",
     "decompress_backed_storage",
     "checkpoint_backed",
+    "materialize_backed",
     "subset_backed_inplace",
 ]

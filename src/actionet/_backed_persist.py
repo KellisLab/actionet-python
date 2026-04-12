@@ -821,6 +821,76 @@ def _write_filtered_backed(
                 _write_dict_value(uns_grp, k, v)
 
 
+def _view_idx_to_int(idx, axis_size: int) -> np.ndarray:
+    """Convert a view index (slice or ndarray) to an int64 index array."""
+    if isinstance(idx, slice):
+        return np.arange(*idx.indices(axis_size), dtype=np.int64)
+    return np.asarray(idx, dtype=np.int64).ravel()
+
+
+def materialize_backed(
+    adata: AnnData,
+    filename: str | os.PathLike | None = None,
+    *,
+    chunk_size: int = 4096,
+) -> None:
+    """Materialize a backed AnnData view into a standalone backed object.
+
+    Turns a backed view (created by e.g. ``adata[1:1000, :]``) into a
+    proper backed AnnData that owns its own HDF5 file.  The parent object
+    is not modified.
+
+    If *adata* is already a non-view backed object this is a no-op.
+
+    Parameters
+    ----------
+    adata : AnnData
+        A backed AnnData view (``adata.is_view`` and ``adata.isbacked``).
+    filename : path-like or None
+        Destination HDF5 path.  When ``None`` a sibling file is created
+        next to the parent's backing file.
+    chunk_size : int
+        Rows per chunk during the backed write.
+
+    Raises
+    ------
+    ValueError
+        If *adata* is not backed.
+    """
+    if not is_backed_adata(adata):
+        raise ValueError(
+            "materialize_backed requires a backed AnnData object."
+        )
+    if not getattr(adata, "is_view", False):
+        return
+
+    parent = adata._adata_ref
+    obs_int = _view_idx_to_int(adata._oidx, parent.n_obs)
+    var_int = _view_idx_to_int(adata._vidx, parent.n_vars)
+
+    parent_path = str(parent.filename)
+    parent_dir = os.path.dirname(parent_path) or "."
+
+    if filename is not None:
+        dest_path = str(filename)
+    else:
+        import uuid
+        stem = os.path.splitext(os.path.basename(parent_path))[0]
+        tag = uuid.uuid4().hex[:8]
+        dest_path = os.path.join(parent_dir, f"{stem}_subset_{tag}.h5ad")
+
+    try:
+        _write_filtered_backed(parent, obs_int, var_int, dest_path, chunk_size)
+    except Exception:
+        if os.path.exists(dest_path):
+            os.unlink(dest_path)
+        raise
+
+    reopened = ad.read_h5ad(dest_path, backed="r+")
+    adata._init_as_actual(reopened)
+    adata.file = reopened.file
+
+
 def subset_backed_inplace(
     adata: AnnData,
     obs_idx: np.ndarray | None = None,
@@ -857,6 +927,11 @@ def subset_backed_inplace(
             "Open with ad.read_h5ad(path, backed='r+')."
         )
     _ensure_backed_writable(adata)
+
+    if getattr(adata, "is_view", False):
+        materialize_backed(adata, chunk_size=chunk_size)
+        if obs_idx is None and var_idx is None:
+            return
 
     if obs_idx is None:
         obs_idx = np.arange(adata.n_obs, dtype=np.int64)

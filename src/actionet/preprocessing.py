@@ -23,6 +23,8 @@ from ._backed_persist import (
     _adaptive_sparse_chunk_size,
     _write_filtered_backed,
     _write_subsetted_matrix,
+    _view_idx_to_int,
+    materialize_backed,
     subset_backed_inplace,
 )
 from ._matrix_source import MatrixSource
@@ -1340,16 +1342,43 @@ def subset_anndata(
     backed = is_backed_adata(adata)
 
     if backed:
+        is_view = getattr(adata, "is_view", False)
+
+        if is_view:
+            parent = adata._adata_ref
+            view_obs = _view_idx_to_int(adata._oidx, parent.n_obs)
+            view_var = _view_idx_to_int(adata._vidx, parent.n_vars)
+            combined_obs = view_obs[obs_int]
+            combined_var = view_var[var_int]
+            source = parent
+        else:
+            combined_obs = obs_int
+            combined_var = var_int
+            source = adata
+
         if inplace:
-            subset_backed_inplace(adata, obs_int, var_int, chunk_size=backed_chunk_size)
+            if is_view:
+                materialize_backed(adata, chunk_size=backed_chunk_size)
+                no_extra_obs = (obs_idx is None)
+                no_extra_var = (var_idx is None)
+                if not (no_extra_obs and no_extra_var):
+                    subset_backed_inplace(
+                        adata, obs_int, var_int, chunk_size=backed_chunk_size,
+                    )
+            else:
+                subset_backed_inplace(
+                    adata, obs_int, var_int, chunk_size=backed_chunk_size,
+                )
             return None
 
-        filepath = str(adata.filename)
+        filepath = str(source.filename)
         parent_dir = os.path.dirname(filepath) or "."
         tmp_fd, tmp_path = tempfile.mkstemp(dir=parent_dir, suffix=".h5ad")
         os.close(tmp_fd)
         try:
-            _write_filtered_backed(adata, obs_int, var_int, tmp_path, backed_chunk_size)
+            _write_filtered_backed(
+                source, combined_obs, combined_var, tmp_path, backed_chunk_size,
+            )
         except Exception:
             if os.path.exists(tmp_path):
                 os.unlink(tmp_path)

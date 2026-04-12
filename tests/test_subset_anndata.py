@@ -262,3 +262,133 @@ class TestSubsetInputValidation:
             actionet.subset_backed_inplace(
                 backed_adata, var_idx=np.array([], dtype=np.int64),
             )
+
+
+# ---------------------------------------------------------------------------
+# materialize_backed
+# ---------------------------------------------------------------------------
+
+class TestMaterializeBacked:
+    def test_view_creates_independent_file(self, backed_adata):
+        """Materializing a view gives it its own file; parent is untouched."""
+        parent_path = str(backed_adata.filename)
+        parent_shape = backed_adata.shape
+        view = backed_adata[10:20, :5]
+
+        actionet.materialize_backed(view)
+
+        assert not view.is_view
+        assert view.isbacked
+        assert view.n_obs == 10
+        assert view.n_vars == 5
+        assert str(view.filename) != parent_path
+
+        assert backed_adata.shape == parent_shape
+        assert not backed_adata.is_view
+
+    def test_reassigned_variable(self, tmp_path):
+        """adata = adata[...]; materialize_backed(adata) works."""
+        adata = _make_test_adata(n_obs=100, n_var=50)
+        path = str(tmp_path / "test.h5ad")
+        adata.write_h5ad(path)
+        adata = ad.read_h5ad(path, backed="r+")
+
+        adata = adata[5:25, :10]
+        assert adata.is_view
+
+        actionet.materialize_backed(adata)
+
+        assert not adata.is_view
+        assert adata.isbacked
+        assert adata.n_obs == 20
+        assert adata.n_vars == 10
+
+        reopened = ad.read_h5ad(str(adata.filename), backed="r")
+        assert reopened.shape == (20, 10)
+        reopened.file.close()
+
+    def test_noop_on_non_view(self, backed_adata):
+        """Non-view backed AnnData is a no-op."""
+        orig_path = str(backed_adata.filename)
+        orig_shape = backed_adata.shape
+
+        actionet.materialize_backed(backed_adata)
+
+        assert backed_adata.shape == orig_shape
+        assert str(backed_adata.filename) == orig_path
+
+    def test_rejects_in_memory(self, inmemory_adata):
+        with pytest.raises(ValueError, match="backed"):
+            actionet.materialize_backed(inmemory_adata)
+
+    def test_custom_filename(self, backed_adata, tmp_path):
+        """materialize_backed respects an explicit filename argument."""
+        view = backed_adata[:50, :30]
+        dest = str(tmp_path / "custom_output.h5ad")
+
+        actionet.materialize_backed(view, filename=dest)
+
+        assert not view.is_view
+        assert str(view.filename) == dest
+        assert view.n_obs == 50
+        assert view.n_vars == 30
+
+    def test_data_integrity(self, tmp_path):
+        """Materialized view contains the correct data values."""
+        adata = _make_test_adata(n_obs=50, n_var=20)
+        path = str(tmp_path / "test.h5ad")
+        adata.write_h5ad(path)
+        backed = ad.read_h5ad(path, backed="r+")
+
+        expected_obs_names = list(backed.obs_names[5:15])
+        expected_var_names = list(backed.var_names[:10])
+
+        view = backed[5:15, :10]
+        actionet.materialize_backed(view)
+
+        assert list(view.obs_names) == expected_obs_names
+        assert list(view.var_names) == expected_var_names
+
+
+# ---------------------------------------------------------------------------
+# subset_anndata on backed views
+# ---------------------------------------------------------------------------
+
+class TestSubsetAnndataBackedView:
+    def test_inplace_no_extra_subset(self, backed_adata):
+        """subset_anndata on a view with no extra idx materializes the view."""
+        view = backed_adata[10:30, :20]
+        actionet.subset_anndata(view, inplace=True)
+
+        assert not view.is_view
+        assert view.isbacked
+        assert view.n_obs == 20
+        assert view.n_vars == 20
+
+    def test_inplace_with_extra_subset(self, backed_adata):
+        """subset_anndata on a view with additional obs_idx works."""
+        view = backed_adata[10:30, :20]
+        extra_obs = np.array([0, 2, 4], dtype=np.int64)
+
+        actionet.subset_anndata(view, obs_idx=extra_obs, inplace=True)
+
+        assert not view.is_view
+        assert view.n_obs == 3
+        assert view.n_vars == 20
+
+    def test_not_inplace_returns_new(self, backed_adata):
+        """subset_anndata(view, inplace=False) returns a new backed object."""
+        view = backed_adata[10:30, :20]
+        obs_sel = np.array([0, 5, 10], dtype=np.int64)
+
+        result = actionet.subset_anndata(view, obs_idx=obs_sel, inplace=False)
+
+        assert result is not None
+        assert result.n_obs == 3
+        assert result.n_vars == 20
+        assert result.isbacked
+        assert not result.is_view
+
+        assert backed_adata.shape == (200, 100)
+
+        result.file.close()
