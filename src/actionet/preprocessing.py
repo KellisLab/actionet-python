@@ -1280,6 +1280,7 @@ def subset_anndata(
     var_idx: np.ndarray | None = None,
     *,
     inplace: bool = True,
+    output_file: str | None = None,
     backed_chunk_size: int = 4096,
 ) -> AnnData | None:
     """Subset an AnnData safely on both axes (backed and in-memory).
@@ -1301,7 +1302,18 @@ def subset_anndata(
         ``None`` keeps all features.
     inplace : bool, optional (default: True)
         If ``True``, modify *adata* in place and return ``None``.
-        If ``False``, return a new AnnData.
+        If ``False``, return a new AnnData (see ``output_file`` for backed
+        objects).
+    output_file : str or None, optional
+        Only used when *adata* is backed and ``inplace=False``.
+        If ``None``, the filtered data is written to a temporary file,
+        loaded into memory, and the temporary file is deleted — the
+        returned AnnData is **in-memory**.
+        If a path is given, the filtered data is written to that path and
+        a new **backed** AnnData opened at that path is returned.  The
+        returned handle is always opened in ``r+`` (read-write) mode,
+        regardless of the mode of the input object.
+        Ignored for in-memory objects and when ``inplace=True``.
     backed_chunk_size : int, optional (default: 4096)
         Rows per chunk during backed writes.
 
@@ -1359,8 +1371,27 @@ def subset_anndata(
             return None
 
         filepath = str(source.filename)
-        parent_dir = os.path.dirname(filepath) or "."
-        tmp_fd, tmp_path = tempfile.mkstemp(dir=parent_dir, suffix=".h5ad")
+
+        if output_file is None:
+            # No destination given: load subset into memory and clean up temp.
+            tmp_fd, tmp_path = tempfile.mkstemp(
+                dir=str(pathlib.Path(filepath).parent), suffix=".h5ad",
+            )
+            os.close(tmp_fd)
+            try:
+                _write_filtered_backed(
+                    source, combined_obs, combined_var, tmp_path, backed_chunk_size,
+                )
+                return ad.read_h5ad(tmp_path)
+            finally:
+                if os.path.exists(tmp_path):
+                    os.unlink(tmp_path)
+
+        # output_file given: write to that path and return a backed handle.
+        dest = str(output_file)
+        tmp_fd, tmp_path = tempfile.mkstemp(
+            dir=str(pathlib.Path(dest).parent), suffix=".h5ad",
+        )
         os.close(tmp_fd)
         try:
             _write_filtered_backed(
@@ -1370,7 +1401,8 @@ def subset_anndata(
             if os.path.exists(tmp_path):
                 os.unlink(tmp_path)
             raise
-        return ad.read_h5ad(tmp_path, backed="r+")
+        shutil.move(tmp_path, dest)
+        return ad.read_h5ad(dest, backed="r+")
 
     # In-memory path.
     if inplace:

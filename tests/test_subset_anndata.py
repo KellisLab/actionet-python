@@ -118,10 +118,44 @@ class TestSubsetAnndataBacked:
 
         assert result is not None
         assert result.n_obs == 30
+        assert not result.isbacked  # in-memory when output_file=None
         assert backed_adata.n_obs == 200  # original unchanged
 
-        if hasattr(result, "file") and result.file is not None:
-            result.file.close()
+    def test_not_inplace_no_output_file_returns_inmemory(self, backed_adata, tmp_path):
+        """inplace=False, output_file=None → in-memory AnnData, source unchanged."""
+        mask = np.zeros(backed_adata.n_obs, dtype=bool)
+        mask[:40] = True
+        source_path = str(backed_adata.filename)
+
+        result = actionet.subset_anndata(backed_adata, obs_idx=mask, inplace=False)
+
+        assert result is not None
+        assert result.n_obs == 40
+        assert not result.isbacked
+        # Source file on disk must be unchanged
+        assert backed_adata.n_obs == 200
+        reopened = ad.read_h5ad(source_path, backed="r")
+        assert reopened.n_obs == 200
+        reopened.file.close()
+
+    def test_not_inplace_with_output_file_returns_backed(self, backed_adata, tmp_path):
+        """inplace=False, output_file=path → backed AnnData at given path."""
+        mask = np.zeros(backed_adata.n_obs, dtype=bool)
+        mask[:40] = True
+        out_path = str(tmp_path / "out.h5ad")
+
+        result = actionet.subset_anndata(
+            backed_adata, obs_idx=mask, inplace=False, output_file=out_path,
+        )
+
+        assert result is not None
+        assert result.n_obs == 40
+        assert result.isbacked
+        assert not result.is_view
+        assert str(result.filename) == out_path
+        # Source untouched
+        assert backed_adata.n_obs == 200
+        result.file.close()
 
     def test_obs_dataframe_preserved(self, backed_adata):
         obs_sel = np.array([0, 1, 2], dtype=np.int64)
@@ -463,7 +497,7 @@ class TestSubsetAnndataBackedView:
         assert view.n_vars == 20
 
     def test_not_inplace_returns_new(self, backed_adata):
-        """subset_anndata(view, inplace=False) returns a new backed object."""
+        """subset_anndata(view, inplace=False) without output_file returns in-memory."""
         view = backed_adata[10:30, :20]
         obs_sel = np.array([0, 5, 10], dtype=np.int64)
 
@@ -472,11 +506,37 @@ class TestSubsetAnndataBackedView:
         assert result is not None
         assert result.n_obs == 3
         assert result.n_vars == 20
-        assert result.isbacked
+        assert not result.isbacked  # in-memory when output_file=None
         assert not result.is_view
 
         assert backed_adata.shape == (200, 100)
 
+    def test_view_not_inplace_no_output_file_returns_inmemory(self, backed_adata):
+        """Backed view + inplace=False + output_file=None → in-memory, parent unchanged."""
+        view = backed_adata[:50, :30]
+
+        result = actionet.subset_anndata(view, inplace=False)
+
+        assert result is not None
+        assert result.n_obs == 50
+        assert result.n_vars == 30
+        assert not result.isbacked
+        assert backed_adata.shape == (200, 100)
+
+    def test_view_not_inplace_with_output_file_returns_backed(self, backed_adata, tmp_path):
+        """Backed view + inplace=False + output_file=path → backed at given path."""
+        view = backed_adata[:50, :30]
+        out_path = str(tmp_path / "view_out.h5ad")
+
+        result = actionet.subset_anndata(view, inplace=False, output_file=out_path)
+
+        assert result is not None
+        assert result.n_obs == 50
+        assert result.n_vars == 30
+        assert result.isbacked
+        assert not result.is_view
+        assert str(result.filename) == out_path
+        assert backed_adata.shape == (200, 100)
         result.file.close()
 
 
