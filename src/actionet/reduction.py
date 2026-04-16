@@ -35,6 +35,13 @@ _SVD_ALGORITHM_TO_ID = {
 }
 _SVD_ID_TO_ALGORITHM = {v: k for k, v in _SVD_ALGORITHM_TO_ID.items()}
 
+_COMPUTE_BACKEND_TO_ID = {
+    "cpu": 0,
+    "gpu": 1,
+    "auto": 2,
+}
+_COMPUTE_BACKEND_ID_TO_NAME = {v: k for k, v in _COMPUTE_BACKEND_TO_ID.items()}
+
 
 def _normalize_algorithm(algorithm: Optional[str], *, context: str) -> str:
     if algorithm is None:
@@ -45,6 +52,18 @@ def _normalize_algorithm(algorithm: Optional[str], *, context: str) -> str:
     allowed = {"auto", *list(_SVD_ALGORITHM_TO_ID)}
     if name not in allowed:
         raise ValueError(f"Invalid algorithm `{algorithm}`. Allowed: {sorted(allowed)}")
+    return name
+
+
+def _normalize_compute_backend(backend: Optional[str], *, context: str) -> str:
+    if backend is None:
+        return "auto"
+    if not isinstance(backend, str):
+        raise TypeError(f"`{context}` must be a string backend name")
+    name = backend.strip().lower()
+    allowed = {"auto", "cpu", "gpu"}
+    if name not in allowed:
+        raise ValueError(f"Invalid backend `{backend}`. Allowed: {sorted(allowed)}")
     return name
 
 
@@ -120,6 +139,9 @@ def reduce_kernel(
     backed_target_chunk_mb: Optional[float] = None,
     backed_n_threads: int = 0,
     lazy_transform: Optional[LazyTransform] = None,
+    compute_backend: Optional[str] = "auto",
+    device_id: int = 0,
+    allow_cpu_fallback: bool = True,
 ) -> Optional[AnnData]:
     """Compute low-rank kernel reduction and persist outputs to AnnData.
 
@@ -138,6 +160,14 @@ def reduce_kernel(
     svd_algorithm : str or None
         SVD algorithm: ``"auto"``, ``"irlb"``, ``"halko"``, ``"feng"``, or
         ``"primme"``.  ``"auto"`` selects based on matrix properties.
+    compute_backend : str or None
+        Backend policy for SVD execution: ``"auto"``, ``"cpu"``, or ``"gpu"``.
+        GPU execution currently applies only to in-memory PRIMME SVD paths.
+    device_id : int
+        CUDA device ordinal used when GPU backend is selected.
+    allow_cpu_fallback : bool
+        If True, unsupported GPU requests automatically fall back to CPU.
+        If False, unsupported GPU requests raise an error.
     max_iter : int
         Maximum iterations for iterative SVD solvers (0 = solver default).
     seed : int
@@ -172,6 +202,8 @@ def reduce_kernel(
     """
     if backed_n_threads < 0:
         raise ValueError("`backed_n_threads` must be >= 0")
+    if device_id < 0:
+        raise ValueError("`device_id` must be >= 0")
 
     if not inplace:
         adata = adata.copy()
@@ -183,6 +215,8 @@ def reduce_kernel(
 
     use_operator = source.is_backed
     algorithm_name = _normalize_algorithm(svd_algorithm, context="svd_algorithm")
+    backend_name = _normalize_compute_backend(compute_backend, context="compute_backend")
+    backend_id = _COMPUTE_BACKEND_TO_ID[backend_name]
     row_scale_factors: Optional[np.ndarray] = None
     apply_log1p = False
     log_scale = 1.0
@@ -224,7 +258,8 @@ def reduce_kernel(
 
             if precomputed_svd is None:
                 result = _core.reduce_kernel_backed_operator(
-                    op, n_components, selected_algorithm, max_iter, seed, verbose
+                    op, n_components, selected_algorithm, max_iter, seed, verbose,
+                    backend_id, device_id, allow_cpu_fallback
                 )
             else:
                 result = _core.reduce_kernel_from_svd_backed_operator(
@@ -246,9 +281,15 @@ def reduce_kernel(
 
         if precomputed_svd is None:
             if sp.issparse(S):
-                result = _core.reduce_kernel_sparse(S, n_components, svd_algorithm_id, max_iter, seed, verbose)
+                result = _core.reduce_kernel_sparse(
+                    S, n_components, svd_algorithm_id, max_iter, seed, verbose,
+                    backend_id, device_id, allow_cpu_fallback
+                )
             else:
-                result = _core.reduce_kernel_dense(S, n_components, svd_algorithm_id, max_iter, seed, verbose)
+                result = _core.reduce_kernel_dense(
+                    S, n_components, svd_algorithm_id, max_iter, seed, verbose,
+                    backend_id, device_id, allow_cpu_fallback
+                )
         else:
             if sp.issparse(S):
                 result = _core.reduce_kernel_from_svd_sparse(
@@ -266,6 +307,10 @@ def reduce_kernel(
         "n_components": n_components,
         "svd_algorithm": svd_algorithm_id,
         "svd_algorithm_name": _SVD_ID_TO_ALGORITHM.get(svd_algorithm_id, f"unknown({svd_algorithm_id})"),
+        "compute_backend": backend_id,
+        "compute_backend_name": _COMPUTE_BACKEND_ID_TO_NAME.get(backend_id, f"unknown({backend_id})"),
+        "device_id": device_id,
+        "allow_cpu_fallback": bool(allow_cpu_fallback),
         "used_precomputed_svd": precomputed_svd is not None,
         "operator_mode": use_operator,
     }
@@ -362,6 +407,9 @@ def run_svd(
     backed_target_chunk_mb: Optional[float] = None,
     backed_n_threads: int = 0,
     lazy_transform: Optional[LazyTransform] = None,
+    compute_backend: Optional[str] = "auto",
+    device_id: int = 0,
+    allow_cpu_fallback: bool = True,
 ) -> dict:
     """Compute truncated SVD decomposition.
 
@@ -375,6 +423,14 @@ def run_svd(
         SVD algorithm: ``"auto"``, ``"irlb"``, ``"halko"``, ``"feng"``, or
         ``"primme"``.  ``"auto"`` selects based on matrix properties and
         storage mode.
+    compute_backend : str or None
+        Backend policy for SVD execution: ``"auto"``, ``"cpu"``, or ``"gpu"``.
+        GPU execution currently applies only to in-memory PRIMME SVD paths.
+    device_id : int
+        CUDA device ordinal used when GPU backend is selected.
+    allow_cpu_fallback : bool
+        If True, unsupported GPU requests automatically fall back to CPU.
+        If False, unsupported GPU requests raise an error.
     max_iter : int
         Maximum iterations for iterative solvers (0 = solver default).
     seed : int
@@ -407,8 +463,12 @@ def run_svd(
     """
     if backed_n_threads < 0:
         raise ValueError("`backed_n_threads` must be >= 0")
+    if device_id < 0:
+        raise ValueError("`device_id` must be >= 0")
 
     algorithm_name = _normalize_algorithm(algorithm, context="algorithm")
+    backend_name = _normalize_compute_backend(compute_backend, context="compute_backend")
+    backend_id = _COMPUTE_BACKEND_TO_ID[backend_name]
 
     source_ctx: Optional[MatrixSource] = MatrixSource(X, layer=layer) if isinstance(X, AnnData) else None
     adata_ctx: Optional[AnnData] = X if isinstance(X, AnnData) else None
@@ -469,7 +529,8 @@ def run_svd(
                 n_threads=backed_n_threads,
             )
             result = _core.run_svd_backed_operator(
-                op, n_components, max_iter, seed, selected_algorithm, verbose
+                op, n_components, max_iter, seed, selected_algorithm, verbose,
+                backend_id, device_id, allow_cpu_fallback
             )
         finally:
             op = None
@@ -481,12 +542,18 @@ def run_svd(
         if not sp.isspmatrix_csr(matrix):
             matrix = matrix.tocsr()
         algorithm_id = _select_svd_algorithm_inmemory(matrix, algorithm_name, verbose)
-        result = _core.run_svd_sparse(matrix, n_components, max_iter, seed, algorithm_id, verbose)
+        result = _core.run_svd_sparse(
+            matrix, n_components, max_iter, seed, algorithm_id, verbose,
+            backend_id, device_id, allow_cpu_fallback
+        )
     else:
         if lazy_transform is not None:
             raise ValueError("`lazy_transform` is supported only for backed matrix inputs.")
         algorithm_id = _select_svd_algorithm_inmemory(matrix, algorithm_name, verbose)
-        result = _core.run_svd_dense(matrix, n_components, max_iter, seed, algorithm_id, verbose)
+        result = _core.run_svd_dense(
+            matrix, n_components, max_iter, seed, algorithm_id, verbose,
+            backend_id, device_id, allow_cpu_fallback
+        )
 
     if return_operator_compatible:
         result = {"u": result["u"], "d": result["d"], "v": result["v"]}

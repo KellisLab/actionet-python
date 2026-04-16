@@ -73,28 +73,38 @@ std::shared_ptr<actionet::MatrixOperator> create_backed_operator(
 
 py::dict run_svd_backed_operator(std::shared_ptr<actionet::MatrixOperator> op,
                                  int k = 30, int max_it = 0, int seed = 0,
-                                 int algorithm = actionet::ALG_HALKO, bool verbose = true) {
+                                 int algorithm = actionet::ALG_HALKO, bool verbose = true,
+                                 int backend = actionet::BACKEND_AUTO, int device_id = 0,
+                                 bool allow_cpu_fallback = true) {
     if (!op) {
         throw std::runtime_error("run_svd_backed_operator: operator is null");
     }
+    actionet::ExecutionPolicy policy = parse_execution_policy(
+        backend, device_id, allow_cpu_fallback, "run_svd_backed_operator"
+    );
     actionet::SVDResult res;
     {
         py::gil_scoped_release release;
-        res = actionet::runSVD_Operator(*op, k, max_it, seed, algorithm, verbose);
+        res = actionet::runSVD_Operator(*op, k, max_it, seed, algorithm, verbose, policy);
     }
     return svd_to_dict(res);
 }
 
 py::dict reduce_kernel_backed_operator(std::shared_ptr<actionet::MatrixOperator> op,
                                        int k = 50, int svd_alg = actionet::ALG_HALKO,
-                                       int max_it = 0, int seed = 0, bool verbose = true) {
+                                       int max_it = 0, int seed = 0, bool verbose = true,
+                                       int backend = actionet::BACKEND_AUTO, int device_id = 0,
+                                       bool allow_cpu_fallback = true) {
     if (!op) {
         throw std::runtime_error("reduce_kernel_backed_operator: operator is null");
     }
+    actionet::ExecutionPolicy policy = parse_execution_policy(
+        backend, device_id, allow_cpu_fallback, "reduce_kernel_backed_operator"
+    );
     actionet::KernelReductionResult res;
     {
         py::gil_scoped_release release;
-        res = actionet::reduceKernel_Operator(*op, k, svd_alg, max_it, seed, verbose);
+        res = actionet::reduceKernel_Operator(*op, k, svd_alg, max_it, seed, verbose, policy);
     }
     return kernel_to_dict(res);
 }
@@ -175,12 +185,16 @@ void init_io(py::module_ &m) {
     m.def("run_svd_backed_operator", &run_svd_backed_operator,
           "Run SVD with a MatrixOperator-backed input",
           py::arg("op"), py::arg("k") = 30, py::arg("max_it") = 0, py::arg("seed") = 0,
-          py::arg("algorithm") = actionet::ALG_HALKO, py::arg("verbose") = true);
+          py::arg("algorithm") = actionet::ALG_HALKO, py::arg("verbose") = true,
+          py::arg("backend") = actionet::BACKEND_AUTO, py::arg("device_id") = 0,
+          py::arg("allow_cpu_fallback") = true);
 
     m.def("reduce_kernel_backed_operator", &reduce_kernel_backed_operator,
           "Reduce kernel with a MatrixOperator-backed input",
           py::arg("op"), py::arg("k") = 50, py::arg("svd_alg") = actionet::ALG_HALKO,
-          py::arg("max_it") = 0, py::arg("seed") = 0, py::arg("verbose") = true);
+          py::arg("max_it") = 0, py::arg("seed") = 0, py::arg("verbose") = true,
+          py::arg("backend") = actionet::BACKEND_AUTO, py::arg("device_id") = 0,
+          py::arg("allow_cpu_fallback") = true);
 
     m.def("reduce_kernel_from_svd_backed_operator", &reduce_kernel_from_svd_backed_operator,
           "Reduce kernel from precomputed SVD with a MatrixOperator-backed input",

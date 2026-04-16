@@ -7,9 +7,12 @@
 #include <pybind11/pybind11.h>
 #include <pybind11/numpy.h>
 #include <pybind11/stl.h>
+#include <stdexcept>
+#include <string>
 
 // Armadillo includes (libactionet uses Armadillo)
 #include "armadillo"
+#include "decomposition/compute_backend.hpp"
 #include "decomposition/matrix_operator.hpp"
 #include "network/build_network_core.hpp"
 
@@ -82,6 +85,21 @@ inline arma::vec parse_sigma(py::object d) {
         return arma::vec(ptr, static_cast<arma::uword>(d_buf.shape[0] * d_buf.shape[1]), true, true);
     }
     throw std::runtime_error("Expected singular values `d` to be a 1D vector or Nx1/1xN array");
+}
+
+/// @brief Parse backend policy arguments from Python-facing integer/flag inputs.
+inline actionet::ExecutionPolicy parse_execution_policy(int backend, int device_id,
+                                                        bool allow_cpu_fallback,
+                                                        const char* context) {
+    actionet::ExecutionPolicy policy;
+    try {
+        policy.backend = actionet::computeBackendFromInt(backend);
+    } catch (const std::invalid_argument& e) {
+        throw std::runtime_error(std::string(context) + ": " + e.what());
+    }
+    policy.device_id = device_id;
+    policy.allow_cpu_fallback = allow_cpu_fallback;
+    return policy;
 }
 
 #endif // WP_UTILS_H

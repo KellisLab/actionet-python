@@ -175,12 +175,17 @@ static py::dict kernel_result_to_dict(const actionet::KernelReductionResult& res
 }
 
 py::dict reduce_kernel_sparse(py::object S, int k = 50, int svd_alg = 0,
-                               int max_it = 0, int seed = 0, bool verbose = true) {
+                               int max_it = 0, int seed = 0, bool verbose = true,
+                               int backend = actionet::BACKEND_AUTO, int device_id = 0,
+                               bool allow_cpu_fallback = true) {
     arma::sp_mat S_sp = scipy_to_arma_sparse(S);
+    actionet::ExecutionPolicy policy = parse_execution_policy(
+        backend, device_id, allow_cpu_fallback, "reduce_kernel_sparse"
+    );
     arma::field<arma::mat> res;
     {
         py::gil_scoped_release release;
-        res = actionet::reduceKernel(S_sp, k, svd_alg, max_it, seed, verbose);
+        res = actionet::reduceKernel(S_sp, k, svd_alg, max_it, seed, verbose, policy);
     }
 
     py::dict out;
@@ -193,12 +198,17 @@ py::dict reduce_kernel_sparse(py::object S, int k = 50, int svd_alg = 0,
 }
 
 py::dict reduce_kernel_dense(py::array_t<double> S, int k = 50, int svd_alg = 0,
-                              int max_it = 0, int seed = 0, bool verbose = true) {
+                              int max_it = 0, int seed = 0, bool verbose = true,
+                              int backend = actionet::BACKEND_AUTO, int device_id = 0,
+                              bool allow_cpu_fallback = true) {
     arma::mat S_mat = numpy_to_arma_mat(S);
+    actionet::ExecutionPolicy policy = parse_execution_policy(
+        backend, device_id, allow_cpu_fallback, "reduce_kernel_dense"
+    );
     arma::field<arma::mat> res;
     {
         py::gil_scoped_release release;
-        res = actionet::reduceKernel(S_mat, k, svd_alg, max_it, seed, verbose);
+        res = actionet::reduceKernel(S_mat, k, svd_alg, max_it, seed, verbose, policy);
     }
 
     py::dict out;
@@ -211,10 +221,15 @@ py::dict reduce_kernel_dense(py::array_t<double> S, int k = 50, int svd_alg = 0,
 }
 
 py::dict reduce_kernel_operator(py::object op, int k = 50, int svd_alg = actionet::ALG_HALKO,
-                                int max_it = 0, int seed = 0, bool verbose = true) {
+                                int max_it = 0, int seed = 0, bool verbose = true,
+                                int backend = actionet::BACKEND_AUTO, int device_id = 0,
+                                bool allow_cpu_fallback = true) {
     PythonMatrixOperator mat_op(std::move(op));
+    actionet::ExecutionPolicy policy = parse_execution_policy(
+        backend, device_id, allow_cpu_fallback, "reduce_kernel_operator"
+    );
     actionet::KernelReductionResult res = actionet::reduceKernel_Operator(
-        mat_op, k, svd_alg, max_it, seed, verbose
+        mat_op, k, svd_alg, max_it, seed, verbose, policy
     );
     return kernel_result_to_dict(res);
 }
@@ -335,15 +350,21 @@ void init_action(py::module_ &m) {
     // reduce_kernel
     m.def("reduce_kernel_sparse", &reduce_kernel_sparse, "Reduce kernel (sparse)",
           py::arg("S"), py::arg("k") = 50, py::arg("svd_alg") = 0,
-          py::arg("max_it") = 0, py::arg("seed") = 0, py::arg("verbose") = true);
+          py::arg("max_it") = 0, py::arg("seed") = 0, py::arg("verbose") = true,
+          py::arg("backend") = actionet::BACKEND_AUTO, py::arg("device_id") = 0,
+          py::arg("allow_cpu_fallback") = true);
 
     m.def("reduce_kernel_dense", &reduce_kernel_dense, "Reduce kernel (dense)",
           py::arg("S"), py::arg("k") = 50, py::arg("svd_alg") = 0,
-          py::arg("max_it") = 0, py::arg("seed") = 0, py::arg("verbose") = true);
+          py::arg("max_it") = 0, py::arg("seed") = 0, py::arg("verbose") = true,
+          py::arg("backend") = actionet::BACKEND_AUTO, py::arg("device_id") = 0,
+          py::arg("allow_cpu_fallback") = true);
 
     m.def("reduce_kernel_operator", &reduce_kernel_operator, "Reduce kernel (generic operator)",
           py::arg("op"), py::arg("k") = 50, py::arg("svd_alg") = actionet::ALG_HALKO,
-          py::arg("max_it") = 0, py::arg("seed") = 0, py::arg("verbose") = true);
+          py::arg("max_it") = 0, py::arg("seed") = 0, py::arg("verbose") = true,
+          py::arg("backend") = actionet::BACKEND_AUTO, py::arg("device_id") = 0,
+          py::arg("allow_cpu_fallback") = true);
 
     m.def("reduce_kernel_from_svd_operator", &reduce_kernel_from_svd_operator,
           "Reduce kernel from precomputed SVD (operator)",
