@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import io
 from dataclasses import dataclass
-from typing import Literal, Optional, Sequence, Union
+from typing import Any, Literal, Optional, Sequence, Union
 
 import numpy as np
 import pandas as pd
@@ -565,7 +565,7 @@ def plot_umap(
     sample_n: Optional[int] = None,
     sampling_seed: int = 37,
     tooltips: Literal["none", "default"] = "none",
-):
+) -> Any:
     """Plot a UMAP embedding with discrete or continuous coloring.
 
     Parameters
@@ -795,7 +795,7 @@ def plot_umap_raster(
     add_text_labels: bool = False,
     label_text_size: float = 9.0,
     nudge_text_labels: bool = False,
-):
+) -> Any:
     """Plot a rasterized static UMAP embedding using Matplotlib Agg."""
 
     fig = _new_raster_figure(figsize=figsize, fig_dpi=fig_dpi)
@@ -861,7 +861,7 @@ def plot_umap_interactive(
     trans_fac: float = 3.0,
     trans_th: float = -0.5,
     plot_3d: bool = False,
-):
+) -> Any:
     """Plot an interactive UMAP embedding using Plotly WebGL.
 
     Parameters

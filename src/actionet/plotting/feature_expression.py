@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Iterable, Literal, Optional, Sequence, Union
+from typing import Any, Iterable, Literal, Optional, Sequence, Union
 
 import numpy as np
 import pandas as pd
@@ -130,7 +130,7 @@ def plot_feature_expression(
     n_threads: int = 0,
     backed_chunk_size: int = 4096,
     lazy_transform: Optional[LazyTransform] = None,
-):
+) -> Union[Any, dict[str, Any]]:
     """Plot feature expression values on the UMAP embedding.
 
     Parameters
@@ -305,7 +305,7 @@ def plot_feature_expression_raster(
     n_threads: int = 0,
     backed_chunk_size: int = 4096,
     lazy_transform: Optional[LazyTransform] = None,
-):
+) -> Union[Any, dict[str, Any]]:
     """Plot feature expression values on the UMAP embedding using a raster backend.
 
     Parameters
