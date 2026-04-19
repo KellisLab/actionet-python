@@ -1407,7 +1407,7 @@ def subset_anndata(
     # In-memory path.
     if inplace:
         subset = adata[obs_int, var_int].copy()
-        adata._init_as_actual(subset)
+        adata.__dict__.update(subset.__dict__)
         return None
 
     return adata[obs_int, var_int].copy()
