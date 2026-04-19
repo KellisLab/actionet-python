@@ -835,22 +835,19 @@ def _write_filtered_backed(
                 group.attrs["encoding-version"] = "0.1.0"
                 for k in keys:
                     mat = container[k]
-                    sub = mat[idx] if mat is not None else None
-                    if sub is not None:
-                        h5k = f"{name}/{k}"
-                        if sp.issparse(sub):
-                            sub = sub.tocsr()
-                            grp = f.create_group(h5k)
-                            grp.create_dataset("data", data=sub.data, compression="gzip")
-                            grp.create_dataset("indices", data=sub.indices, compression="gzip")
-                            grp.create_dataset("indptr", data=sub.indptr, compression="gzip")
-                            grp.attrs["shape"] = np.array(sub.shape)
-                            grp.attrs["encoding-type"] = "csr_matrix"
-                            grp.attrs["encoding-version"] = "0.1.0"
-                        else:
-                            ds = f.create_dataset(h5k, data=np.asarray(sub), compression="gzip")
-                            ds.attrs["encoding-type"] = "array"
-                            ds.attrs["encoding-version"] = "0.2.0"
+                    if mat is not None:
+                        emb_policy = None
+                        if h5file is not None and name in h5file and k in h5file[name]:
+                            emb_policy = get_matrix_compression_policy(h5file[name][k])
+                        _write_subsetted_matrix(
+                            f,
+                            f"{name}/{k}",
+                            mat,
+                            idx,
+                            None,
+                            chunk_size,
+                            compression_policy=emb_policy,
+                        )
 
         # -- obsp / varp (pairwise, row+col subsetted) -------------------
         for container, idx, name in [
