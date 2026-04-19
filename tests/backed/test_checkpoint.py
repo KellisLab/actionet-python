@@ -135,19 +135,40 @@ class TestCheckpointCompact:
         return open_backed(tmp_path, mem)
 
     def test_compact_reduces_size(self, backed_adata):
-        """Repeated overwrites inflate the file; compact shrinks it back."""
+        """compact=True removes HDF5 dead space from repeated overwrites.
+
+        After N overwrites, the file accumulates (N-1) copies of dead data.
+        compact=True should produce a file that is strictly smaller than the
+        maximally-bloated state (all dead copies still present).
+        """
         rng = np.random.default_rng(42)
 
-        for _ in range(5):
-            _populate_slots(backed_adata, rng)
+        # Write once and compact immediately to get a clean baseline.
+        _populate_slots(backed_adata, rng)
+        checkpoint_backed(backed_adata, compact=True)
+        size_clean = backed_adata.filename.stat().st_size
 
-        checkpoint_backed(backed_adata)
+        # Overwrite many times to accumulate dead space.
+        for _ in range(10):
+            _populate_slots(backed_adata, rng)
+            checkpoint_backed(backed_adata)
+
         size_bloated = backed_adata.filename.stat().st_size
 
-        checkpoint_backed(backed_adata, compact=True)
+        # The bloated file must be larger than the clean baseline — otherwise
+        # there is no dead space to measure and the test is vacuous.
+        assert size_bloated > size_clean, (
+            f"Expected bloated ({size_bloated}) > clean ({size_clean}); "
+            "increase overwrite count if this fails"
+        )
 
+        # Compact should bring the file back to approximately the clean size.
+        checkpoint_backed(backed_adata, compact=True)
         size_compacted = backed_adata.filename.stat().st_size
-        assert size_compacted <= size_bloated
+
+        assert size_compacted <= size_bloated, (
+            f"Compact ({size_compacted}) should be ≤ bloated ({size_bloated})"
+        )
 
     def test_handle_works_after_compact(self, backed_adata):
         """AnnData handle is usable after compact (refresh succeeded)."""

@@ -634,7 +634,7 @@ def append_to_anndata(
 
             elif isinstance(value, pd.Series):
                 # Convert to array
-                f.create_dataset(h5_key, data=value.values, compression='gzip')
+                f.create_dataset(h5_key, data=value.values)
 
             elif isinstance(value, dict):
                 # Create group and store each item
@@ -646,7 +646,7 @@ def append_to_anndata(
                     _write_dict_value(grp, k, v)
 
             elif isinstance(value, (np.ndarray, list)):
-                f.create_dataset(h5_key, data=value, compression='gzip')
+                f.create_dataset(h5_key, data=value)
 
             elif isinstance(value, str):
                 # String scalars stored as datasets (no compression for scalars)
@@ -663,7 +663,7 @@ def append_to_anndata(
             else:
                 # Try to convert to array
                 try:
-                    f.create_dataset(h5_key, data=np.array(value), compression='gzip')
+                    f.create_dataset(h5_key, data=np.array(value))
                 except Exception as e:
                     if verbose:
                         print(f"[WARNING] Could not store uns['{key}']: {e}")
@@ -671,9 +671,6 @@ def append_to_anndata(
 
             if verbose:
                 print(f"[INFO]   Added uns['{key}']")
-
-    if verbose:
-        print(f"[INFO] Successfully updated {h5_path}")
 
 
 def _write_dict_value(grp, key, value):
@@ -707,10 +704,10 @@ def _write_dict_value(grp, key, value):
             arr = np.array(value)
             # Check if it's a string array
             if arr.dtype == object or arr.dtype.kind == 'U':
-                ds = grp.create_dataset(key, data=arr.astype('S'), compression='gzip')
+                ds = grp.create_dataset(key, data=arr.astype('S'))
                 ds.attrs['encoding-type'] = 'string-array'
             else:
-                ds = grp.create_dataset(key, data=arr, compression='gzip')
+                ds = grp.create_dataset(key, data=arr)
                 ds.attrs['encoding-type'] = 'array'
             ds.attrs['encoding-version'] = '0.2.0'
         except:
@@ -719,10 +716,10 @@ def _write_dict_value(grp, key, value):
     elif isinstance(value, np.ndarray):
         # NumPy array
         if value.dtype == object or value.dtype.kind == 'U':
-            ds = grp.create_dataset(key, data=value.astype('S'), compression='gzip')
+            ds = grp.create_dataset(key, data=value.astype('S'))
             ds.attrs['encoding-type'] = 'string-array'
         else:
-            ds = grp.create_dataset(key, data=value, compression='gzip')
+            ds = grp.create_dataset(key, data=value)
             ds.attrs['encoding-type'] = 'array'
         ds.attrs['encoding-version'] = '0.2.0'
     elif isinstance(value, (int, float, bool, np.integer, np.floating, np.bool_)):
@@ -810,13 +807,13 @@ def _write_dataframe_column(f, df_name, col, values, verbose):
         cat_grp.attrs['ordered'] = values.cat.ordered
 
         # Store codes
-        codes_ds = cat_grp.create_dataset('codes', data=codes, compression='gzip')
+        codes_ds = cat_grp.create_dataset('codes', data=codes)
         codes_ds.attrs['encoding-type'] = 'array'
         codes_ds.attrs['encoding-version'] = '0.2.0'
 
         # Store categories
         categories_h5, encoding_type = _coerce_categorical_categories(categories)
-        cat_ds = cat_grp.create_dataset('categories', data=categories_h5, compression='gzip')
+        cat_ds = cat_grp.create_dataset('categories', data=categories_h5)
         cat_ds.attrs['encoding-type'] = encoding_type
         cat_ds.attrs['encoding-version'] = '0.2.0'
         if verbose:
@@ -828,13 +825,13 @@ def _write_dataframe_column(f, df_name, col, values, verbose):
     if values.dtype == object or values.dtype.kind == 'U':
         # String data - convert to fixed-length bytes
         str_values = values.astype(str).values
-        ds = f.create_dataset(key, data=str_values.astype('S'), compression='gzip')
+        ds = f.create_dataset(key, data=str_values.astype('S'))
         ds.attrs['encoding-type'] = 'string-array'
         ds.attrs['encoding-version'] = '0.2.0'
 
     else:
         # Numeric data
-        ds = f.create_dataset(key, data=values.values, compression='gzip')
+        ds = f.create_dataset(key, data=values.values)
         ds.attrs['encoding-type'] = 'array'
         ds.attrs['encoding-version'] = '0.2.0'
 
@@ -842,7 +839,7 @@ def _write_dataframe_column(f, df_name, col, values, verbose):
         print(f"[INFO]   Added {df_name}['{col}']")
 
 
-def _write_matrix(f, container_name, key, matrix, verbose):
+def _write_matrix(f, container_name, key, matrix, verbose, compression_kwargs=None):
     """
     Write a matrix to obsm, varm, obsp, varp, or layers in HDF5.
 
@@ -858,8 +855,31 @@ def _write_matrix(f, container_name, key, matrix, verbose):
         Matrix to store
     verbose : bool
         Print progress messages
+    compression_kwargs : dict or None
+        Optional h5py create_dataset compression kwargs (e.g.
+        ``{"compression": "gzip", "compression_opts": 4}``).  When ``None``
+        (the default) no compression is applied, matching AnnData's own
+        default behaviour and avoiding the read-time decompression overhead
+        that caused the backed-reopen slowdown.
     """
+    if compression_kwargs is None:
+        compression_kwargs = {}
+
     h5_key = f'{container_name}/{key}'
+
+    # Preserve existing compression from the on-disk dataset when no explicit
+    # policy was provided by the caller.
+    if not compression_kwargs and h5_key in f:
+        existing = f[h5_key]
+        # Sparse group: look at the 'data' sub-dataset.
+        if hasattr(existing, 'keys') and 'data' in existing:
+            ds_ref = existing['data']
+        else:
+            ds_ref = existing if hasattr(existing, 'compression') else None
+        if ds_ref is not None and getattr(ds_ref, 'compression', None) is not None:
+            compression_kwargs = {'compression': ds_ref.compression}
+            if ds_ref.compression_opts is not None:
+                compression_kwargs['compression_opts'] = ds_ref.compression_opts
 
     # Delete existing key if present
     if h5_key in f:
@@ -872,9 +892,9 @@ def _write_matrix(f, container_name, key, matrix, verbose):
 
         # Create group for sparse matrix
         grp = f.create_group(h5_key)
-        grp.create_dataset('data', data=matrix.data, compression='gzip')
-        grp.create_dataset('indices', data=matrix.indices, compression='gzip')
-        grp.create_dataset('indptr', data=matrix.indptr, compression='gzip')
+        grp.create_dataset('data', data=matrix.data, **compression_kwargs)
+        grp.create_dataset('indices', data=matrix.indices, **compression_kwargs)
+        grp.create_dataset('indptr', data=matrix.indptr, **compression_kwargs)
         grp.attrs['shape'] = matrix.shape
         grp.attrs['encoding-type'] = 'csr_matrix'
         grp.attrs['encoding-version'] = '0.1.0'
@@ -892,12 +912,12 @@ def _write_matrix(f, container_name, key, matrix, verbose):
             )
             ds = f.create_dataset(
                 h5_key, shape=matrix.shape, dtype=matrix.dtype,
-                compression='gzip',
+                **compression_kwargs,
             )
             for start in range(0, matrix.shape[0], chunk_rows):
                 ds[start:start + chunk_rows] = matrix[start:start + chunk_rows]
         else:
-            ds = f.create_dataset(h5_key, data=matrix, compression='gzip')
+            ds = f.create_dataset(h5_key, data=matrix, **compression_kwargs)
 
         ds.attrs['encoding-type'] = 'array'
         ds.attrs['encoding-version'] = '0.2.0'
@@ -929,7 +949,7 @@ def _write_dataframe_to_h5(f, key, df):
 
     # Store index - convert to string array for HDF5
     index_values = np.array([str(x) for x in df.index], dtype='S')
-    ds = grp.create_dataset('_index', data=index_values, compression='gzip')
+    ds = grp.create_dataset('_index', data=index_values)
     ds.attrs['encoding-type'] = 'string-array'
     ds.attrs['encoding-version'] = '0.2.0'
 
@@ -948,12 +968,12 @@ def _write_dataframe_to_h5(f, key, df):
             col_grp.attrs['encoding-version'] = '0.2.0'
             col_grp.attrs['ordered'] = values.cat.ordered
 
-            codes_ds = col_grp.create_dataset('codes', data=codes, compression='gzip')
+            codes_ds = col_grp.create_dataset('codes', data=codes)
             codes_ds.attrs['encoding-type'] = 'array'
             codes_ds.attrs['encoding-version'] = '0.2.0'
 
             categories_h5, encoding_type = _coerce_categorical_categories(categories)
-            cat_ds = col_grp.create_dataset('categories', data=categories_h5, compression='gzip')
+            cat_ds = col_grp.create_dataset('categories', data=categories_h5)
             cat_ds.attrs['encoding-type'] = encoding_type
             cat_ds.attrs['encoding-version'] = '0.2.0'
 
@@ -962,11 +982,11 @@ def _write_dataframe_to_h5(f, key, df):
 
             if values.dtype == object or values.dtype.kind == 'U':
                 # String column
-                ds = f.create_dataset(col_key, data=values.astype('S'), compression='gzip')
+                ds = f.create_dataset(col_key, data=values.astype('S'))
                 ds.attrs['encoding-type'] = 'string-array'
                 ds.attrs['encoding-version'] = '0.2.0'
             else:
                 # Numeric column
-                ds = f.create_dataset(col_key, data=values.values, compression='gzip')
+                ds = f.create_dataset(col_key, data=values.values)
                 ds.attrs['encoding-type'] = 'array'
                 ds.attrs['encoding-version'] = '0.2.0'
