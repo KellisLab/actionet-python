@@ -44,6 +44,67 @@ except Exception:  # pragma: no cover - optional in some build contexts
     _anndata_io = None
 
 
+# ---------------------------------------------------------------------------
+# Dirty-key tracking: records which annotation keys have been written since
+# the last checkpoint, so checkpoint_backed only rewrites what changed.
+# ---------------------------------------------------------------------------
+
+import weakref
+from collections import defaultdict
+
+
+class _DirtyTracker:
+    """Per-object tracker of annotation keys modified since last flush."""
+
+    def __init__(self):
+        self._dirty: dict[int, dict[str, set[str]]] = {}
+
+    def mark(self, adata: AnnData, slot: str, keys: set[str]) -> None:
+        """Record that *keys* within *slot* have been modified."""
+        obj_id = id(adata)
+        if obj_id not in self._dirty:
+            self._dirty[obj_id] = defaultdict(set)
+            weakref.finalize(adata, self._dirty.pop, obj_id, None)
+        self._dirty[obj_id][slot].update(keys)
+
+    def get_dirty(self, adata: AnnData) -> dict[str, set[str]]:
+        """Return dirty slots/keys for *adata*, or empty dict if clean."""
+        return self._dirty.get(id(adata), {})
+
+    def clear(self, adata: AnnData) -> None:
+        """Mark *adata* as fully flushed."""
+        self._dirty.pop(id(adata), None)
+
+
+_dirty_tracker = _DirtyTracker()
+
+
+def _track_dirty_keys(
+    adata: AnnData,
+    obs: dict, var: dict,
+    obsm: dict, varm: dict,
+    obsp: dict, varp: dict,
+    layers: dict, uns: dict,
+) -> None:
+    """Record which slots/keys were written, so checkpoint can skip them."""
+    if obs:
+        _dirty_tracker.mark(adata, "obs_columns", set(obs.keys()))
+    if var:
+        _dirty_tracker.mark(adata, "var_columns", set(var.keys()))
+    if obsm:
+        _dirty_tracker.mark(adata, "obsm_keys", set(obsm.keys()))
+    if varm:
+        _dirty_tracker.mark(adata, "varm_keys", set(varm.keys()))
+    if obsp:
+        _dirty_tracker.mark(adata, "obsp_keys", set(obsp.keys()))
+    if varp:
+        _dirty_tracker.mark(adata, "varp_keys", set(varp.keys()))
+    if layers:
+        _dirty_tracker.mark(adata, "layers_keys", set(layers.keys()))
+    if uns:
+        _dirty_tracker.mark(adata, "uns_keys", set(uns.keys()))
+
+
 def is_backed_adata(adata: AnnData) -> bool:
     """Return True when AnnData is backed and has a filename."""
     return bool(getattr(adata, "isbacked", False) and getattr(adata, "filename", None))
@@ -227,12 +288,22 @@ def persist_updates(
     if not any(len(v) > 0 for v in results.values()):
         return
 
+    # Record which keys are being persisted for dirty tracking.
+    _track_dirty_keys(adata, obs, var, obsm, varm, obsp, varp, layers, uns)
+
+    filepath = str(adata.filename)
+
+    if hasattr(adata, "file") and adata.file is not None:
+        adata.file.close()
+
     _anndata_io.append_to_anndata(
-        str(adata.filename),
+        filepath,
         results,
         verbose=verbose,
         validate=validate,
     )
+
+    _refresh_backed_handle(adata, filepath, mode="r+")
 
 
 def persist_layer(
@@ -349,6 +420,38 @@ def _repack_h5ad(
         print(f"[INFO] Compacted {src_path}")
 
 
+def _checkpoint_collect_args(adata: AnnData) -> dict:
+    """Build collect_annotation_results kwargs using only dirty keys.
+
+    If nothing is dirty (e.g. user calls checkpoint without prior persist_updates),
+    falls back to collecting all annotation keys for a full flush.
+    """
+    dirty = _dirty_tracker.get_dirty(adata)
+
+    if not dirty:
+        return {
+            "obs_columns": list(adata.obs.columns),
+            "var_columns": list(adata.var.columns),
+            "obsm_keys": list(adata.obsm.keys()),
+            "varm_keys": list(adata.varm.keys()),
+            "obsp_keys": list(adata.obsp.keys()),
+            "varp_keys": list(adata.varp.keys()),
+            "layers_keys": [],
+            "uns_keys": list(adata.uns.keys()),
+        }
+
+    return {
+        "obs_columns": sorted(dirty.get("obs_columns", set())),
+        "var_columns": sorted(dirty.get("var_columns", set())),
+        "obsm_keys": sorted(dirty.get("obsm_keys", set())),
+        "varm_keys": sorted(dirty.get("varm_keys", set())),
+        "obsp_keys": sorted(dirty.get("obsp_keys", set())),
+        "varp_keys": sorted(dirty.get("varp_keys", set())),
+        "layers_keys": sorted(dirty.get("layers_keys", set())),
+        "uns_keys": sorted(dirty.get("uns_keys", set())),
+    }
+
+
 def checkpoint_backed(
     adata: AnnData,
     *,
@@ -403,14 +506,7 @@ def checkpoint_backed(
 
     results = _anndata_io.collect_annotation_results(
         adata,
-        obs_columns=list(adata.obs.columns),
-        var_columns=list(adata.var.columns),
-        obsm_keys=list(adata.obsm.keys()),
-        varm_keys=list(adata.varm.keys()),
-        obsp_keys=list(adata.obsp.keys()),
-        varp_keys=list(adata.varp.keys()),
-        layers_keys=[],
-        uns_keys=list(adata.uns.keys()),
+        **_checkpoint_collect_args(adata),
         verbose=verbose,
     )
 
@@ -420,12 +516,21 @@ def checkpoint_backed(
         if verbose:
             print(f"[INFO] Checkpointing to {adata.filename}")
 
+        filepath = str(adata.filename)
+
+        if hasattr(adata, "file") and adata.file is not None:
+            adata.file.close()
+
         _anndata_io.append_to_anndata(
-            str(adata.filename),
+            filepath,
             results,
             verbose=verbose,
             validate=validate,
         )
+
+        _refresh_backed_handle(adata, filepath, mode="r+")
+
+    _dirty_tracker.clear(adata)
 
     if compact:
         _repack_h5ad(adata, chunk_size=chunk_size, verbose=verbose)
@@ -583,6 +688,40 @@ def _adaptive_sparse_chunk_size(
     return min(req, safe)
 
 
+def _estimate_total_nnz(matrix, obs_idx: np.ndarray, var_idx: np.ndarray | None) -> int | None:
+    """Try to compute exact output nnz from source indptr without reading data.
+
+    Returns None if the source format doesn't support cheap nnz estimation
+    (e.g. CSC with row subsetting, or non-sparse backed objects).
+    """
+    import h5py
+
+    indptr = None
+
+    # Backed sparse CSR: the indptr is accessible via the HDF5 group.
+    group = getattr(matrix, "group", None)
+    if group is not None and "indptr" in group:
+        indptr_ds = group["indptr"]
+        indptr = indptr_ds[:]
+    elif isinstance(matrix, h5py.Group) and "indptr" in matrix:
+        indptr = matrix["indptr"][:]
+    elif sp.issparse(matrix) and hasattr(matrix, "indptr"):
+        indptr = np.asarray(matrix.indptr)
+
+    if indptr is None:
+        return None
+
+    # For CSR, indptr gives nnz per row directly. If we also subset columns,
+    # the exact nnz can only be known after reading data, so return an upper
+    # bound (the row-selected nnz before column filtering).
+    if obs_idx.size == 0:
+        return 0
+
+    row_nnz = np.diff(indptr).astype(np.int64, copy=False)
+    total = int(row_nnz[obs_idx].sum())
+    return total
+
+
 def _write_sparse_subsetted(
     f,
     h5_key: str,
@@ -606,6 +745,8 @@ def _write_sparse_subsetted(
         overhead_factor=8.0,
     )
 
+    estimated_nnz = _estimate_total_nnz(source_mat, obs_idx, var_idx)
+
     def _iter_blocks():
         for pos in range(0, n_out, chunk_size):
             end = min(pos + chunk_size, n_out)
@@ -619,27 +760,53 @@ def _write_sparse_subsetted(
     first_block = next(blocks, None)
     data_dtype = source_mat.dtype if hasattr(source_mat, "dtype") else np.float64
     indices_dtype = np.int32
-    initial_capacity = 1024
     if first_block is not None and first_block.nnz > 0:
         data_dtype = first_block.data.dtype
         indices_dtype = first_block.indices.dtype
-        initial_capacity = max(initial_capacity, int(first_block.nnz) * 2)
+
+    # Pre-allocate to estimated size when available; otherwise use a generous
+    # initial capacity to minimize resize calls.
+    if estimated_nnz is not None and estimated_nnz > 0:
+        alloc_size = estimated_nnz
+    elif first_block is not None and first_block.nnz > 0:
+        avg_nnz_per_row = first_block.nnz / max(1, first_block.shape[0])
+        alloc_size = max(1024, int(avg_nnz_per_row * n_out * 1.1))
+    else:
+        alloc_size = 1024
+
+    # When we have exact pre-allocation (no var subsetting), use fixed-size
+    # datasets which are faster than resizable ones.
+    use_fixed = (estimated_nnz is not None and var_idx is None)
 
     grp = f.create_group(h5_key)
-    data_ds = grp.create_dataset(
-        "data",
-        shape=(initial_capacity,),
-        maxshape=(None,),
-        dtype=data_dtype,
-        **_sparse_dataset_compression_kwargs(compression_policy, "data"),
-    )
-    indices_ds = grp.create_dataset(
-        "indices",
-        shape=(initial_capacity,),
-        maxshape=(None,),
-        dtype=indices_dtype,
-        **_sparse_dataset_compression_kwargs(compression_policy, "indices"),
-    )
+    if use_fixed:
+        data_ds = grp.create_dataset(
+            "data",
+            shape=(alloc_size,),
+            dtype=data_dtype,
+            **_sparse_dataset_compression_kwargs(compression_policy, "data"),
+        )
+        indices_ds = grp.create_dataset(
+            "indices",
+            shape=(alloc_size,),
+            dtype=indices_dtype,
+            **_sparse_dataset_compression_kwargs(compression_policy, "indices"),
+        )
+    else:
+        data_ds = grp.create_dataset(
+            "data",
+            shape=(alloc_size,),
+            maxshape=(None,),
+            dtype=data_dtype,
+            **_sparse_dataset_compression_kwargs(compression_policy, "data"),
+        )
+        indices_ds = grp.create_dataset(
+            "indices",
+            shape=(alloc_size,),
+            maxshape=(None,),
+            dtype=indices_dtype,
+            **_sparse_dataset_compression_kwargs(compression_policy, "indices"),
+        )
 
     indptr = np.zeros(n_out + 1, dtype=np.int64)
     row_pos = 0
@@ -648,9 +815,7 @@ def _write_sparse_subsetted(
     def _ensure_capacity(required: int) -> None:
         if required <= data_ds.shape[0]:
             return
-        new_size = data_ds.shape[0]
-        while new_size < required:
-            new_size = max(new_size * 2, required)
+        new_size = max(data_ds.shape[0] * 2, required)
         data_ds.resize((new_size,))
         indices_ds.resize((new_size,))
 
@@ -660,7 +825,8 @@ def _write_sparse_subsetted(
         block_nnz = int(block.nnz)
 
         if block_nnz > 0:
-            _ensure_capacity(nnz_pos + block_nnz)
+            if not use_fixed:
+                _ensure_capacity(nnz_pos + block_nnz)
             data_ds[nnz_pos:nnz_pos + block_nnz] = block.data
             indices_ds[nnz_pos:nnz_pos + block_nnz] = block.indices
 
@@ -676,8 +842,9 @@ def _write_sparse_subsetted(
     for block in blocks:
         _write_block(block)
 
-    data_ds.resize((nnz_pos,))
-    indices_ds.resize((nnz_pos,))
+    if not use_fixed:
+        data_ds.resize((nnz_pos,))
+        indices_ds.resize((nnz_pos,))
 
     grp.create_dataset(
         "indptr",
@@ -779,6 +946,15 @@ def _write_filtered_backed(
     var_sub = adata.var.iloc[var_idx].copy()
     h5file = adata.file._file if is_backed_adata(adata) else None
 
+    obs_is_identity = (
+        obs_idx.size == adata.n_obs
+        and np.array_equal(obs_idx, np.arange(adata.n_obs, dtype=np.int64))
+    )
+    var_is_identity = (
+        var_idx.size == adata.n_vars
+        and np.array_equal(var_idx, np.arange(adata.n_vars, dtype=np.int64))
+    )
+
     with h5py.File(dest_path, "w") as f:
         if h5file is not None:
             for key, value in h5file.attrs.items():
@@ -824,9 +1000,9 @@ def _write_filtered_backed(
                 )
 
         # -- obsm / varm (typically small dense arrays) ------------------
-        for container, idx, name in [
-            (adata.obsm, obs_idx, "obsm"),
-            (adata.varm, var_idx, "varm"),
+        for container, idx, is_identity, name in [
+            (adata.obsm, obs_idx, obs_is_identity, "obsm"),
+            (adata.varm, var_idx, var_is_identity, "varm"),
         ]:
             keys = list(container.keys())
             if keys or (h5file is not None and name in h5file):
@@ -834,6 +1010,10 @@ def _write_filtered_backed(
                 group.attrs["encoding-type"] = "dict"
                 group.attrs["encoding-version"] = "0.1.0"
                 for k in keys:
+                    # Fast path: copy directly when no row subsetting needed
+                    if is_identity and h5file is not None and name in h5file and k in h5file[name]:
+                        h5file[name].copy(k, group, name=k)
+                        continue
                     mat = container[k]
                     if mat is not None:
                         emb_policy = None
@@ -850,9 +1030,9 @@ def _write_filtered_backed(
                         )
 
         # -- obsp / varp (pairwise, row+col subsetted) -------------------
-        for container, idx, name in [
-            (adata.obsp, obs_idx, "obsp"),
-            (adata.varp, var_idx, "varp"),
+        for container, idx, is_identity, name in [
+            (adata.obsp, obs_idx, obs_is_identity, "obsp"),
+            (adata.varp, var_idx, var_is_identity, "varp"),
         ]:
             keys = list(container.keys())
             if keys or (h5file is not None and name in h5file):
@@ -860,6 +1040,10 @@ def _write_filtered_backed(
                 group.attrs["encoding-type"] = "dict"
                 group.attrs["encoding-version"] = "0.1.0"
                 for k in keys:
+                    # Fast path: copy directly when no subsetting needed
+                    if is_identity and h5file is not None and name in h5file and k in h5file[name]:
+                        h5file[name].copy(k, group, name=k)
+                        continue
                     mat = container[k]
                     if mat is not None:
                         pair_policy = None

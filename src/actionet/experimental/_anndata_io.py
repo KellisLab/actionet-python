@@ -521,6 +521,62 @@ def _coerce_categorical_categories(categories):
         return np.array([str(x) for x in categories_arr], dtype="S"), "string-array"
 
 
+def _collect_updated_keys(results):
+    """Return sets of HDF5 paths that will be written by append_to_anndata."""
+    updated = set()
+    for col in results.get('obs_columns', {}):
+        updated.add(f'obs/{col}')
+    for col in results.get('var_columns', {}):
+        updated.add(f'var/{col}')
+    for container in ('obsm_keys', 'varm_keys', 'obsp_keys', 'varp_keys', 'layers_keys'):
+        container_name = container.replace('_keys', '')
+        for key in results.get(container, {}):
+            updated.add(f'{container_name}/{key}')
+    for key in results.get('uns_keys', {}):
+        updated.add(f'uns/{key}')
+    return updated
+
+
+def _write_uns_value_to_file(f, h5_key, key, value, verbose):
+    """Write a single uns value to an open HDF5 file handle."""
+    if isinstance(value, pd.DataFrame):
+        _write_dataframe_to_h5(f, h5_key, value)
+
+    elif isinstance(value, pd.Series):
+        f.create_dataset(h5_key, data=value.values)
+
+    elif isinstance(value, dict):
+        grp = f.create_group(h5_key)
+        grp.attrs['encoding-type'] = 'dict'
+        grp.attrs['encoding-version'] = '0.1.0'
+        for k, v in value.items():
+            _write_dict_value(grp, k, v)
+
+    elif isinstance(value, (np.ndarray, list)):
+        f.create_dataset(h5_key, data=value)
+
+    elif isinstance(value, str):
+        ds = f.create_dataset(h5_key, data=value.encode('utf-8'))
+        ds.attrs['encoding-type'] = 'string'
+        ds.attrs['encoding-version'] = '0.2.0'
+
+    elif isinstance(value, (int, float, bool, np.integer, np.floating, np.bool_)):
+        ds = f.create_dataset(h5_key, data=value)
+        ds.attrs['encoding-type'] = 'numeric-scalar'
+        ds.attrs['encoding-version'] = '0.2.0'
+
+    else:
+        try:
+            f.create_dataset(h5_key, data=np.array(value))
+        except Exception as e:
+            if verbose:
+                print(f"[WARNING] Could not store uns['{key}']: {e}")
+            return
+
+    if verbose:
+        print(f"[INFO]   Added uns['{key}']")
+
+
 def append_to_anndata(
     h5_path,
     results,
@@ -530,9 +586,11 @@ def append_to_anndata(
     """
     Append annotation results to an H5AD file using direct HDF5 operations.
 
-    This function bypasses AnnData's backed mode limitations by directly
-    writing to the HDF5 file structure. Existing keys with the same name
-    will be overwritten.
+    Uses an atomic write strategy: opens the original file read-only, creates
+    a new temp file, copies unchanged groups via h5py block copy, writes
+    updated groups fresh, and atomically replaces the original.  This avoids
+    the HDF5 dead-space problem caused by delete-then-create on ``r+`` files
+    and converts scattered writes into a single sequential pass.
 
     Parameters
     ----------
@@ -558,119 +616,146 @@ def append_to_anndata(
     IOError
         If file cannot be opened for writing
     """
-    # Check file exists
     import os
+    import tempfile
+
     if not os.path.exists(h5_path):
         raise FileNotFoundError(f"H5AD file not found: {h5_path}")
 
-    # Normalize string dtypes for compatibility
     results = _coerce_results_strings(results)
 
-    # Validate data before writing
     if validate:
         _validate_results(h5_path, results, verbose)
 
     if verbose:
         print(f"[INFO] Writing results to {h5_path}")
-    
-    with h5py.File(h5_path, 'r+') as f:
-        obs_columns = results.get('obs_columns', {})
-        var_columns = results.get('var_columns', {})
-        obsm_keys = results.get('obsm_keys', {})
-        varm_keys = results.get('varm_keys', {})
-        obsp_keys = results.get('obsp_keys', {})
-        varp_keys = results.get('varp_keys', {})
-        layers_keys = results.get('layers_keys', {})
-        uns_keys = results.get('uns_keys', {})
 
-        # Write obs columns
-        for col, values in obs_columns.items():
-            _write_dataframe_column(f, 'obs', col, values, verbose)
+    updated_keys = _collect_updated_keys(results)
 
-        # Update obs column-order attribute
-        if obs_columns:
-            _update_column_order(f, 'obs')
+    obs_columns = results.get('obs_columns', {})
+    var_columns = results.get('var_columns', {})
+    obsm_keys = results.get('obsm_keys', {})
+    varm_keys = results.get('varm_keys', {})
+    obsp_keys = results.get('obsp_keys', {})
+    varp_keys = results.get('varp_keys', {})
+    layers_keys = results.get('layers_keys', {})
+    uns_keys = results.get('uns_keys', {})
 
-        # Write var columns
-        for col, values in var_columns.items():
-            _write_dataframe_column(f, 'var', col, values, verbose)
+    parent_dir = os.path.dirname(h5_path) or "."
+    fd, tmp_path = tempfile.mkstemp(suffix=".h5ad", dir=parent_dir, prefix=".append_")
+    os.close(fd)
 
-        # Update var column-order attribute
-        if var_columns:
-            _update_column_order(f, 'var')
+    try:
+        with h5py.File(h5_path, 'r') as src, h5py.File(tmp_path, 'w') as dst:
+            for attr_key, attr_val in src.attrs.items():
+                dst.attrs[attr_key] = attr_val
 
-        # Write obsm keys
-        for key, array in obsm_keys.items():
-            _write_matrix(f, 'obsm', key, array, verbose)
+            # Determine which top-level groups have updated children
+            updated_top_groups = {k.split('/')[0] for k in updated_keys}
 
-        # Write varm keys
-        for key, array in varm_keys.items():
-            _write_matrix(f, 'varm', key, array, verbose)
+            for top_key in src.keys():
+                if top_key not in updated_top_groups:
+                    src.copy(top_key, dst, name=top_key)
+                elif top_key in ('obs', 'var'):
+                    _copy_dataframe_with_updates(
+                        src, dst, top_key,
+                        obs_columns if top_key == 'obs' else var_columns,
+                        verbose,
+                    )
+                elif top_key in ('obsm', 'varm', 'obsp', 'varp', 'layers'):
+                    mapping = {
+                        'obsm': obsm_keys, 'varm': varm_keys,
+                        'obsp': obsp_keys, 'varp': varp_keys,
+                        'layers': layers_keys,
+                    }[top_key]
+                    _copy_container_with_updates(
+                        src, dst, top_key, mapping, verbose,
+                    )
+                elif top_key == 'uns':
+                    _copy_uns_with_updates(src, dst, uns_keys, verbose)
+                else:
+                    src.copy(top_key, dst, name=top_key)
 
-        # Write obsp keys
-        for key, matrix in obsp_keys.items():
-            _write_matrix(f, 'obsp', key, matrix, verbose)
-
-        # Write varp keys
-        for key, matrix in varp_keys.items():
-            _write_matrix(f, 'varp', key, matrix, verbose)
-
-        # Write layers keys
-        for key, matrix in layers_keys.items():
-            _write_matrix(f, 'layers', key, matrix, verbose)
-
-        # Write uns keys
-        for key, value in uns_keys.items():
-            h5_key = f'uns/{key}'
-
-            # Delete existing key if present
-            if h5_key in f:
-                del f[h5_key]
-
-            # Handle different data types
-            if isinstance(value, pd.DataFrame):
-                # Store as structured dataset or group
-                _write_dataframe_to_h5(f, h5_key, value)
-
-            elif isinstance(value, pd.Series):
-                # Convert to array
-                f.create_dataset(h5_key, data=value.values)
-
-            elif isinstance(value, dict):
-                # Create group and store each item
-                grp = f.create_group(h5_key)
-                grp.attrs['encoding-type'] = 'dict'
-                grp.attrs['encoding-version'] = '0.1.0'
-
-                for k, v in value.items():
-                    _write_dict_value(grp, k, v)
-
-            elif isinstance(value, (np.ndarray, list)):
-                f.create_dataset(h5_key, data=value)
-
-            elif isinstance(value, str):
-                # String scalars stored as datasets (no compression for scalars)
-                ds = f.create_dataset(h5_key, data=value.encode('utf-8'))
-                ds.attrs['encoding-type'] = 'string'
-                ds.attrs['encoding-version'] = '0.2.0'
-
-            elif isinstance(value, (int, float, bool, np.integer, np.floating, np.bool_)):
-                # Numeric/boolean scalars stored as datasets (no compression for scalars)
-                ds = f.create_dataset(h5_key, data=value)
-                ds.attrs['encoding-type'] = 'numeric-scalar'
-                ds.attrs['encoding-version'] = '0.2.0'
-
-            else:
-                # Try to convert to array
-                try:
-                    f.create_dataset(h5_key, data=np.array(value))
-                except Exception as e:
-                    if verbose:
-                        print(f"[WARNING] Could not store uns['{key}']: {e}")
+            # Create groups that don't exist in source yet
+            for top_key in updated_top_groups:
+                if top_key in dst:
                     continue
+                if top_key in ('obsm', 'varm', 'obsp', 'varp', 'layers'):
+                    mapping = {
+                        'obsm': obsm_keys, 'varm': varm_keys,
+                        'obsp': obsp_keys, 'varp': varp_keys,
+                        'layers': layers_keys,
+                    }[top_key]
+                    grp = dst.create_group(top_key)
+                    grp.attrs['encoding-type'] = 'dict'
+                    grp.attrs['encoding-version'] = '0.1.0'
+                    for key, matrix in mapping.items():
+                        _write_matrix(dst, top_key, key, matrix, verbose)
+                elif top_key == 'uns':
+                    grp = dst.create_group('uns')
+                    grp.attrs['encoding-type'] = 'dict'
+                    grp.attrs['encoding-version'] = '0.1.0'
+                    for key, value in uns_keys.items():
+                        _write_uns_value_to_file(dst, f'uns/{key}', key, value, verbose)
 
-            if verbose:
-                print(f"[INFO]   Added uns['{key}']")
+        os.replace(tmp_path, h5_path)
+    except BaseException:
+        if os.path.exists(tmp_path):
+            os.unlink(tmp_path)
+        raise
+
+
+def _copy_dataframe_with_updates(src, dst, df_name, updated_columns, verbose):
+    """Copy an obs/var group, replacing columns present in updated_columns."""
+    src_grp = src[df_name]
+    dst_grp = dst.create_group(df_name)
+
+    for attr_key, attr_val in src_grp.attrs.items():
+        dst_grp.attrs[attr_key] = attr_val
+
+    for child_name in src_grp.keys():
+        if child_name in updated_columns:
+            continue
+        src_grp.copy(child_name, dst_grp, name=child_name)
+
+    for col, values in updated_columns.items():
+        _write_dataframe_column(dst, df_name, col, values, verbose)
+
+    _update_column_order(dst, df_name)
+
+
+def _copy_container_with_updates(src, dst, container_name, updated_mapping, verbose):
+    """Copy obsm/varm/obsp/varp/layers, replacing keys present in updated_mapping."""
+    src_grp = src[container_name]
+    dst_grp = dst.create_group(container_name)
+
+    for attr_key, attr_val in src_grp.attrs.items():
+        dst_grp.attrs[attr_key] = attr_val
+
+    for child_name in src_grp.keys():
+        if child_name in updated_mapping:
+            continue
+        src_grp.copy(child_name, dst_grp, name=child_name)
+
+    for key, matrix in updated_mapping.items():
+        _write_matrix(dst, container_name, key, matrix, verbose)
+
+
+def _copy_uns_with_updates(src, dst, updated_uns, verbose):
+    """Copy uns group, replacing keys present in updated_uns."""
+    src_grp = src['uns']
+    dst_grp = dst.create_group('uns')
+
+    for attr_key, attr_val in src_grp.attrs.items():
+        dst_grp.attrs[attr_key] = attr_val
+
+    for child_name in src_grp.keys():
+        if child_name in updated_uns:
+            continue
+        src_grp.copy(child_name, dst_grp, name=child_name)
+
+    for key, value in updated_uns.items():
+        _write_uns_value_to_file(dst, f'uns/{key}', key, value, verbose)
 
 
 def _write_dict_value(grp, key, value):
