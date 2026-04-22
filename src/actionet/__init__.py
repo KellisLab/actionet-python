@@ -98,6 +98,7 @@ from ._backed_persist import checkpoint_backed, materialize_backed, subset_backe
 from .tools import (
     scale,
     aggregate_matrix,
+    matrix_sums,
 )
 
 __all__ = [
@@ -155,6 +156,7 @@ __all__ = [
     "add_network_to_anndata",
     "aggregate_anndata",
     "aggregate_matrix",
+    "matrix_sums",
     "import_anndata_generic",
     "filter_anndata",
     "compute_filter_masks",
