@@ -1,8 +1,9 @@
 """Matrix tools for scaling and normalization."""
 
-from typing import Union, Literal
+from typing import Optional, Union, Literal
 import numpy as np
 import scipy.sparse as sp
+from anndata import AnnData
 
 from . import _core
 
@@ -184,3 +185,86 @@ def aggregate_matrix(
         return (result, inverse, unique_labels) if return_inverse else result
     result = _core.compute_grouped_vars_dense(X, labels, axis)
     return (result, inverse, unique_labels) if return_inverse else result
+
+
+def matrix_sums(
+    adata: AnnData,
+    axis: Optional[int] = None,
+    layer: Optional[str] = None,
+    nonzero: bool = False,
+    chunk_size: int = 4096,
+) -> Union[np.ndarray, np.floating, np.integer]:
+    """
+    Compute sums or non-zero counts of the expression matrix.
+
+    Works transparently for both in-memory (dense or sparse) and backed
+    (on-disk HDF5) AnnData objects.  Backed matrices are streamed in
+    constant-memory chunks rather than materialised wholesale.
+
+    Parameters
+    ----------
+    adata : AnnData
+        Input AnnData object.
+    axis : {0, 1, None}, default=None
+        Axis along which to compute, following numpy conventions:
+
+        - ``1`` — sum across columns, returning one value per row (per-cell).
+          Result shape: ``(n_obs,)``.
+        - ``0`` — sum across rows, returning one value per column (per-gene).
+          Result shape: ``(n_vars,)``.
+        - ``None`` — scalar global total over the entire matrix.
+    layer : str, optional
+        Layer to use.  If ``None`` (default), uses ``.X``.
+    nonzero : bool, default=False
+        If ``False``, compute the sum of all values (float64).
+        If ``True``, count the number of non-zero entries (int64) instead
+        of summing values.
+    chunk_size : int, default=4096
+        Number of rows per streaming chunk.  Tune to balance memory usage
+        and I/O throughput for backed objects.
+
+    Returns
+    -------
+    np.ndarray or scalar
+        - ``axis=1`` → 1-D float64 (or int64 when ``nonzero=True``) array
+          of length ``n_obs``.
+        - ``axis=0`` → 1-D float64 (or int64 when ``nonzero=True``) array
+          of length ``n_vars``.
+        - ``axis=None`` → scalar float64 (or int64 when ``nonzero=True``).
+
+    Examples
+    --------
+    Per-cell total counts (works backed or in-memory):
+
+    >>> cell_totals = matrix_sums(adata)
+
+    Per-gene total counts:
+
+    >>> gene_totals = matrix_sums(adata, axis=0)
+
+    Number of detected genes per cell:
+
+    >>> n_genes = matrix_sums(adata, nonzero=True)
+
+    Global total across the whole matrix:
+
+    >>> total = matrix_sums(adata, axis=None)
+    """
+    if axis not in (0, 1, None):
+        raise ValueError("axis must be 0, 1, or None.")
+
+    from ._matrix_source import MatrixSource
+    source = MatrixSource(adata, layer=layer)
+
+    if nonzero:
+        if axis == 1:
+            return source.nnz_row_counts(chunk_size=chunk_size)
+        if axis == 0:
+            return source.nnz_col_counts(chunk_size=chunk_size)
+        return source.nnz_row_counts(chunk_size=chunk_size).sum()
+
+    if axis == 1:
+        return source.row_sums(chunk_size=chunk_size)
+    if axis == 0:
+        return source.col_sums(chunk_size=chunk_size)
+    return source.row_sums(chunk_size=chunk_size).sum()
