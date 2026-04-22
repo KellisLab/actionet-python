@@ -7,7 +7,7 @@ thresholds post-hoc without refitting.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Literal, Optional, Sequence, Union
 
 import numpy as np
@@ -18,7 +18,7 @@ from anndata import AnnData
 from . import _core
 from ._matrix_source import MatrixSource
 from .anndata_utils import anndata_to_matrix
-from .backed_io import _backed_group_path
+from .backed_io import _backed_group_path, _open_backed_operator
 
 
 ArrayLike1D = Union[np.ndarray, Sequence[float]]
@@ -33,6 +33,7 @@ class _ResolvedInput:
     data: Any
     n_guides: int
     guide_names: Optional[np.ndarray]
+    _exit_stack: list = field(default_factory=list, repr=False)
 
 
 def _as_float64_1d(x: ArrayLike1D, *, name: str, expected_len: Optional[int] = None) -> np.ndarray:
@@ -95,13 +96,23 @@ def _resolve_input(
                 )
 
         if source.is_backed:
-            op = _core.create_backed_operator(
+            cm = _open_backed_operator(
+                adata=X,
                 file_path=str(X.filename),
                 group_path=_backed_group_path(layer),
+                context="guide_call_gmm",
                 chunk_size=max(1, int(backed_chunk_size)),
                 n_threads=int(n_threads),
             )
-            return _ResolvedInput(kind="operator", data=op, n_guides=source.n_vars, guide_names=inferred_names)
+            op = cm.__enter__()
+            resolved = _ResolvedInput(
+                kind="operator",
+                data=op,
+                n_guides=source.n_vars,
+                guide_names=inferred_names,
+            )
+            resolved._exit_stack.append(cm)
+            return resolved
 
         mat = anndata_to_matrix(X, layer=layer)
         if not sp.issparse(mat):
@@ -148,6 +159,15 @@ def _resolve_input(
         "Unsupported input type. Expected AnnData, scipy.sparse matrix, numpy.ndarray, "
         "or ACTIONet MatrixOperator."
     )
+
+
+def _cleanup_resolved(resolved: _ResolvedInput) -> None:
+    for cm in reversed(resolved._exit_stack):
+        try:
+            cm.__exit__(None, None, None)
+        except Exception:
+            pass
+    resolved._exit_stack.clear()
 
 
 def _fit_from_resolved(
@@ -333,33 +353,36 @@ def fit_guides_gmm(
         n_threads=n_threads,
         guide_names=guide_names,
     )
-    fits = _fit_from_resolved(
-        resolved,
-        min_points=min_points,
-        min_counts=min_counts,
-        n_init=n_init,
-        max_iter=max_iter,
-        tol=tol,
-        variance_floor=variance_floor,
-        apply_log10p1=apply_log10p1,
-        seed=seed,
-        n_threads=n_threads,
-        backed_chunk_guides=backed_chunk_guides,
-    )
+    try:
+        fits = _fit_from_resolved(
+            resolved,
+            min_points=min_points,
+            min_counts=min_counts,
+            n_init=n_init,
+            max_iter=max_iter,
+            tol=tol,
+            variance_floor=variance_floor,
+            apply_log10p1=apply_log10p1,
+            seed=seed,
+            n_threads=n_threads,
+            backed_chunk_guides=backed_chunk_guides,
+        )
 
-    fits = _dress_fit_result(
-        fits, resolved,
-        apply_log10p1=apply_log10p1,
-        min_points=min_points, min_counts=min_counts,
-        n_init=n_init, max_iter=max_iter, tol=tol,
-        variance_floor=variance_floor, seed=seed,
-        n_threads=n_threads, backed_chunk_guides=backed_chunk_guides,
-    )
+        fits = _dress_fit_result(
+            fits, resolved,
+            apply_log10p1=apply_log10p1,
+            min_points=min_points, min_counts=min_counts,
+            n_init=n_init, max_iter=max_iter, tol=tol,
+            variance_floor=variance_floor, seed=seed,
+            n_threads=n_threads, backed_chunk_guides=backed_chunk_guides,
+        )
 
-    if not return_table:
-        fits.pop("table", None)
+        if not return_table:
+            fits.pop("table", None)
 
-    return fits
+        return fits
+    finally:
+        _cleanup_resolved(resolved)
 
 
 def derive_guide_thresholds(
@@ -615,117 +638,128 @@ def guide_call_gmm(
         n_threads=n_threads,
         guide_names=guide_names,
     )
+    try:
+        bg_in = background_thresholds
+        fg_in = foreground_thresholds
+        if bg_in is None and fg_in is not None:
+            bg_in = fg_in
+        if fg_in is None and bg_in is not None:
+            fg_in = bg_in
+        explicit_thresholds = (bg_in is not None) or (fg_in is not None)
 
-    bg_in = background_thresholds
-    fg_in = foreground_thresholds
-    if bg_in is None and fg_in is not None:
-        bg_in = fg_in
-    if fg_in is None and bg_in is not None:
-        fg_in = bg_in
-    explicit_thresholds = (bg_in is not None) or (fg_in is not None)
+        bg_raw: Optional[np.ndarray] = None
+        fg_raw: Optional[np.ndarray] = None
+        threshold_table: Optional[pd.DataFrame] = None
 
-    bg_raw: Optional[np.ndarray] = None
-    fg_raw: Optional[np.ndarray] = None
-    threshold_table: Optional[pd.DataFrame] = None
+        if explicit_thresholds:
+            if bg_in is None or fg_in is None:
+                raise ValueError("Both background and foreground thresholds must be set together")
+            bg = _as_float64_1d(bg_in, name="background_thresholds", expected_len=resolved.n_guides)
+            fg = _as_float64_1d(fg_in, name="foreground_thresholds", expected_len=resolved.n_guides)
 
-    if explicit_thresholds:
-        if bg_in is None or fg_in is None:
-            raise ValueError("Both background and foreground thresholds must be set together")
-        bg = _as_float64_1d(bg_in, name="background_thresholds", expected_len=resolved.n_guides)
-        fg = _as_float64_1d(fg_in, name="foreground_thresholds", expected_len=resolved.n_guides)
+            if threshold_scale == "raw":
+                bg_raw = bg
+                fg_raw = fg
+            elif threshold_scale == "transformed":
+                bg_raw = _transform_to_raw(bg, apply_log10p1=apply_log10p1)
+                fg_raw = _transform_to_raw(fg, apply_log10p1=apply_log10p1)
+            else:
+                raise ValueError("threshold_scale must be 'raw' or 'transformed'")
 
-        if threshold_scale == "raw":
-            bg_raw = bg
-            fg_raw = fg
-        elif threshold_scale == "transformed":
-            bg_raw = _transform_to_raw(bg, apply_log10p1=apply_log10p1)
-            fg_raw = _transform_to_raw(fg, apply_log10p1=apply_log10p1)
-        else:
-            raise ValueError("threshold_scale must be 'raw' or 'transformed'")
+            guide_index = pd.Index(resolved.guide_names, name="guide") if resolved.guide_names is not None else None
+            threshold_table = pd.DataFrame(
+                {"background": bg_raw, "foreground": fg_raw},
+                index=guide_index,
+            )
 
-        guide_index = pd.Index(resolved.guide_names, name="guide") if resolved.guide_names is not None else None
-        threshold_table = pd.DataFrame(
-            {"background": bg_raw, "foreground": fg_raw},
-            index=guide_index,
-        )
+        needs_fit = True
+        if explicit_thresholds and mode in {"auto", "simple"} and not return_fits:
+            needs_fit = False
 
-    needs_fit = True
-    if explicit_thresholds and mode in {"auto", "simple"} and not return_fits:
-        needs_fit = False
+        fits: Optional[dict] = None
+        if needs_fit:
+            raw_fits = _fit_from_resolved(
+                resolved,
+                min_points=min_points,
+                min_counts=min_counts,
+                n_init=n_init,
+                max_iter=max_iter,
+                tol=tol,
+                variance_floor=variance_floor,
+                apply_log10p1=apply_log10p1,
+                seed=seed,
+                n_threads=n_threads,
+                backed_chunk_guides=backed_chunk_guides,
+            )
+            fits = _dress_fit_result(
+                raw_fits,
+                resolved,
+                apply_log10p1=apply_log10p1,
+                min_points=min_points,
+                min_counts=min_counts,
+                n_init=n_init,
+                max_iter=max_iter,
+                tol=tol,
+                variance_floor=variance_floor,
+                seed=seed,
+                n_threads=n_threads,
+                backed_chunk_guides=backed_chunk_guides,
+            )
 
-    fits: Optional[dict] = None
-    if needs_fit:
-        raw_fits = _fit_from_resolved(
+        if bg_raw is None or fg_raw is None:
+            if fits is None:
+                raise RuntimeError("Internal error: thresholds not provided and fits not available")
+            derived = derive_guide_thresholds(
+                fits,
+                method=method,
+                bg_quantile=bg_quantile,
+                fg_quantile=fg_quantile,
+                valley_grid_size=valley_grid_size,
+                output_scale="raw",
+                return_table=True,
+            )
+            bg_raw = np.asarray(derived["background"], dtype=np.float64)
+            fg_raw = np.asarray(derived["foreground"], dtype=np.float64)
+            threshold_table = derived.get("table")
+
+        assignments = _apply_from_resolved(
             resolved,
-            min_points=min_points,
-            min_counts=min_counts,
-            n_init=n_init,
-            max_iter=max_iter,
-            tol=tol,
-            variance_floor=variance_floor,
-            apply_log10p1=apply_log10p1,
-            seed=seed,
-            n_threads=n_threads,
+            background_thresholds_raw=bg_raw,
+            foreground_thresholds_raw=fg_raw,
             backed_chunk_guides=backed_chunk_guides,
         )
-        fits = _dress_fit_result(raw_fits, resolved, apply_log10p1=apply_log10p1,
-                                 min_points=min_points, min_counts=min_counts,
-                                 n_init=n_init, max_iter=max_iter, tol=tol,
-                                 variance_floor=variance_floor, seed=seed,
-                                 n_threads=n_threads, backed_chunk_guides=backed_chunk_guides)
 
-    if bg_raw is None or fg_raw is None:
-        if fits is None:
-            raise RuntimeError("Internal error: thresholds not provided and fits not available")
-        derived = derive_guide_thresholds(
-            fits,
-            method=method,
-            bg_quantile=bg_quantile,
-            fg_quantile=fg_quantile,
-            valley_grid_size=valley_grid_size,
-            output_scale="raw",
-            return_table=True,
-        )
-        bg_raw = np.asarray(derived["background"], dtype=np.float64)
-        fg_raw = np.asarray(derived["foreground"], dtype=np.float64)
-        threshold_table = derived.get("table")
+        final_mode = mode
+        if mode == "auto":
+            final_mode = "full" if (fits is not None and (return_fits or not explicit_thresholds)) else "simple"
+            if fits is not None and not return_fits:
+                final_mode = "simple"
 
-    assignments = _apply_from_resolved(
-        resolved,
-        background_thresholds_raw=bg_raw,
-        foreground_thresholds_raw=fg_raw,
-        backed_chunk_guides=backed_chunk_guides,
-    )
+        out = {
+            "thresholds": threshold_table,
+            "threshold_arrays": {
+                "background": bg_raw,
+                "foreground": fg_raw,
+            },
+            "assignments": {
+                "background": assignments["background"],
+                "foreground": assignments["foreground"],
+            },
+            "metadata": {
+                "result_mode": final_mode,
+                "explicit_thresholds": bool(explicit_thresholds),
+                "threshold_method": method if not explicit_thresholds else "explicit",
+                "threshold_scale": "raw",
+                "n_guides": int(resolved.n_guides),
+                "n_threads": int(n_threads),
+                "apply_log10p1": bool(apply_log10p1),
+                "fit_performed": bool(fits is not None),
+            },
+        }
 
-    final_mode = mode
-    if mode == "auto":
-        final_mode = "full" if (fits is not None and (return_fits or not explicit_thresholds)) else "simple"
-        if fits is not None and not return_fits:
-            final_mode = "simple"
+        if (mode == "full") or return_fits or (mode == "auto" and fits is not None and not explicit_thresholds):
+            out["fits"] = fits
 
-    out = {
-        "thresholds": threshold_table,
-        "threshold_arrays": {
-            "background": bg_raw,
-            "foreground": fg_raw,
-        },
-        "assignments": {
-            "background": assignments["background"],
-            "foreground": assignments["foreground"],
-        },
-        "metadata": {
-            "result_mode": final_mode,
-            "explicit_thresholds": bool(explicit_thresholds),
-            "threshold_method": method if not explicit_thresholds else "explicit",
-            "threshold_scale": "raw",
-            "n_guides": int(resolved.n_guides),
-            "n_threads": int(n_threads),
-            "apply_log10p1": bool(apply_log10p1),
-            "fit_performed": bool(fits is not None),
-        },
-    }
-
-    if (mode == "full") or return_fits or (mode == "auto" and fits is not None and not explicit_thresholds):
-        out["fits"] = fits
-
-    return out
+        return out
+    finally:
+        _cleanup_resolved(resolved)

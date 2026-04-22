@@ -11,7 +11,7 @@ from anndata import AnnData
 from ..anndata_utils import anndata_to_matrix
 from ..imputation import impute_features
 from .._matrix_source import MatrixSource
-from ..backed_io import _backed_group_path
+from ..backed_io import _backed_group_path, _open_backed_operator
 from ..lazy_transform import (
     LazyTransform,
     _resolve_lazy_backed_transform,
@@ -81,18 +81,20 @@ def _extract_expression(
             lazy_transform=lazy_transform,
             backed_chunk_size=backed_chunk_size,
         )
-        op = _core.create_backed_operator(
+        with _open_backed_operator(
+            adata=adata,
             file_path=str(adata.filename),
             group_path=_backed_group_path(layer),
+            context="plot_feature_expression",
             chunk_size=backed_chunk_size,
             row_scale_factors=row_scale_factors,
             apply_log1p=apply_log1p,
             log_scale=log_scale,
-        )
-        expr = np.asarray(
-            _core.backed_take_columns(op, feature_indices, prefer_sparse=False),
-            dtype=np.float64,
-        )
+        ) as op:
+            expr = np.asarray(
+                _core.backed_take_columns(op, feature_indices, prefer_sparse=False),
+                dtype=np.float64,
+            )
     else:
         matrix = anndata_to_matrix(adata, layer=layer, transpose=True)
         expr = matrix[feature_indices, :]

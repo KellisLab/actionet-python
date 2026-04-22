@@ -286,3 +286,63 @@ def test_failed_guides_return_nan_thresholds():
     fg_assign = res["assignments"]["foreground"]
     assert fg_assign[:, 2].nnz == 0
     assert fg_assign[:, 3].nnz == 0
+
+
+
+
+@requires_ext
+def test_backed_guide_call_handles_retryable_open_conflict(tmp_path, monkeypatch):
+    X = _small_sparse_matrix(seed=91).tocsc()
+    adata = ad.AnnData(X=X.copy())
+    adata.var_names = np.array([f"g{i}" for i in range(adata.n_vars)], dtype=object)
+
+    path = tmp_path / "guide_calling_backed_retry.h5ad"
+    adata.write_h5ad(path)
+    adata_backed = ad.read_h5ad(path, backed="r+")
+
+    import actionet.backed_io as backed_io
+
+    sentinel = object()
+    create_calls = {"count": 0}
+
+    def flaky_create(**kwargs):
+        create_calls["count"] += 1
+        if create_calls["count"] == 1:
+            raise RuntimeError("createBackedOperator: failed to open h5ad file: simulated lock")
+        return sentinel
+
+    monkeypatch.setattr(backed_io, "_create_backed_operator", flaky_create)
+
+    def fake_apply(
+        resolved,
+        *,
+        background_thresholds_raw,
+        foreground_thresholds_raw,
+        backed_chunk_guides,
+    ):
+        assert resolved.kind == "operator"
+        assert resolved.data is sentinel
+        shape = adata_backed.shape
+        background = sp.csr_matrix(shape, dtype=np.float64)
+        foreground = sp.csr_matrix(shape, dtype=np.float64)
+        return {"background": background, "foreground": foreground}
+
+    monkeypatch.setattr(gc, "_apply_from_resolved", fake_apply)
+
+    try:
+        result = an.guide_call_gmm(
+            adata_backed,
+            result_mode="simple",
+            background_thresholds=np.zeros(adata_backed.n_vars, dtype=np.float64),
+            foreground_thresholds=np.ones(adata_backed.n_vars, dtype=np.float64),
+            threshold_scale="raw",
+            n_threads=1,
+            backed_chunk_size=64,
+            backed_chunk_guides=4,
+        )
+    finally:
+        adata_backed.file.close()
+
+    assert create_calls["count"] >= 2
+    assert sp.issparse(result["assignments"]["foreground"])
+    assert result["assignments"]["foreground"].shape == adata_backed.shape

@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import contextlib
 import os
 import shutil
 import tempfile
+import time
 import warnings
-from typing import Any, Optional
+from typing import Any, Generator, Optional
 
 import numpy as np
 import scipy.sparse as sp
@@ -22,6 +24,17 @@ from .preprocessing import decompress_backed_storage
 
 
 _WARNED_COMPRESSED_BACKED_SVD: set[tuple[str, str, str]] = set()
+_LOCK_OPEN_ERROR_FRAGMENTS = (
+    "createbackedoperator",
+    "failed to open h5ad file",
+    "resource temporarily unavailable",
+    "errno = 11",
+    "errno=11",
+    "eagain",
+    "unable to lock file",
+    "file locking disabled",
+    "file locking failed",
+)
 
 
 def _is_backed_matrix(X: Any) -> bool:
@@ -113,6 +126,156 @@ def _flush_backed_handle(adata: AnnData, *, context: str) -> None:
             f"{context}: failed to flush backed AnnData handle before operator read "
             f"({type(exc).__name__}: {exc})"
         )
+
+
+def _is_lock_open_error(exc: BaseException) -> bool:
+    msg = str(exc).lower()
+    return any(fragment in msg for fragment in _LOCK_OPEN_ERROR_FRAGMENTS)
+
+
+def _create_backed_operator(
+    *,
+    file_path: str,
+    group_path: str,
+    chunk_size: int,
+    row_scale_factors: Optional[np.ndarray] = None,
+    apply_log1p: bool = False,
+    log_scale: float = 1.0,
+    io_target_chunk_bytes: Optional[int] = None,
+    n_threads: Optional[int] = None,
+):
+    from . import _core
+
+    kwargs = {
+        "file_path": file_path,
+        "group_path": group_path,
+        "chunk_size": int(chunk_size),
+        "apply_log1p": bool(apply_log1p),
+        "log_scale": float(log_scale),
+    }
+    if row_scale_factors is not None:
+        kwargs["row_scale_factors"] = row_scale_factors
+    if io_target_chunk_bytes is not None:
+        kwargs["io_target_chunk_bytes"] = int(io_target_chunk_bytes)
+    if n_threads is not None:
+        kwargs["n_threads"] = int(n_threads)
+
+    return _core.create_backed_operator(**kwargs)
+
+
+@contextlib.contextmanager
+def _open_backed_operator(
+    *,
+    adata: Optional[AnnData],
+    file_path: str,
+    group_path: str,
+    context: str,
+    chunk_size: int,
+    row_scale_factors: Optional[np.ndarray] = None,
+    apply_log1p: bool = False,
+    log_scale: float = 1.0,
+    io_target_chunk_bytes: Optional[int] = None,
+    n_threads: Optional[int] = None,
+    retry_attempts: int = 3,
+    retry_backoff_seconds: float = 0.25,
+) -> Generator[Any, None, None]:
+    """Open a lock-safe backed operator with retry and temp-copy fallback.
+
+    Use as a context manager::
+
+        with _open_backed_operator(...) as op:
+            result = _core.some_call(op, ...)
+    """
+    if retry_attempts < 1:
+        raise ValueError("retry_attempts must be >= 1")
+
+    if adata is not None:
+        _flush_backed_handle(adata, context=context)
+
+    lock_errors: list[BaseException] = []
+    op = None
+
+    for attempt in range(retry_attempts):
+        try:
+            op = _create_backed_operator(
+                file_path=file_path,
+                group_path=group_path,
+                chunk_size=chunk_size,
+                row_scale_factors=row_scale_factors,
+                apply_log1p=apply_log1p,
+                log_scale=log_scale,
+                io_target_chunk_bytes=io_target_chunk_bytes,
+                n_threads=n_threads,
+            )
+            break
+        except Exception as exc:
+            if not _is_lock_open_error(exc):
+                raise
+            lock_errors.append(exc)
+            if attempt + 1 < retry_attempts:
+                time.sleep(max(0.0, float(retry_backoff_seconds)) * (attempt + 1))
+
+    fallback_path: Optional[str] = None
+
+    if op is None:
+        warnings.warn(
+            f"{context}: retries exhausted for '{file_path}'; "
+            f"copying to temporary file for lock-free access "
+            f"(this may be slow for large files on network storage)",
+            UserWarning,
+            stacklevel=3,
+        )
+        parent = os.path.dirname(file_path) or "."
+        fd, fallback_path = tempfile.mkstemp(
+            prefix="actionet_lock_fallback_",
+            suffix=".h5ad",
+            dir=parent,
+        )
+        os.close(fd)
+
+        try:
+            shutil.copy2(file_path, fallback_path)
+            op = _create_backed_operator(
+                file_path=fallback_path,
+                group_path=group_path,
+                chunk_size=chunk_size,
+                row_scale_factors=row_scale_factors,
+                apply_log1p=apply_log1p,
+                log_scale=log_scale,
+                io_target_chunk_bytes=io_target_chunk_bytes,
+                n_threads=n_threads,
+            )
+        except Exception as exc:
+            try:
+                if fallback_path is not None and os.path.exists(fallback_path):
+                    os.remove(fallback_path)
+            except OSError:
+                pass
+
+            if not _is_lock_open_error(exc):
+                raise
+
+            primary_err = str(lock_errors[-1]) if lock_errors else "unknown primary open error"
+            raise RuntimeError(
+                f"{context}: failed to open backed operator for '{file_path}' "
+                f"after {retry_attempts} retries and fallback copy '{fallback_path}'. "
+                f"Primary error: {primary_err}. Fallback error: {exc}"
+            ) from exc
+
+    try:
+        yield op
+    finally:
+        op = None
+        if fallback_path is not None and os.path.exists(fallback_path):
+            try:
+                os.remove(fallback_path)
+            except OSError as exc:
+                warnings.warn(
+                    f"{context}: failed to remove fallback operator copy '{fallback_path}' "
+                    f"({type(exc).__name__}: {exc})",
+                    UserWarning,
+                    stacklevel=4,
+                )
 
 
 def _chunk_target_bytes(backed_target_chunk_mb: Optional[float]) -> int:

@@ -16,7 +16,7 @@ from . import _core
 from ._backed_persist import persist_updates
 from ._matrix_source import MatrixSource
 from .anndata_utils import anndata_to_matrix
-from .backed_io import _backed_group_path
+from .backed_io import _backed_group_path, _open_backed_operator
 from .lazy_transform import (
     LazyTransform,
     _resolve_lazy_backed_transform,
@@ -39,22 +39,20 @@ def _run_specificity_backed_sparse(
     """Dispatch backed sparse specificity through the C++ ABI."""
     file_path = str(adata.filename)
     group_path = _backed_group_path(layer)
-    op = None
-    try:
-        op = _core.create_backed_operator(
-            file_path=file_path,
-            group_path=group_path,
-            chunk_size=chunk_size,
-            row_scale_factors=row_scale_factors,
-            apply_log1p=apply_log1p,
-            log_scale=log_scale,
-            n_threads=n_threads,
-        )
+    with _open_backed_operator(
+        adata=adata,
+        file_path=file_path,
+        group_path=group_path,
+        context="compute_feature_specificity_sparse",
+        chunk_size=chunk_size,
+        row_scale_factors=row_scale_factors,
+        apply_log1p=apply_log1p,
+        log_scale=log_scale,
+        n_threads=n_threads,
+    ) as op:
         if H is not None:
             return _core.archetype_feature_specificity_backed_operator(op, H, n_threads)
         return _core.compute_feature_specificity_backed_operator(op, labels_int, n_threads)
-    finally:
-        op = None
 
 
 def _run_specificity_backed_dense(
@@ -72,22 +70,20 @@ def _run_specificity_backed_dense(
     """Dispatch backed dense specificity through the C++ ABI."""
     file_path = str(adata.filename)
     group_path = _backed_group_path(layer)
-    op = None
-    try:
-        op = _core.create_backed_operator(
-            file_path=file_path,
-            group_path=group_path,
-            chunk_size=chunk_size,
-            row_scale_factors=row_scale_factors,
-            apply_log1p=apply_log1p,
-            log_scale=log_scale,
-            n_threads=n_threads,
-        )
+    with _open_backed_operator(
+        adata=adata,
+        file_path=file_path,
+        group_path=group_path,
+        context="compute_feature_specificity_dense",
+        chunk_size=chunk_size,
+        row_scale_factors=row_scale_factors,
+        apply_log1p=apply_log1p,
+        log_scale=log_scale,
+        n_threads=n_threads,
+    ) as op:
         if H is not None:
             return _core.archetype_feature_specificity_backed_dense_operator(op, H, n_threads)
         return _core.compute_feature_specificity_backed_dense_operator(op, labels_int, n_threads)
-    finally:
-        op = None
 
 
 def _encode_labels_for_specificity(labels_arr: np.ndarray, n_obs: int) -> np.ndarray:

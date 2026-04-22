@@ -1,4 +1,6 @@
 ## Primary
+* NaN and Inf support for _anndata_io
+* Improve anndata import
 * Recreate LazyTransform from uns
 * Numerical precision inconsistency
   * Mix of float32 and float64 (mainly in operator, sometimes in-mem) causes drift within and across modes

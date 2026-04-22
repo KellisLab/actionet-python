@@ -13,9 +13,9 @@ from ._matrix_source import MatrixSource
 from .backed_io import (
     _backed_group_path,
     _chunk_target_bytes,
-    _flush_backed_handle,
     _is_backed_matrix,
     _maybe_decompress_backed_path,
+    _open_backed_operator,
     _resolve_backed_handle,
     _warn_if_compressed_backed_svd,
 )
@@ -193,11 +193,9 @@ def reduce_kernel(
             lazy_transform=lazy_transform,
             backed_chunk_size=backed_chunk_size,
         )
-        _flush_backed_handle(adata, context="reduce_kernel")
         selected_algorithm = _select_svd_algorithm_backed(algorithm_name, verbose)
         io_target_chunk_bytes = _chunk_target_bytes(backed_target_chunk_mb)
         temp_path: Optional[str] = None
-        op = None
         file_path = str(adata.filename)
         try:
             temp_path = _maybe_decompress_backed_path(
@@ -211,31 +209,31 @@ def reduce_kernel(
             if temp_path is not None:
                 file_path = temp_path
 
-            op = _core.create_backed_operator(
+            with _open_backed_operator(
+                adata=adata,
                 file_path=file_path,
                 group_path=_backed_group_path(layer),
+                context="reduce_kernel",
                 chunk_size=backed_chunk_size,
                 row_scale_factors=row_scale_factors,
                 apply_log1p=apply_log1p,
                 log_scale=log_scale,
                 io_target_chunk_bytes=io_target_chunk_bytes,
                 n_threads=backed_n_threads,
-            )
-
-            if precomputed_svd is None:
-                result = _core.reduce_kernel_backed_operator(
-                    op, n_components, selected_algorithm, max_iter, seed, verbose
-                )
-            else:
-                result = _core.reduce_kernel_from_svd_backed_operator(
-                    op,
-                    precomputed_svd["u"],
-                    precomputed_svd["d"],
-                    precomputed_svd["v"],
-                    verbose,
-                )
+            ) as op:
+                if precomputed_svd is None:
+                    result = _core.reduce_kernel_backed_operator(
+                        op, n_components, selected_algorithm, max_iter, seed, verbose
+                    )
+                else:
+                    result = _core.reduce_kernel_from_svd_backed_operator(
+                        op,
+                        precomputed_svd["u"],
+                        precomputed_svd["d"],
+                        precomputed_svd["v"],
+                        verbose,
+                    )
         finally:
-            op = None
             if temp_path is not None and os.path.exists(temp_path):
                 os.remove(temp_path)
 
@@ -429,13 +427,10 @@ def run_svd(
             lazy_transform=lazy_transform,
             backed_chunk_size=backed_chunk_size,
         ) if source_ctx is not None else (None, False, 1.0)
-        if adata_ctx is not None:
-            _flush_backed_handle(adata_ctx, context="run_svd")
         selected_algorithm = _select_svd_algorithm_backed(algorithm_name, verbose)
         io_target_chunk_bytes = _chunk_target_bytes(backed_target_chunk_mb)
 
         temp_path: Optional[str] = None
-        op = None
         try:
             if adata_ctx is not None:
                 temp_path = _maybe_decompress_backed_path(
@@ -458,21 +453,22 @@ def run_svd(
                     )
                 file_path, group_path = _resolve_backed_handle(matrix)
 
-            op = _core.create_backed_operator(
+            with _open_backed_operator(
+                adata=adata_ctx,
                 file_path=file_path,
                 group_path=group_path,
+                context="run_svd",
                 chunk_size=backed_chunk_size,
                 row_scale_factors=row_scale_factors,
                 apply_log1p=apply_log1p,
                 log_scale=log_scale,
                 io_target_chunk_bytes=io_target_chunk_bytes,
                 n_threads=backed_n_threads,
-            )
-            result = _core.run_svd_backed_operator(
-                op, n_components, max_iter, seed, selected_algorithm, verbose
-            )
+            ) as op:
+                result = _core.run_svd_backed_operator(
+                    op, n_components, max_iter, seed, selected_algorithm, verbose
+                )
         finally:
-            op = None
             if temp_path is not None and os.path.exists(temp_path):
                 os.remove(temp_path)
     elif sp.issparse(matrix):
