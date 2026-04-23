@@ -230,6 +230,21 @@ an.filter_anndata(adata, min_genes=200, min_cells=3)
 ```
 Filter cells and genes by minimum thresholds.
 
+### Guide Calling (Fit-First GMM)
+
+```python
+an.fit_guides_gmm(...)
+an.derive_guide_thresholds(...)
+an.sweep_guide_thresholds(...)
+an.guide_call_gmm(...)
+```
+Fast per-guide 2-component shared-variance GMM calling for `cells x guides` matrices.
+Default behavior is fit-first: fit once, then derive/sweep thresholds post-hoc without refitting.
+
+- Full API docs: `docs/guide_calling.md`
+- Supports in-memory sparse matrices, dense numpy arrays, AnnData, and backed operators.
+- `guide_call_gmm(..., result_mode="auto")` skips fitting when explicit raw thresholds are provided.
+
 ### Dimensionality Reduction
 
 ```python

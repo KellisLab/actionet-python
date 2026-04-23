@@ -125,3 +125,62 @@ class TestImputeFeaturesParity:
                 continue
             corr = np.corrcoef(x, y)[0, 1]
             assert corr >= 0.95, f"impute_features parity failed for {feat}: corr={corr:.4f}"
+
+
+
+
+@requires_ext
+def test_annotate_cells_backed_handles_retryable_open_conflict(tmp_path, monkeypatch):
+    import actionet as an
+    import actionet.annotation as an_annotation
+    import actionet.backed_io as backed_io
+
+    adata = make_test_adata(n_cells=32, n_genes=36, sparse_fmt="csr", seed=123)
+    adata.obsp["actionet"] = sp.eye(adata.n_obs, format="csr")
+    adata_backed = open_backed(tmp_path, adata)
+    markers = _make_markers(36)
+
+    sentinel = object()
+    create_calls = {"count": 0}
+
+    def flaky_create(**kwargs):
+        create_calls["count"] += 1
+        if create_calls["count"] == 1:
+            raise RuntimeError("createBackedOperator: failed to open h5ad file: simulated lock")
+        return sentinel
+
+    monkeypatch.setattr(backed_io, "_create_backed_operator", flaky_create)
+
+    monkeypatch.setattr(
+        an_annotation,
+        "_resolve_lazy_backed_transform",
+        lambda source, lazy_transform=None, backed_chunk_size=4096: (None, False, 1.0),
+    )
+
+    def fake_stats(*, op, G, X, norm_method, alpha, max_it, approx, thread_no):
+        assert op is sentinel
+        n_cells = G.shape[0]
+        n_types = X.shape[1]
+        return np.tile(np.arange(1, n_types + 1, dtype=np.float64), (n_cells, 1))
+
+    monkeypatch.setattr(
+        an_annotation._core,
+        "compute_feature_stats_vision_backed_operator",
+        fake_stats,
+    )
+
+    try:
+        result = an.annotate_cells(
+            adata_backed,
+            markers,
+            method="vision",
+            use_enrichment=False,
+            n_threads=1,
+            backed_chunk_size=8,
+        )
+    finally:
+        adata_backed.file.close()
+
+    assert create_calls["count"] >= 2
+    assert result["enrichment"].shape[0] == 32
+    assert result["enrichment"].shape[1] == len(markers)

@@ -12,7 +12,7 @@ from .specificity import (
     compute_feature_specificity,
 )
 from .lazy_transform import LazyTransform, _validate_lazy_transform, _resolve_lazy_backed_transform
-from .backed_io import _backed_group_path
+from .backed_io import _backed_group_path, _open_backed_operator
 from . import _core
 from ._matrix_source import MatrixSource
 
@@ -414,40 +414,42 @@ def annotate_cells(
             )
             file_path = str(adata.filename)
             group_path = _backed_group_path(layer)
-            op = _core.create_backed_operator(
+            with _open_backed_operator(
+                adata=adata,
                 file_path=file_path,
                 group_path=group_path,
+                context="annotate_cells",
                 chunk_size=backed_chunk_size,
                 row_scale_factors=row_scale_factors,
                 apply_log1p=apply_log1p,
                 log_scale=log_scale,
-            )
-            if use_enrichment:
-                fused = _core.annotate_cells_vision_backed_fused(
-                    op=op,
-                    G=G,
-                    X=X_markers,
-                    norm_method=norm_method_code,
-                    alpha=alpha,
-                    max_it=max_it,
-                    approx=approx,
-                    enrichment_norm_method=1,
-                    thread_no=n_threads,
-                )
-                marker_stats = fused["marker_stats"]
-                _fused_log_pvals = fused["log_pvals"]
-            else:
-                marker_stats = _core.compute_feature_stats_vision_backed_operator(
-                    op=op,
-                    G=G,
-                    X=X_markers,
-                    norm_method=norm_method_code,
-                    alpha=alpha,
-                    max_it=max_it,
-                    approx=approx,
-                    thread_no=n_threads,
-                )
-                _fused_log_pvals = None
+            ) as op:
+                if use_enrichment:
+                    fused = _core.annotate_cells_vision_backed_fused(
+                        op=op,
+                        G=G,
+                        X=X_markers,
+                        norm_method=norm_method_code,
+                        alpha=alpha,
+                        max_it=max_it,
+                        approx=approx,
+                        enrichment_norm_method=1,
+                        thread_no=n_threads,
+                    )
+                    marker_stats = fused["marker_stats"]
+                    _fused_log_pvals = fused["log_pvals"]
+                else:
+                    marker_stats = _core.compute_feature_stats_vision_backed_operator(
+                        op=op,
+                        G=G,
+                        X=X_markers,
+                        norm_method=norm_method_code,
+                        alpha=alpha,
+                        max_it=max_it,
+                        approx=approx,
+                        thread_no=n_threads,
+                    )
+                    _fused_log_pvals = None
         else:
             # ----------------------------------------------------------
             # Vision · in-memory

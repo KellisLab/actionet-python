@@ -46,20 +46,23 @@ def import_anndata_generic(
     gene_table = pd.read_csv(gene_path, sep=sep, header=None, dtype=str)
     if gene_headers is not None:
         gene_table.columns = gene_headers
+    gene_table.index = gene_table.iloc[:, 0].astype(str)
+    gene_table.index.name = None
 
     sample_path = os.path.join(input_path, sample_annotations)
     sample_annots = pd.read_csv(sample_path, sep=sep, header=None, dtype=str)
     if sample_headers is not None:
         sample_annots.columns = sample_headers
-
-    obs_names = sample_annots.iloc[:, 0].tolist()
-    var_names = gene_table.iloc[:, 0].tolist()
+    sample_annots.index = sample_annots.iloc[:, 0].astype(str)
+    sample_annots.index.name = None
 
     mtx_path = os.path.join(input_path, mtx_file)
-    X = mmread(mtx_path).transpose()
-    adata = AnnData(X=csr_matrix(X), obs=sample_annots, var=gene_table)
-    adata.obs_names = obs_names
-    adata.var_names = var_names
+    matrix = mmread(mtx_path, spmatrix=True)
+    if sp.issparse(matrix):
+        X = matrix.tocsc(copy=False).transpose(copy=False)
+    else:
+        X = csr_matrix(np.asarray(matrix).T)
+    adata = AnnData(X=X, obs=sample_annots, var=gene_table)
     adata.obs_names_make_unique(join="_")
     adata.var_names_make_unique(join="_")
 

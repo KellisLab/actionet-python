@@ -628,27 +628,28 @@ class MatrixSource:
     ):
         """Backed fast-path: extract columns via the C++ operator."""
         from . import _core
-        from .backed_io import _backed_group_path
+        from .backed_io import _backed_group_path, _open_backed_operator
 
         file_path = str(self.adata.filename)
         group_path = _backed_group_path(self.layer)
 
-        op = _core.create_backed_operator(
+        with _open_backed_operator(
+            adata=self.adata,
             file_path=file_path,
             group_path=group_path,
+            context="MatrixSource.feature_subset",
             chunk_size=chunk_size,
-        )
+        ) as op:
+            row_arr = None
+            if row_indices is not None:
+                row_arr = np.asarray(row_indices, dtype=np.int64)
 
-        row_arr = None
-        if row_indices is not None:
-            row_arr = np.asarray(row_indices, dtype=np.int64)
-
-        return _core.backed_take_columns(
-            op,
-            feature_indices,
-            row_indices=row_arr,
-            prefer_sparse=prefer_sparse,
-        )
+            return _core.backed_take_columns(
+                op,
+                feature_indices,
+                row_indices=row_arr,
+                prefer_sparse=prefer_sparse,
+            )
 
     # ------------------------------------------------------------------
     # Matrix--vector products

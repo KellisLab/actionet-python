@@ -101,6 +101,13 @@ from .tools import (
     matrix_sums,
 )
 
+from .guide_calling import (
+    fit_guides_gmm,
+    derive_guide_thresholds,
+    sweep_guide_thresholds,
+    guide_call_gmm,
+)
+
 __all__ = [
     "__version__",
     # Core functions
@@ -157,6 +164,10 @@ __all__ = [
     "aggregate_anndata",
     "aggregate_matrix",
     "matrix_sums",
+    "fit_guides_gmm",
+    "derive_guide_thresholds",
+    "sweep_guide_thresholds",
+    "guide_call_gmm",
     "import_anndata_generic",
     "filter_anndata",
     "compute_filter_masks",

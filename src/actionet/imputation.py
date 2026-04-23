@@ -8,7 +8,7 @@ import pandas as pd
 from . import _core
 from .anndata_utils import anndata_to_matrix
 from ._matrix_source import MatrixSource
-from .backed_io import _backed_group_path
+from .backed_io import _backed_group_path, _open_backed_operator
 from .lazy_transform import (
     LazyTransform,
     _resolve_lazy_backed_transform,
@@ -178,19 +178,21 @@ def impute_features(
         )
         file_path = str(adata.filename)
         group_path = _backed_group_path(layer)
-        op = _core.create_backed_operator(
+        with _open_backed_operator(
+            adata=adata,
             file_path=file_path,
             group_path=group_path,
+            context="impute_features",
             chunk_size=backed_chunk_size,
             row_scale_factors=row_scale_factors,
             apply_log1p=apply_log1p,
             log_scale=log_scale,
             n_threads=n_threads,
-        )
-        X0 = np.asarray(
-            _core.backed_take_columns(op, feature_indices, prefer_sparse=False),
-            dtype=np.float64,
-        )
+        ) as op:
+            X0 = np.asarray(
+                _core.backed_take_columns(op, feature_indices, prefer_sparse=False),
+                dtype=np.float64,
+            )
     else:
         S = anndata_to_matrix(adata, layer=layer)  # cells x genes, native
         X0 = S[:, feature_indices]
