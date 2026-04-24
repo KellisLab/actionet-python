@@ -233,6 +233,99 @@ class TestBackedPersist:
         persist_updates(adata, uns={"foo": "bar"})
         assert adata.uns["foo"] == "bar"
 
+    def test_persist_updates_backed_supports_dataframe_in_obsm_and_varm(self, tmp_path):
+        """Backed writes should preserve DataFrame payloads stored in obsm/varm."""
+        adata_mem = make_test_adata(n_cells=12, n_genes=8, sparse_fmt="csr", seed=2)
+        path = tmp_path / "df_slots.h5ad"
+        adata_mem.write_h5ad(path)
+        adata = ad.read_h5ad(path, backed="r+")
+
+        obs_df = pd.DataFrame(
+            {
+                "dc1": np.linspace(0.0, 1.1, adata.n_obs),
+                "dc2": np.linspace(2.0, 3.1, adata.n_obs),
+            },
+            index=adata.obs_names.copy(),
+        )
+        var_df = pd.DataFrame(
+            {"loading": np.linspace(-1.0, 1.0, adata.n_vars)},
+            index=adata.var_names.copy(),
+        )
+
+        persist_updates(
+            adata,
+            obsm={"df_embed": obs_df},
+            varm={"df_loadings": var_df},
+            validate=True,
+        )
+        adata.file.close()
+
+        reloaded = ad.read_h5ad(path)
+        assert isinstance(reloaded.obsm["df_embed"], pd.DataFrame)
+        assert isinstance(reloaded.varm["df_loadings"], pd.DataFrame)
+        pd.testing.assert_index_equal(reloaded.obsm["df_embed"].index, obs_df.index)
+        pd.testing.assert_index_equal(reloaded.varm["df_loadings"].index, var_df.index)
+        pd.testing.assert_index_equal(reloaded.obsm["df_embed"].columns, obs_df.columns)
+        pd.testing.assert_index_equal(reloaded.varm["df_loadings"].columns, var_df.columns)
+        pd.testing.assert_frame_equal(reloaded.obsm["df_embed"], obs_df)
+        pd.testing.assert_frame_equal(reloaded.varm["df_loadings"], var_df)
+        # Explicit column-order round-trip: names must come back as strings, not bytes.
+        assert reloaded.obsm["df_embed"].columns.tolist() == ["dc1", "dc2"]
+        assert reloaded.varm["df_loadings"].columns.tolist() == ["loading"]
+
+    def test_persist_updates_backed_dataframe_overwrite(self, tmp_path):
+        """Overwriting an existing ndarray slot with a DataFrame should succeed."""
+        adata_mem = make_test_adata(n_cells=10, n_genes=6, sparse_fmt="csr", seed=3)
+        path = tmp_path / "overwrite.h5ad"
+        adata_mem.write_h5ad(path)
+        adata = ad.read_h5ad(path, backed="r+")
+
+        arr = np.ones((adata.n_obs, 3), dtype=float)
+        persist_updates(adata, obsm={"slot": arr})
+        adata.file.close()
+
+        adata = ad.read_h5ad(path, backed="r+")
+        df = pd.DataFrame(
+            {"a": np.arange(adata.n_obs, dtype=float)},
+            index=adata.obs_names.copy(),
+        )
+        persist_updates(adata, obsm={"slot": df})
+        adata.file.close()
+
+        reloaded = ad.read_h5ad(path)
+        assert isinstance(reloaded.obsm["slot"], pd.DataFrame)
+        pd.testing.assert_frame_equal(reloaded.obsm["slot"], df)
+
+    def test_persist_updates_backed_dataframe_string_columns(self, tmp_path):
+        """DataFrames with string columns in obsm should round-trip correctly."""
+        adata_mem = make_test_adata(n_cells=8, n_genes=4, sparse_fmt="csr", seed=4)
+        path = tmp_path / "str_cols.h5ad"
+        adata_mem.write_h5ad(path)
+        adata = ad.read_h5ad(path, backed="r+")
+
+        labels = [f"label_{i % 3}" for i in range(adata.n_obs)]
+        df = pd.DataFrame({"cluster": labels}, index=adata.obs_names.copy())
+
+        persist_updates(adata, obsm={"str_embed": df})
+        adata.file.close()
+
+        reloaded = ad.read_h5ad(path)
+        assert isinstance(reloaded.obsm["str_embed"], pd.DataFrame)
+        assert reloaded.obsm["str_embed"]["cluster"].tolist() == labels
+
+    def test_persist_updates_backed_dataframe_rejected_in_obsp(self, tmp_path):
+        """Passing a DataFrame to obsp should raise TypeError."""
+        from actionet.experimental._anndata_io import _write_matrix
+        import h5py
+
+        n = 6
+        df = pd.DataFrame(np.eye(n))
+        tmp_h5 = tmp_path / "reject.h5"
+        with h5py.File(tmp_h5, "w") as f:
+            f.create_group("obsp")
+            with pytest.raises(TypeError, match="only supported in obsm/varm"):
+                _write_matrix(f, "obsp", "conn", df, verbose=False)
+
 
 # ---------------------------------------------------------------------------
 # Validation (_anndata_io)
@@ -283,3 +376,26 @@ class TestValidation:
         mat = np.eye(5)
         with pytest.raises(ValidationError, match="First dimension"):
             _validate_matrix("test", mat, 3, "obsm", "obs", verbose=False)
+
+    def test_validate_matrix_accepts_dataframe(self):
+        from actionet.experimental._anndata_io import _validate_matrix
+        df = pd.DataFrame({"a": [1.0, 2.0, 3.0], "b": [4.0, 5.0, 6.0]})
+        _validate_matrix("test", df, 3, "obsm", "obs", verbose=False)
+
+    def test_validate_matrix_dataframe_nan_names_column(self):
+        from actionet.experimental._anndata_io import (
+            _validate_matrix,
+            ValidationError,
+        )
+        df = pd.DataFrame({"a": [1.0, float("nan"), 3.0]})
+        with pytest.raises(ValidationError, match="Column 'a'.*NaN"):
+            _validate_matrix("test", df, 3, "obsm", "obs", verbose=False)
+
+    def test_validate_matrix_dataframe_shape_mismatch(self):
+        from actionet.experimental._anndata_io import (
+            _validate_matrix,
+            ValidationError,
+        )
+        df = pd.DataFrame({"a": [1.0, 2.0, 3.0]})
+        with pytest.raises(ValidationError, match="First dimension"):
+            _validate_matrix("test", df, 5, "obsm", "obs", verbose=False)
