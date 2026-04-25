@@ -866,6 +866,8 @@ def _write_dense_subsetted(
     compression_policy: dict | None = None,
 ):
     """Write a row/col-subsetted dense matrix to *f[h5_key]* in chunks."""
+    if hasattr(matrix, "to_numpy"):
+        matrix = matrix.to_numpy()
     n_out = obs_idx.size
     n_vars_out = var_idx.size if var_idx is not None else matrix.shape[1]
     out_dtype = np.dtype(getattr(matrix, "dtype", np.float64))
@@ -1016,18 +1018,23 @@ def _write_filtered_backed(
                         continue
                     mat = container[k]
                     if mat is not None:
-                        emb_policy = None
-                        if h5file is not None and name in h5file and k in h5file[name]:
-                            emb_policy = get_matrix_compression_policy(h5file[name][k])
-                        _write_subsetted_matrix(
-                            f,
-                            f"{name}/{k}",
-                            mat,
-                            idx,
-                            None,
-                            chunk_size,
-                            compression_policy=emb_policy,
-                        )
+                        import pandas as pd
+                        if isinstance(mat, pd.DataFrame):
+                            mat_sub = mat.iloc[idx]
+                            _write_dataframe_to_h5(f, f"{name}/{k}", mat_sub)
+                        else:
+                            emb_policy = None
+                            if h5file is not None and name in h5file and k in h5file[name]:
+                                emb_policy = get_matrix_compression_policy(h5file[name][k])
+                            _write_subsetted_matrix(
+                                f,
+                                f"{name}/{k}",
+                                mat,
+                                idx,
+                                None,
+                                chunk_size,
+                                compression_policy=emb_policy,
+                            )
 
         # -- obsp / varp (pairwise, row+col subsetted) -------------------
         for container, idx, is_identity, name in [
