@@ -275,6 +275,7 @@ def annotate_cells(
     ignore_baseline: bool = False,
     use_enrichment: bool = True,
     use_lpa: bool = False,
+    return_log_pvals: bool = False,
     n_threads: int = 0,
     backed_chunk_size: int = 4096,
     lazy_transform: Optional[LazyTransform] = None,
@@ -318,6 +319,9 @@ def annotate_cells(
         Use graph-based label enrichment for final assignment.
     use_lpa : bool, optional (default: False)
         Apply label propagation algorithm to correct labels.
+    return_log_pvals : bool, optional (default: False)
+        If True, include the raw graph-enriched log p-value matrix in the
+        result under the key ``"log_pvals"``.
     n_threads : int, optional (default: 0)
         Number of threads (0 = auto).
     backed_chunk_size : int, optional (default: 4096)
@@ -337,8 +341,12 @@ def annotate_cells(
         Dictionary with keys:
         - "labels": Inferred cell type labels (array of length n_cells)
         - "confidence": Confidence scores for labels (array of length n_cells)
-        - "enrichment": Cell type score matrix (n_cells × n_celltypes)
+        - "enrichment": Cell type score DataFrame (n_cells × n_celltypes), indexed by
+          ``adata.obs_names`` with columns named by cell type
         - "labels_corrected": (optional) LPA-corrected labels if use_lpa=True
+        - "log_pvals": (optional) Graph-enriched log p-value DataFrame (n_cells × n_celltypes),
+          same shape and index/columns as ``"enrichment"``, present only when
+          return_log_pvals=True
 
     Examples
     --------
@@ -567,7 +575,7 @@ def annotate_cells(
         raise ValueError(f"Unknown method: {method}")
 
     # marker_stats is cells × celltypes
-    enrichment = np.nan_to_num(marker_stats, nan=0.0, posinf=0.0, neginf=0.0)
+    enrichment_arr = np.nan_to_num(marker_stats, nan=0.0, posinf=0.0, neginf=0.0)
 
     # Compute labels and confidence
     celltype_arr = np.asarray(celltype_names)
@@ -576,22 +584,39 @@ def annotate_cells(
             log_pvals = _fused_log_pvals
         else:
             Gn = _core.normalize_graph(G, norm_method=1).T
-            marker_stats_pos = np.maximum(enrichment, 0)
+            marker_stats_pos = np.maximum(enrichment_arr, 0)
             log_pvals = _core.compute_graph_label_enrichment(Gn, marker_stats_pos, n_threads)
 
         labels_idx = np.argmax(log_pvals, axis=1)
         confidence = np.max(log_pvals, axis=1)
     else:
-        labels_idx = np.argmax(enrichment, axis=1)
-        confidence = np.max(enrichment, axis=1)
+        labels_idx = np.argmax(enrichment_arr, axis=1)
+        confidence = np.max(enrichment_arr, axis=1)
+        if return_log_pvals:
+            Gn = _core.normalize_graph(G, norm_method=1).T
+            marker_stats_pos = np.maximum(enrichment_arr, 0)
+            log_pvals = _core.compute_graph_label_enrichment(Gn, marker_stats_pos, n_threads)
 
     labels = celltype_arr[labels_idx]
+
+    enrichment = pd.DataFrame(
+        enrichment_arr,
+        index=adata.obs_names,
+        columns=celltype_names,
+    )
 
     result = {
         "labels": labels,
         "confidence": confidence,
         "enrichment": enrichment,
     }
+
+    if return_log_pvals:
+        result["log_pvals"] = pd.DataFrame(
+            log_pvals,
+            index=adata.obs_names,
+            columns=celltype_names,
+        )
 
     # Optional label propagation
     if use_lpa:

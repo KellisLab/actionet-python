@@ -1,17 +1,14 @@
 ## Primary
 * NaN and Inf support for _anndata_io
-* Improve anndata import
 * Recreate LazyTransform from uns
 * Numerical precision inconsistency
   * Mix of float32 and float64 (mainly in operator, sometimes in-mem) causes drift within and across modes
   * C++ uses 64-bit, R/Rcpp does also — always consistent
 * Fix R/Python result parity
-* Change output from numpy to pandas (annotate_*)
 * Reorganize and consolidate code
   * Audit for dead functions
 * Interactive cell selector
 * UMAP points have no stroke
-* Remove violin boxplots? Quantiles don't align.
 * `compute_archetype_feature_specificity()`: `key_added` > `key_prefix`
 
 ## Secondary
@@ -47,3 +44,5 @@
 * Add 3D to plotly
 * Optionally omit C_* and specificity matrices to reduce object size
 * Document everything (OpenMP hard requirement, README overhaul, context files updated)
+* annotate_cells enrichment → DataFrame
+* Fixed violin/boxplot alignment

@@ -143,12 +143,37 @@ def _validate_obs_var_column(col, values, expected_len, df_name, verbose):
 def _validate_matrix(key, array, expected_first_dim, container_name, axis_name, verbose):
     """Validate obsm, varm, or similar matrix.
 
-    Accepts dense ``np.ndarray`` and ``scipy.sparse`` matrices -- any format
-    that AnnData itself allows in ``obsm`` / ``varm``.
+    Accepts dense ``np.ndarray`` and ``scipy.sparse`` matrices. For
+    ``obsm``/``varm`` payloads, ``pd.DataFrame`` is also accepted and will be
+    coerced via ``np.asarray`` for shape/value validation.
     """
     is_sparse = sparse.issparse(array)
 
     if not is_sparse and not isinstance(array, np.ndarray):
+        if isinstance(array, pd.DataFrame):
+            # Validate shape directly on the DataFrame, then run per-column
+            # NaN/inf checks so error messages include the offending column name.
+            if array.shape[0] != expected_first_dim:
+                raise ValidationError(
+                    f"{container_name}['{key}']: First dimension must match "
+                    f"n_{axis_name}={expected_first_dim}, got {array.shape[0]}"
+                )
+            for col in array.columns:
+                col_vals = array[col]
+                if pd.api.types.is_float_dtype(col_vals):
+                    if col_vals.isna().any():
+                        raise ValidationError(
+                            f"{container_name}['{key}']: Column '{col}' contains NaN values"
+                        )
+                    if np.isinf(col_vals).any():
+                        raise ValidationError(
+                            f"{container_name}['{key}']: Column '{col}' contains infinite values"
+                        )
+            if verbose:
+                print(f"[INFO]   ✓ {container_name}['{key}']: DataFrame, "
+                      f"shape={array.shape}, columns={list(array.columns)}")
+            return
+
         # Attempt coercion; AnnData occasionally stores pd.DataFrame in obsm.
         try:
             array = np.asarray(array)
@@ -926,7 +951,7 @@ def _write_dataframe_column(f, df_name, col, values, verbose):
 
 def _write_matrix(f, container_name, key, matrix, verbose, compression_kwargs=None):
     """
-    Write a matrix to obsm, varm, obsp, varp, or layers in HDF5.
+    Write a matrix-like payload to obsm, varm, obsp, varp, or layers in HDF5.
 
     Parameters
     ----------
@@ -936,8 +961,10 @@ def _write_matrix(f, container_name, key, matrix, verbose, compression_kwargs=No
         Name of the container ('obsm', 'varm', 'obsp', 'varp', 'layers')
     key : str
         Key name for the matrix
-    matrix : np.ndarray or sparse matrix
-        Matrix to store
+    matrix : np.ndarray, sparse matrix, or pd.DataFrame
+        Payload to store. ``pd.DataFrame`` is supported only for ``obsm`` and
+        ``varm`` and is written as an AnnData-compatible dataframe group so
+        row/column labels are preserved on reload.
     verbose : bool
         Print progress messages
     compression_kwargs : dict or None
@@ -970,8 +997,17 @@ def _write_matrix(f, container_name, key, matrix, verbose, compression_kwargs=No
     if h5_key in f:
         del f[h5_key]
 
+    # DataFrame payloads are valid in obsm/varm and should keep labeled
+    # columns/index instead of being downgraded to plain ndarrays.
+    if isinstance(matrix, pd.DataFrame):
+        if container_name not in ("obsm", "varm"):
+            raise TypeError(
+                f"{container_name}['{key}']: pandas DataFrame is only supported in obsm/varm"
+            )
+        _write_dataframe_to_h5(f, h5_key, matrix, compression_kwargs=compression_kwargs)
+
     # Handle sparse matrices
-    if sparse.issparse(matrix):
+    elif sparse.issparse(matrix):
         # Convert to CSR format for storage
         matrix = matrix.tocsr()
 
@@ -1011,7 +1047,7 @@ def _write_matrix(f, container_name, key, matrix, verbose, compression_kwargs=No
         print(f"[INFO]   Added {container_name}['{key}']")
 
 
-def _write_dataframe_to_h5(f, key, df):
+def _write_dataframe_to_h5(f, key, df, compression_kwargs=None):
     """
     Write a pandas DataFrame to an HDF5 file in AnnData-compatible format.
 
@@ -1023,14 +1059,20 @@ def _write_dataframe_to_h5(f, key, df):
         Key path where DataFrame should be stored
     df : pd.DataFrame
         DataFrame to store
+    compression_kwargs : dict or None
+        Optional h5py ``create_dataset`` compression kwargs forwarded to
+        data-column datasets.  Metadata datasets (_index, codes, categories)
+        are never compressed.
     """
+    if compression_kwargs is None:
+        compression_kwargs = {}
     grp = f.create_group(key)
 
     # Set encoding attributes
     grp.attrs['encoding-type'] = 'dataframe'
     grp.attrs['encoding-version'] = '0.2.0'
     grp.attrs['_index'] = '_index'
-    grp.attrs['column-order'] = np.array(df.columns.tolist(), dtype='S') if len(df.columns) else np.array([], dtype='S')
+    grp.attrs['column-order'] = np.array(df.columns.tolist(), dtype=object) if len(df.columns) else np.array([], dtype=object)
 
     # Store index - convert to string array for HDF5
     index_values = np.array([str(x) for x in df.index], dtype='S')
@@ -1067,11 +1109,11 @@ def _write_dataframe_to_h5(f, key, df):
 
             if values.dtype == object or values.dtype.kind == 'U':
                 # String column
-                ds = f.create_dataset(col_key, data=values.astype('S'))
+                ds = f.create_dataset(col_key, data=values.astype('S'), **compression_kwargs)
                 ds.attrs['encoding-type'] = 'string-array'
                 ds.attrs['encoding-version'] = '0.2.0'
             else:
                 # Numeric column
-                ds = f.create_dataset(col_key, data=values.values)
+                ds = f.create_dataset(col_key, data=values.values, **compression_kwargs)
                 ds.attrs['encoding-type'] = 'array'
                 ds.attrs['encoding-version'] = '0.2.0'

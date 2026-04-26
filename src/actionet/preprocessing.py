@@ -912,6 +912,11 @@ def compute_filter_masks(
     obs_mask : ndarray of bool, shape ``(n_obs,)``
     var_mask : ndarray of bool, shape ``(n_vars,)``
     """
+    if min_feats_per_cell is not None and min_feats_per_cell == 0:
+        min_feats_per_cell = None
+    if min_cells_per_feat is not None and min_cells_per_feat == 0:
+        min_cells_per_feat = None
+
     source = MatrixSource(adata, layer=layer_name)
 
     obs_idx = np.arange(source.n_obs, dtype=np.int64)
