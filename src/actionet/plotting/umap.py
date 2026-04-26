@@ -42,7 +42,7 @@ class _ActionetRasterFigureMixin:
 
     def _repr_png_(self):
         buf = io.BytesIO()
-        self.savefig(buf, format="png", bbox_inches="tight")
+        self.savefig(buf, format="png")
         return buf.getvalue()
 
     def _repr_mimebundle_(self, include=None, exclude=None):
@@ -307,7 +307,7 @@ def _rgba_values(
 
 
 def _style_raster_axes(ax, *, title: Optional[str]) -> None:
-    ax.set_aspect("equal", adjustable="box")
+    ax.set_aspect("equal", adjustable="datalim")
     ax.set_xticks([])
     ax.set_yticks([])
     for spine in ax.spines.values():
@@ -335,7 +335,7 @@ def _new_raster_figure(
     class _ActionetRasterFigure(_ActionetRasterFigureMixin, Figure):
         pass
 
-    fig = _ActionetRasterFigure(figsize=figsize, dpi=fig_dpi, facecolor="white")
+    fig = _ActionetRasterFigure(figsize=figsize, dpi=fig_dpi, facecolor="white", layout="constrained")
     FigureCanvasAgg(fig)
     return fig
 
