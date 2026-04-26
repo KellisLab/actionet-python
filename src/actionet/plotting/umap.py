@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import io
 from dataclasses import dataclass
 from typing import Any, Literal, Optional, Sequence, Union
 
@@ -35,18 +34,6 @@ class _PreparedUmapContext:
     alpha_arg: Optional[float]
     width_px: float
     height_px: float
-
-
-class _ActionetRasterFigureMixin:
-    """Provide a PNG-rich display hook for notebook frontends."""
-
-    def _repr_png_(self):
-        buf = io.BytesIO()
-        self.savefig(buf, format="png")
-        return buf.getvalue()
-
-    def _repr_mimebundle_(self, include=None, exclude=None):
-        return {"image/png": self._repr_png_()}, {}
 
 
 def _prepare_alpha(alpha: Union[float, Sequence[float]], n_obs: int) -> np.ndarray:
@@ -321,25 +308,6 @@ def _raster_marker_area(size: float) -> float:
     return size * size
 
 
-def _new_raster_figure(
-    *,
-    figsize: tuple[float, float],
-    fig_dpi: float,
-):
-    try:
-        from matplotlib.backends.backend_agg import FigureCanvasAgg
-        from matplotlib.figure import Figure
-    except ImportError as exc:  # pragma: no cover - optional dependency
-        raise ImportError("matplotlib is required for raster UMAP plotting.") from exc
-
-    class _ActionetRasterFigure(_ActionetRasterFigureMixin, Figure):
-        pass
-
-    fig = _ActionetRasterFigure(figsize=figsize, dpi=fig_dpi, facecolor="white", layout="constrained")
-    FigureCanvasAgg(fig)
-    return fig
-
-
 def _render_umap_raster(
     ax,
     ctx: _PreparedUmapContext,
@@ -359,15 +327,11 @@ def _render_umap_raster(
     nudge_text_labels: bool,
 ) -> None:
     try:
-        from matplotlib.backends.backend_agg import FigureCanvasAgg
         from matplotlib.cm import ScalarMappable
         from matplotlib.colors import LinearSegmentedColormap, Normalize
         from matplotlib.lines import Line2D
     except ImportError as exc:  # pragma: no cover - optional dependency
         raise ImportError("matplotlib is required for raster UMAP plotting.") from exc
-
-    if ax.figure.canvas is None:  # pragma: no branch - canvas exists for direct Figure() usage
-        FigureCanvasAgg(ax.figure)
 
     marker_area = _raster_marker_area(size)
     per_point_alpha = ctx.alpha_values if ctx.alpha_is_array else None
@@ -387,6 +351,7 @@ def _render_umap_raster(
             c=rgba,
             linewidths=0,
             edgecolors="none",
+            rasterized=True,
         )
 
     elif ctx.kind == "rgb":
@@ -404,6 +369,7 @@ def _render_umap_raster(
             c=rgba,
             linewidths=0,
             edgecolors="none",
+            rasterized=True,
         )
 
     elif ctx.kind == "categorical":
@@ -432,6 +398,7 @@ def _render_umap_raster(
             c=rgba,
             linewidths=0,
             edgecolors="none",
+            rasterized=True,
         )
 
         if add_text_labels and not plot_df.empty:
@@ -496,6 +463,7 @@ def _render_umap_raster(
                     c=rgba,
                     linewidths=0,
                     edgecolors="none",
+                    rasterized=True,
                 )
             else:
                 ax.scatter(
@@ -508,6 +476,7 @@ def _render_umap_raster(
                     alpha=scalar_alpha,
                     linewidths=0,
                     edgecolors="none",
+                    rasterized=True,
                 )
 
         if not na_df.empty:
@@ -525,6 +494,7 @@ def _render_umap_raster(
                 c=rgba,
                 linewidths=0,
                 edgecolors="none",
+                rasterized=True,
             )
 
         if legend and not non_na.empty:
@@ -795,11 +765,37 @@ def plot_umap_raster(
     add_text_labels: bool = False,
     label_text_size: float = 9.0,
     nudge_text_labels: bool = False,
+    ax=None,
 ) -> Any:
-    """Plot a rasterized static UMAP embedding using Matplotlib Agg."""
+    """Plot a rasterized UMAP embedding using Matplotlib.
 
-    fig = _new_raster_figure(figsize=figsize, fig_dpi=fig_dpi)
-    ax = fig.add_subplot(111)
+    Scatter artists are drawn with ``rasterized=True`` so that point clouds
+    are embedded as bitmaps when saving to PDF or SVG while all other
+    elements (axes, legends, colorbars) remain crisp vectors.  The active
+    Matplotlib backend is used unchanged, making this compatible with
+    Jupyter, VS Code, interactive Qt/Tk sessions, and headless HPC
+    environments alike.
+
+    Parameters
+    ----------
+    ax
+        An existing :class:`matplotlib.axes.Axes` to draw into.  When
+        provided, ``figsize`` and ``fig_dpi`` are ignored and the figure
+        that owns *ax* is returned.  When ``None`` (default) a new figure
+        is created via :class:`matplotlib.figure.Figure` (not registered
+        with pyplot, so the inline backend renders it exactly once).
+    """
+    if ax is None:
+        try:
+            from matplotlib.backends.backend_agg import FigureCanvasAgg
+            from matplotlib.figure import Figure
+        except ImportError as exc:  # pragma: no cover - optional dependency
+            raise ImportError("matplotlib is required for raster UMAP plotting.") from exc
+        fig = Figure(figsize=figsize, dpi=fig_dpi, facecolor="white", layout="constrained")
+        FigureCanvasAgg(fig)
+        ax = fig.add_subplot(111)
+    else:
+        fig = ax.figure
 
     ctx = _prepare_umap_context(
         adata,

@@ -18,7 +18,6 @@ from ..lazy_transform import (
 )
 from .. import _core
 from .umap import (
-    _new_raster_figure,
     _prepare_umap_context,
     _render_umap_raster,
     plot_umap,
@@ -422,13 +421,21 @@ def plot_feature_expression_raster(
         )
 
     if single_plot and len(out) > 1:
+        try:
+            from matplotlib.backends.backend_agg import FigureCanvasAgg
+            from matplotlib.figure import Figure
+        except ImportError as exc:  # pragma: no cover - optional dependency
+            raise ImportError("matplotlib is required for raster UMAP plotting.") from exc
         nrow, ncol = _grid_shape(len(out))
         panel_width = 6.0
         panel_height = 5.0
-        fig = _new_raster_figure(
+        fig = Figure(
             figsize=(panel_width * ncol, panel_height * nrow),
-            fig_dpi=100.0,
+            dpi=100.0,
+            facecolor="white",
+            layout="constrained",
         )
+        FigureCanvasAgg(fig)
         axes = np.asarray(fig.subplots(nrow, ncol, squeeze=False))
         scale_size = size / max(nrow, 1)
 

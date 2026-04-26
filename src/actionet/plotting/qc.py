@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import io
 from typing import TYPE_CHECKING, Any, Literal, Optional, Sequence, Union
 
 import numpy as np
@@ -972,12 +971,7 @@ def _new_violin_raster_figure(
     except ImportError as exc:
         raise ImportError("matplotlib is required for raster violin plotting.") from exc
 
-    from .umap import _ActionetRasterFigureMixin
-
-    class _ActionetViolinFigure(_ActionetRasterFigureMixin, Figure):
-        pass
-
-    fig = _ActionetViolinFigure(figsize=figsize, dpi=fig_dpi, facecolor="white")
+    fig = Figure(figsize=figsize, dpi=fig_dpi, facecolor="white")
     FigureCanvasAgg(fig)
     return fig
 
@@ -1004,8 +998,8 @@ def _build_violin_raster(
     ``scipy.stats.gaussian_kde``, draws mirrored violin polygons with
     ``ax.fill_betweenx``, and optionally overlays a compact boxplot via
     ``ax.boxplot``.  All rendering is done with the Agg backend so no display
-    is required.  The returned figure displays as a PNG in Jupyter via the
-    ``_repr_png_`` / ``_repr_mimebundle_`` hooks.
+    is required.  The returned figure renders as PNG in Jupyter via
+    matplotlib's built-in ``_repr_png_`` hook.
     """
     from scipy.stats import gaussian_kde
 
