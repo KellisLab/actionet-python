@@ -275,6 +275,7 @@ def annotate_cells(
     ignore_baseline: bool = False,
     use_enrichment: bool = True,
     use_lpa: bool = False,
+    return_log_pvals: bool = False,
     n_threads: int = 0,
     backed_chunk_size: int = 4096,
     lazy_transform: Optional[LazyTransform] = None,
@@ -318,6 +319,9 @@ def annotate_cells(
         Use graph-based label enrichment for final assignment.
     use_lpa : bool, optional (default: False)
         Apply label propagation algorithm to correct labels.
+    return_log_pvals : bool, optional (default: False)
+        If True, include the raw graph-enriched log p-value matrix in the
+        result under the key ``"log_pvals"``.
     n_threads : int, optional (default: 0)
         Number of threads (0 = auto).
     backed_chunk_size : int, optional (default: 4096)
@@ -340,6 +344,9 @@ def annotate_cells(
         - "enrichment": Cell type score DataFrame (n_cells × n_celltypes), indexed by
           ``adata.obs_names`` with columns named by cell type
         - "labels_corrected": (optional) LPA-corrected labels if use_lpa=True
+        - "log_pvals": (optional) Graph-enriched log p-value DataFrame (n_cells × n_celltypes),
+          same shape and index/columns as ``"enrichment"``, present only when
+          return_log_pvals=True
 
     Examples
     --------
@@ -585,6 +592,10 @@ def annotate_cells(
     else:
         labels_idx = np.argmax(enrichment_arr, axis=1)
         confidence = np.max(enrichment_arr, axis=1)
+        if return_log_pvals:
+            Gn = _core.normalize_graph(G, norm_method=1).T
+            marker_stats_pos = np.maximum(enrichment_arr, 0)
+            log_pvals = _core.compute_graph_label_enrichment(Gn, marker_stats_pos, n_threads)
 
     labels = celltype_arr[labels_idx]
 
@@ -599,6 +610,13 @@ def annotate_cells(
         "confidence": confidence,
         "enrichment": enrichment,
     }
+
+    if return_log_pvals:
+        result["log_pvals"] = pd.DataFrame(
+            log_pvals,
+            index=adata.obs_names,
+            columns=celltype_names,
+        )
 
     # Optional label propagation
     if use_lpa:
