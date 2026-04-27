@@ -778,12 +778,70 @@ def plot_umap_raster(
 
     Parameters
     ----------
+    adata
+        AnnData with a 2D embedding in ``adata.obsm[basis]``.
+    color
+        Color key string or vector-like values with length ``adata.n_obs``.
+    color_source
+        When ``color`` is a key string, where to resolve it from: ``"obs"`` or ``"obsm"``.
+    color_type
+        Override the automatic color classification. ``"auto"`` (default) infers the type
+        from the data: numeric arrays become continuous gradients, string/category arrays
+        become discrete. Use ``"categorical"`` to force discrete coloring for numeric
+        labels such as Leiden cluster integers. Use ``"continuous"`` to force gradient
+        coloring regardless of dtype.
+    basis
+        Key in ``adata.obsm`` containing 2D coordinates.
+    cmap
+        Continuous colormap name or list of colors for gradients.
+    palette
+        Discrete palette name, list of colors, or dict mapping category to color.
+    size
+        Marker size (points² area passed to ``scatter``).
+    alpha
+        Scalar alpha or per-point alpha vector (length ``adata.n_obs``).
+    legend
+        Whether to show the legend.
+    figsize
+        Figure size in inches as ``(width, height)``.
+    fig_dpi
+        Resolution in dots per inch for the created figure.
+    title
+        Optional plot title.
+    vmin, vmax
+        Optional clamping bounds for continuous values.
+    order
+        Overplot ordering: ``"random"``, ``"sort"`` (ascending), or explicit indices.
+        Continuous plots default to ``"sort"`` when ``None``.
+    na_color
+        Color for missing values when categorical or continuous values contain NA.
+    trans_attr
+        Continuous attribute used to compute point transparency.
+    trans_fac
+        Transparency scale factor for the logistic mapping.
+    trans_th
+        Z-score threshold for transparency mapping.
+    hide_na
+        If True, remove points with missing categorical labels.
+    color_slot
+        If no color specified, try ``adata.obsm[color_slot]`` for RGB colors.
+    add_text_labels
+        If True, add categorical label text at cluster centers.
+    label_text_size
+        Font size for text labels (points).
+    nudge_text_labels
+        If True, apply a small offset to label positions.
     ax
         An existing :class:`matplotlib.axes.Axes` to draw into.  When
         provided, ``figsize`` and ``fig_dpi`` are ignored and the figure
         that owns *ax* is returned.  When ``None`` (default) a new figure
         is created via :class:`matplotlib.figure.Figure` (not registered
         with pyplot, so the inline backend renders it exactly once).
+
+    Returns
+    -------
+    matplotlib.figure.Figure
+        The figure containing the plot.
     """
     if ax is None:
         try:
@@ -839,15 +897,14 @@ def plot_umap_interactive(
     color_source: Optional[Literal["obs", "obsm"]] = "obs",
     color_type: Optional[Literal["auto", "categorical", "continuous"]] = "auto",
     basis: str = "umap_2d_actionet",
-    palette: Optional[Union[str, Sequence[str], dict]] = "tab20",
     cmap: Optional[Union[str, Sequence[str]]] = "magma",
+    palette: Optional[Union[str, Sequence[str], dict]] = "tab20",
     size: float = 3,
     alpha: Union[float, Sequence[float]] = 1,
     legend: bool = True,
     hover_data: Optional[Sequence[str]] = None,
     title: Optional[str] = None,
-    width: Optional[int] = 600,
-    height: Optional[int] = 500,
+    figsize: tuple[Optional[int], Optional[int]] = (600, 500),
     vmin: Optional[float] = None,
     vmax: Optional[float] = None,
     na_color: str = "#cccccc",
@@ -873,10 +930,10 @@ def plot_umap_interactive(
         from the data. Use ``"categorical"`` or ``"continuous"`` to force a specific mode.
     basis
         Key in ``adata.obsm`` containing 2D coordinates.
-    palette
-        Discrete palette name, list of colors, or dict mapping category to color.
     cmap
         Continuous colormap name or list of colors for gradients.
+    palette
+        Discrete palette name, list of colors, or dict mapping category to color.
     size
         Marker size in pixels.
     alpha
@@ -887,10 +944,9 @@ def plot_umap_interactive(
         Additional columns from ``adata.obs`` to include in hover tooltips.
     title
         Optional plot title.
-    width
-        Figure width in pixels. Set to ``None`` for responsive (full-width) layout.
-    height
-        Figure height in pixels. Set to ``None`` for responsive layout.
+    figsize
+        Figure size as ``(width, height)`` in **pixels**. Pass ``None`` for either
+        dimension to use a responsive (full-width or full-height) layout.
     vmin, vmax
         Optional clamping bounds for continuous values.
     na_color
@@ -1017,8 +1073,8 @@ def plot_umap_interactive(
         )
         fig.update_traces(marker={"size": size, "opacity": scalar_alpha, "line": {"width": 0}})
         fig.update_layout(
-            width=width,
-            height=height,
+            width=figsize[0],
+            height=figsize[1],
             scene={
                 "xaxis": _axis_hidden_3d,
                 "yaxis": _axis_hidden_3d,
@@ -1043,8 +1099,8 @@ def plot_umap_interactive(
         )
         fig.update_traces(marker={"size": size, "opacity": scalar_alpha})
         fig.update_layout(
-            width=width,
-            height=height,
+            width=figsize[0],
+            height=figsize[1],
             xaxis=_axis_hidden,
             yaxis=_axis_hidden,
             plot_bgcolor="white",
