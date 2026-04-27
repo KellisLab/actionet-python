@@ -294,7 +294,7 @@ def _rgba_values(
 
 
 def _style_raster_axes(ax, *, title: Optional[str]) -> None:
-    ax.set_aspect("equal", adjustable="datalim")
+    ax.set_aspect("equal", adjustable="box")
     ax.set_xticks([])
     ax.set_yticks([])
     for spine in ax.spines.values():
@@ -423,11 +423,14 @@ def _render_umap_raster(
                 for label in legend_labels
             ]
             if handles:
+                ncol = 1 + len(handles) // 20
                 ax.legend(
                     handles=handles,
                     loc="center left",
                     bbox_to_anchor=(1.02, 0.5),
                     frameon=False,
+                    ncol=ncol,
+                    fontsize=max(6.0, 9.0 - 0.5 * (ncol - 1)),
                 )
 
     else:
