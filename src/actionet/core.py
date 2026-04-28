@@ -2,6 +2,7 @@
 
 from typing import Literal, Optional, Union
 import numpy as np
+import pandas as pd
 import scipy.sparse as sp
 from anndata import AnnData
 
@@ -314,6 +315,182 @@ def compute_network_diffusion(
     # never pay for a full copy on a validation failure or a raw-return path.
     adata = X if inplace else X.copy()
     persist_updates(adata, obsm={key_added: X_diffused})
+    if not inplace:
+        return adata
+    return None
+
+
+def compute_network_centrality(
+    X: Union[AnnData, sp.spmatrix],
+    algorithm: Literal["coreness", "pagerank", "local_coreness", "local_pagerank"] = "coreness",
+    labels: Union[str, np.ndarray, None] = None,
+    alpha: float = 0.9,
+    max_iter: int = 5,
+    tol: float = 1e-8,
+    n_threads: int = 0,
+    network_key: str = "actionet",
+    key_added: Optional[str] = None,
+    return_raw: bool = False,
+    inplace: bool = True,
+) -> Optional[Union[AnnData, np.ndarray]]:
+    """
+    Compute network centrality scores.
+
+    Supports global measures (coreness, PageRank) and label-aware local
+    variants (local coreness, local PageRank).
+
+    Parameters
+    ----------
+    X
+        Either an AnnData object (network looked up from ``X.obsp[network_key]``)
+        or a raw sparse graph matrix.  When a sparse matrix is passed, the
+        result is always returned as a raw array regardless of ``return_raw``;
+        ``inplace``, ``key_added``, and ``network_key`` are ignored.
+    algorithm
+        Centrality algorithm:
+
+        * ``"coreness"`` -- k-shell decomposition.
+        * ``"pagerank"`` -- global PageRank (uniform teleport).
+        * ``"local_coreness"`` -- per-label subgraph coreness (requires
+          ``labels``).
+        * ``"local_pagerank"`` -- per-label PageRank, taking the maximum
+          across labels per cell (requires ``labels``).
+    labels
+        Cell-level labels required for ``local_coreness`` and
+        ``local_pagerank``.  When ``X`` is an AnnData, this may be a string
+        key into ``X.obs``; otherwise it must be an array-like of length
+        ``n_cells``.  Ignored for global algorithms.
+    alpha
+        Damping factor for PageRank variants (clamped to [0, 0.99]).
+    max_iter
+        Maximum diffusion iterations (PageRank variants only).
+    tol
+        Convergence tolerance (PageRank variants only).
+    n_threads
+        Number of threads (0 = auto).
+    network_key
+        Key in ``X.obsp`` containing the graph.  Ignored when ``X`` is a
+        sparse matrix.
+    key_added
+        Key to store centrality in ``X.obs``.  Defaults to
+        ``"{algorithm}_{network_key}"``.  Ignored when ``return_raw=True``
+        or when ``X`` is a sparse matrix.
+    return_raw
+        If ``True``, return the centrality array directly without writing
+        to the AnnData.  Always treated as ``True`` when ``X`` is a sparse
+        matrix.
+    inplace
+        If ``True``, modifies the AnnData object in place.  Ignored when
+        ``return_raw=True`` or when ``X`` is a sparse matrix.
+
+    Returns
+    -------
+    None
+        When ``X`` is AnnData, ``inplace=True``, and ``return_raw=False``.
+    AnnData
+        A modified copy when ``inplace=False`` and ``return_raw=False``.
+    np.ndarray
+        Centrality array when ``return_raw=True`` or ``X`` is a sparse
+        matrix.
+
+    Updates AnnData
+    ---------------
+    adata.obs[key_added] : np.ndarray
+        Per-cell centrality scores.
+    """
+    valid_algorithms = {"coreness", "pagerank", "local_coreness", "local_pagerank"}
+    if algorithm not in valid_algorithms:
+        raise ValueError(
+            f"Invalid algorithm '{algorithm}'. Must be one of {sorted(valid_algorithms)}."
+        )
+
+    is_anndata = isinstance(X, AnnData)
+
+    if is_anndata:
+        if network_key not in X.obsp:
+            raise ValueError(f"Network '{network_key}' not found. Run build_network first.")
+        G = X.obsp[network_key]
+    else:
+        G = X
+
+    n_cells = G.shape[1]
+
+    if algorithm in ("local_coreness", "local_pagerank"):
+        if labels is None:
+            raise ValueError(
+                f"'labels' is required when algorithm='{algorithm}'."
+            )
+
+    # Resolve labels to a numeric assignment vector when needed.
+    assignments: Optional[np.ndarray] = None
+    if labels is not None:
+        if isinstance(labels, str):
+            if not is_anndata:
+                raise ValueError(
+                    "`labels` must be an array when `X` is a sparse matrix, not a string key."
+                )
+            if labels not in X.obs:
+                raise ValueError(f"Labels column '{labels}' not found in adata.obs.")
+            raw_labels = X.obs[labels].values
+        else:
+            raw_labels = np.asarray(labels)
+        assignments = pd.Categorical(raw_labels).codes.astype(np.int32)
+
+    # Clamp alpha for PageRank variants.
+    if algorithm in ("pagerank", "local_pagerank"):
+        alpha = float(np.clip(alpha, 0.0, 0.99))
+
+    # --- Compute centrality ------------------------------------------------
+    if algorithm == "coreness":
+        centrality = np.asarray(_core.compute_coreness(G), dtype=np.float64)
+
+    elif algorithm == "pagerank":
+        uniform = np.full((n_cells, 1), 1.0 / n_cells)
+        centrality = np.asarray(
+            _core.compute_network_diffusion(
+                G=G, X0=uniform, alpha=alpha, max_it=max_iter,
+                thread_no=n_threads, approx=True, norm_method=0, tol=tol,
+            )
+        ).ravel()
+
+    elif algorithm == "local_coreness":
+        centrality = np.asarray(
+            _core.compute_archetype_centrality(G, assignments)
+        )
+
+    elif algorithm == "local_pagerank":
+        unique_codes = np.unique(assignments)
+        n_groups = len(unique_codes)
+        design = np.zeros((n_cells, n_groups), dtype=np.float64)
+        for col_idx, code in enumerate(unique_codes):
+            mask = assignments == code
+            design[mask, col_idx] = 1.0
+        col_sums = design.sum(axis=0)
+        col_sums[col_sums == 0] = 1.0
+        design /= col_sums
+
+        design = np.ascontiguousarray(design)
+        scores = np.asarray(
+            _core.compute_network_diffusion(
+                G=G, X0=design, alpha=alpha, max_it=max_iter,
+                thread_no=n_threads, approx=True, norm_method=0, tol=tol,
+            )
+        )
+        col_max = scores.max(axis=0)
+        col_max[col_max == 0] = 1.0
+        scores /= col_max
+        centrality = scores.max(axis=1)
+
+    centrality = centrality.ravel()
+
+    # --- Return / persist --------------------------------------------------
+    if not is_anndata or return_raw:
+        return centrality
+
+    adata = X if inplace else X.copy()
+    if key_added is None:
+        key_added = f"{algorithm}_{network_key}"
+    persist_updates(adata, obs={key_added: centrality})
     if not inplace:
         return adata
     return None

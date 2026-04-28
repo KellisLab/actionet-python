@@ -7,6 +7,7 @@ from anndata import AnnData
 from .core import (
     run_action,
     build_network,
+    compute_network_centrality,
     compute_network_diffusion,
     layout_network,
 )
@@ -47,10 +48,9 @@ def run_actionet(
     This function executes the full ACTIONet workflow including:
     1. ACTION archetypal analysis
     2. Network construction
-    3. Network centrality (TODO)
-    4. Network-based diffusion
-    5. 2D/3D layout generation
-    6. Node color computation
+    3. Network-based diffusion
+    4. 2D/3D layout generation
+    5. Node color computation
 
     Parameters
     ----------
@@ -146,10 +146,10 @@ def run_actionet(
 
     Examples
     --------
-    >>> import actionet as act
-    >>> import scanpy as sc
-    >>> adata = sc.read_h5ad("data.h5ad")
-    >>> adata = act.run_actionet(adata, k_max=50, inplace=False)
+    >>> import actionet as an
+    >>> import anndata as ad
+    >>> adata = ad.read_h5ad("data.h5ad")
+    >>> adata = an.run_actionet(adata, k_max=50, inplace=False)
     >>> print(adata.obs['assigned_archetype'])
 
     See Also
@@ -195,8 +195,16 @@ def run_actionet(
         inplace=True,
     )
 
-    # Step 3: Compute network centrality
-    # TODO: Implement network_centrality
+    # # Step 3: Compute network centrality
+    # print("Computing network centrality...")
+    # compute_network_centrality(
+    #     adata,
+    #     algorithm="pagerank",
+    #     network_key=network_key,
+    #     key_added="node_centrality",
+    #     n_threads=n_threads,
+    #     inplace=True,
+    # )
 
     # Step 4: Smooth archetype footprints via network diffusion
     print("Computing archetype footprints via diffusion...")

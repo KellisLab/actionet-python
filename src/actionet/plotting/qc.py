@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import io
 from typing import TYPE_CHECKING, Any, Literal, Optional, Sequence, Union
 
 import numpy as np
@@ -488,9 +487,9 @@ def plot_qc_violin(
     title: Optional[str] = None,
     x_label: Optional[str] = None,
     y_label: Optional[str] = None,
-    figsize: tuple[float, float] = (6, 4),
+    fig_size: tuple[float, float] = (6, 4),
     fig_dpi: float = 100.0,
-    show_boxplot: bool = True,
+    boxplot: bool = True,
     legend: bool = False,
 ):
     """Plot QC violin distributions for per-cell metrics.
@@ -563,11 +562,11 @@ def plot_qc_violin(
         X-axis label.  Defaults to blank.
     y_label
         Y-axis label.  Defaults to the key name or metric string.
-    figsize
+    fig_size
         Figure size in inches ``(width, height)``.
     fig_dpi
-        DPI used to convert ``figsize`` to pixel dimensions for lets-plot.
-    show_boxplot
+        DPI used to convert ``fig_size`` to pixel dimensions for lets-plot.
+    boxplot
         Overlay a miniature boxplot inside each violin.
     legend
         Show the fill legend.
@@ -616,9 +615,9 @@ def plot_qc_violin(
                     title=title,
                     x_label=x_label,
                     y_label=y_label,
-                    figsize=figsize,
+                    fig_size=fig_size,
                     fig_dpi=fig_dpi,
-                    show_boxplot=show_boxplot,
+                    boxplot=boxplot,
                     legend=legend,
                 )
                 for k in key_list
@@ -647,9 +646,9 @@ def plot_qc_violin(
             title=title,
             x_label=x_label,
             y_label=y_label,
-            figsize=figsize,
+            fig_size=fig_size,
             fig_dpi=fig_dpi,
-            show_boxplot=show_boxplot,
+            boxplot=boxplot,
             legend=legend,
         )
 
@@ -696,9 +695,9 @@ def plot_qc_violin(
             title=title,
             x_label=x_label,
             y_label=y_label,
-            figsize=figsize,
+            fig_size=fig_size,
             fig_dpi=fig_dpi,
-            show_boxplot=show_boxplot,
+            boxplot=boxplot,
             legend=legend,
         )
 
@@ -723,9 +722,9 @@ def plot_qc_violin(
         title=title,
         x_label=x_label,
         y_label=y_label,
-        figsize=figsize,
+        fig_size=fig_size,
         fig_dpi=fig_dpi,
-        show_boxplot=show_boxplot,
+        boxplot=boxplot,
         legend=legend,
     )
 
@@ -743,9 +742,9 @@ def _build_violin_plot(
     title: Optional[str],
     x_label: Optional[str],
     y_label: Optional[str],
-    figsize: tuple[float, float],
+    fig_size: tuple[float, float],
     fig_dpi: float,
-    show_boxplot: bool,
+    boxplot: bool,
     legend: bool,
 ):
     """Construct a lets-plot violin figure from long-form data."""
@@ -774,7 +773,7 @@ def _build_violin_plot(
 
     base = ggplot(plot_df, aes(x="label", y="value", fill="label"))
     base = base + geom_violin(scale="width")
-    if show_boxplot:
+    if boxplot:
         base = base + geom_boxplot(width=0.2, fill="white", alpha=0.7, outlier_size=0.5)
     base = base + scale_fill_manual(values=color_map)
     base = base + scale_x_discrete(limits=[str(c) for c in categories])
@@ -789,8 +788,8 @@ def _build_violin_plot(
         legend_position="right" if legend else "none",
     )
 
-    width_px = float(figsize[0]) * fig_dpi
-    height_px = float(figsize[1]) * fig_dpi
+    width_px = float(fig_size[0]) * fig_dpi
+    height_px = float(fig_size[1]) * fig_dpi
     plot = plot + ggsize(width_px, height_px)
 
     if title:
@@ -820,9 +819,9 @@ def plot_mito_violin(
     title: Optional[str] = None,
     x_label: Optional[str] = None,
     y_label: Optional[str] = None,
-    figsize: tuple[float, float] = (6, 4),
+    fig_size: tuple[float, float] = (6, 4),
     fig_dpi: float = 100.0,
-    show_boxplot: bool = True,
+    boxplot: bool = True,
     legend: bool = False,
 ):
     """Plot mitochondrial transcript distribution as a violin plot.
@@ -883,11 +882,11 @@ def plot_mito_violin(
         X-axis label.
     y_label
         Y-axis label.  Defaults to the metric string.
-    figsize
+    fig_size
         Figure size ``(width, height)`` in inches.
     fig_dpi
-        DPI used to convert ``figsize`` to pixels for lets-plot.
-    show_boxplot
+        DPI used to convert ``fig_size`` to pixels for lets-plot.
+    boxplot
         Overlay a miniature boxplot inside each violin.
     legend
         Show the fill legend.
@@ -949,9 +948,9 @@ def plot_mito_violin(
         title=title,
         x_label=x_label,
         y_label=y_label,
-        figsize=figsize,
+        fig_size=fig_size,
         fig_dpi=fig_dpi,
-        show_boxplot=show_boxplot,
+        boxplot=boxplot,
         legend=legend,
     )
 
@@ -962,7 +961,7 @@ def plot_mito_violin(
 
 def _new_violin_raster_figure(
     *,
-    figsize: tuple[float, float],
+    fig_size: tuple[float, float],
     fig_dpi: float,
 ):
     """Create a matplotlib Figure backed by FigureCanvasAgg for violin plots."""
@@ -972,12 +971,7 @@ def _new_violin_raster_figure(
     except ImportError as exc:
         raise ImportError("matplotlib is required for raster violin plotting.") from exc
 
-    from .umap import _ActionetRasterFigureMixin
-
-    class _ActionetViolinFigure(_ActionetRasterFigureMixin, Figure):
-        pass
-
-    fig = _ActionetViolinFigure(figsize=figsize, dpi=fig_dpi, facecolor="white")
+    fig = Figure(figsize=fig_size, dpi=fig_dpi, facecolor="white")
     FigureCanvasAgg(fig)
     return fig
 
@@ -991,9 +985,9 @@ def _build_violin_raster(
     title: Optional[str],
     x_label: Optional[str],
     y_label: Optional[str],
-    figsize: tuple[float, float],
+    fig_size: tuple[float, float],
     fig_dpi: float,
-    show_boxplot: bool,
+    boxplot: bool,
     legend: bool,
     kde_points: int,
     bw_method: Optional[Union[str, float]],
@@ -1004,12 +998,12 @@ def _build_violin_raster(
     ``scipy.stats.gaussian_kde``, draws mirrored violin polygons with
     ``ax.fill_betweenx``, and optionally overlays a compact boxplot via
     ``ax.boxplot``.  All rendering is done with the Agg backend so no display
-    is required.  The returned figure displays as a PNG in Jupyter via the
-    ``_repr_png_`` / ``_repr_mimebundle_`` hooks.
+    is required.  The returned figure renders as PNG in Jupyter via
+    matplotlib's built-in ``_repr_png_`` hook.
     """
     from scipy.stats import gaussian_kde
 
-    fig = _new_violin_raster_figure(figsize=figsize, fig_dpi=fig_dpi)
+    fig = _new_violin_raster_figure(fig_size=fig_size, fig_dpi=fig_dpi)
     ax = fig.add_subplot(111)
 
     color_map = build_discrete_color_map(categories, palette)
@@ -1058,7 +1052,7 @@ def _build_violin_raster(
 
         bp_data.append(grp_vals)
 
-    if show_boxplot and bp_data:
+    if boxplot and bp_data:
         bp = ax.boxplot(
             bp_data,
             positions=list(range(n_cats)),
@@ -1145,9 +1139,9 @@ def plot_qc_violin_raster(
     title: Optional[str] = None,
     x_label: Optional[str] = None,
     y_label: Optional[str] = None,
-    figsize: tuple[float, float] = (6, 4),
+    fig_size: tuple[float, float] = (6, 4),
     fig_dpi: float = 100.0,
-    show_boxplot: bool = True,
+    boxplot: bool = True,
     legend: bool = False,
     # --- raster-specific options ---
     kde_points: int = 512,
@@ -1205,11 +1199,11 @@ def plot_qc_violin_raster(
         X-axis label.  Defaults to blank.
     y_label
         Y-axis label.  Defaults to the key name or metric string.
-    figsize
+    fig_size
         Figure size in inches ``(width, height)``.
     fig_dpi
         Figure DPI.
-    show_boxplot
+    boxplot
         Overlay a compact boxplot inside each violin.
     legend
         Show the fill legend.
@@ -1253,9 +1247,9 @@ def plot_qc_violin_raster(
         title=title,
         x_label=x_label,
         y_label=y_lbl,
-        figsize=figsize,
+        fig_size=fig_size,
         fig_dpi=fig_dpi,
-        show_boxplot=show_boxplot,
+        boxplot=boxplot,
         legend=legend,
         kde_points=kde_points,
         bw_method=bw_method,
@@ -1278,9 +1272,9 @@ def plot_qc_violin_raster(
                     title=title,
                     x_label=x_label,
                     y_label=y_label,
-                    figsize=figsize,
+                    fig_size=fig_size,
                     fig_dpi=fig_dpi,
-                    show_boxplot=show_boxplot,
+                    boxplot=boxplot,
                     legend=legend,
                     kde_points=kde_points,
                     bw_method=bw_method,
@@ -1368,9 +1362,9 @@ def plot_mito_violin_raster(
     title: Optional[str] = None,
     x_label: Optional[str] = None,
     y_label: Optional[str] = None,
-    figsize: tuple[float, float] = (6, 4),
+    fig_size: tuple[float, float] = (6, 4),
     fig_dpi: float = 100.0,
-    show_boxplot: bool = True,
+    boxplot: bool = True,
     legend: bool = False,
     kde_points: int = 512,
     bw_method: Optional[Union[str, float]] = None,
@@ -1419,11 +1413,11 @@ def plot_mito_violin_raster(
         X-axis label.
     y_label
         Y-axis label.  Defaults to the metric string.
-    figsize
+    fig_size
         Figure size ``(width, height)`` in inches.
     fig_dpi
         Figure DPI.
-    show_boxplot
+    boxplot
         Overlay a compact boxplot inside each violin.
     legend
         Show the fill legend.
@@ -1468,9 +1462,9 @@ def plot_mito_violin_raster(
         title=title,
         x_label=x_label,
         y_label=y_label,
-        figsize=figsize,
+        fig_size=fig_size,
         fig_dpi=fig_dpi,
-        show_boxplot=show_boxplot,
+        boxplot=boxplot,
         legend=legend,
         kde_points=kde_points,
         bw_method=bw_method,

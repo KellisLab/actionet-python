@@ -56,8 +56,8 @@ def compute_node_colors(
 
     Examples
     --------
-    >>> import actionet as act
-    >>> adata = act.compute_node_colors(adata, embedding_key="X_umap_3d")
+    >>> import actionet as an
+    >>> adata = an.compute_node_colors(adata, embedding_key="X_umap_3d")
     >>> print(adata.obsm['colors_X_umap_3d'])
     """
     is_anndata = False

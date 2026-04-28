@@ -18,7 +18,6 @@ from ..lazy_transform import (
 )
 from .. import _core
 from .umap import (
-    _new_raster_figure,
     _prepare_umap_context,
     _render_umap_raster,
     plot_umap,
@@ -122,7 +121,7 @@ def plot_feature_expression(
     trans_fac: float = 3.0,
     cmap: Union[str, Sequence[str]] = "magma",
     size: float = 1.0,
-    net_slot: str = "actionet",
+    network_key: str = "actionet",
     basis: str = "umap_2d_actionet",
     single_plot: bool = False,
     legend: bool = False,
@@ -172,7 +171,7 @@ def plot_feature_expression(
         Continuous palette for expression values.
     size
         Marker size for UMAP scatter.
-    net_slot
+    network_key
         Key in ``adata.obsp`` for the ACTIONet network.
     basis
         Key in ``adata.obsm`` containing 2D coordinates.
@@ -222,7 +221,7 @@ def plot_feature_expression(
             features=requested,
             method=method,
             features_use=features_use,
-            network_key=net_slot,
+            network_key=network_key,
             layer=layer,
             alpha=alpha,
             n_threads=n_threads,
@@ -297,7 +296,7 @@ def plot_feature_expression_raster(
     trans_fac: float = 3.0,
     cmap: Union[str, Sequence[str]] = "magma",
     size: float = 1.0,
-    net_slot: str = "actionet",
+    network_key: str = "actionet",
     basis: str = "umap_2d_actionet",
     single_plot: bool = False,
     legend: bool = False,
@@ -347,7 +346,7 @@ def plot_feature_expression_raster(
         Continuous palette for expression values.
     size
         Marker size for UMAP scatter.
-    net_slot
+    network_key
         Key in ``adata.obsp`` for the ACTIONet network.
     basis
         Key in ``adata.obsm`` containing 2D coordinates.
@@ -392,7 +391,7 @@ def plot_feature_expression_raster(
             features=requested,
             method=method,
             features_use=features_use,
-            network_key=net_slot,
+            network_key=network_key,
             layer=layer,
             alpha=alpha,
             n_threads=n_threads,
@@ -422,13 +421,21 @@ def plot_feature_expression_raster(
         )
 
     if single_plot and len(out) > 1:
+        try:
+            from matplotlib.backends.backend_agg import FigureCanvasAgg
+            from matplotlib.figure import Figure
+        except ImportError as exc:  # pragma: no cover - optional dependency
+            raise ImportError("matplotlib is required for raster UMAP plotting.") from exc
         nrow, ncol = _grid_shape(len(out))
         panel_width = 6.0
         panel_height = 5.0
-        fig = _new_raster_figure(
+        fig = Figure(
             figsize=(panel_width * ncol, panel_height * nrow),
-            fig_dpi=100.0,
+            dpi=100.0,
+            facecolor="white",
+            layout="constrained",
         )
+        FigureCanvasAgg(fig)
         axes = np.asarray(fig.subplots(nrow, ncol, squeeze=False))
         scale_size = size / max(nrow, 1)
 
@@ -441,7 +448,7 @@ def plot_feature_expression_raster(
                 basis=basis,
                 alpha=1.0,
                 fig_dpi=100.0,
-                figsize=(panel_width, panel_height),
+                fig_size=(panel_width, panel_height),
                 trans_attr=trans_attr,
                 trans_fac=trans_fac,
                 trans_th=trans_th,
@@ -460,9 +467,9 @@ def plot_feature_expression_raster(
                 order=None,
                 na_color="#cccccc",
                 hide_na=False,
-                add_text_labels=False,
-                label_text_size=9.0,
-                nudge_text_labels=False,
+                text_labels=False,
+                text_label_size=9.0,
+                nudge_text=False,
             )
 
         total_cells = nrow * ncol
