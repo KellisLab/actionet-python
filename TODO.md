@@ -10,6 +10,7 @@
 * Interactive cell selector
 * UMAP points have no stroke
 * `compute_archetype_feature_specificity()`: `key_added` > `key_prefix`
+* Make archetype specificity and network centrality optional in `run_actionet()`
 
 ## Secondary
 * Consolidate normalization code-paths

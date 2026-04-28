@@ -46,9 +46,9 @@ def _prepare_alpha(alpha: Union[float, Sequence[float]], n_obs: int) -> np.ndarr
     return np.full(n_obs, float(alpha), dtype=float)
 
 
-def _figsize_to_px(figsize: tuple[float, float], dpi: float) -> tuple[float, float]:
-    """Convert an inches-based figsize to pixels for plotting backends."""
-    return float(figsize[0]) * dpi, float(figsize[1]) * dpi
+def _fig_size_to_px(fig_size: tuple[float, float], dpi: float) -> tuple[float, float]:
+    """Convert an inches-based fig_size to pixels for plotting backends."""
+    return float(fig_size[0]) * dpi, float(fig_size[1]) * dpi
 
 
 def _classify_color_values(
@@ -125,7 +125,7 @@ def _prepare_umap_context(
     basis: str,
     alpha: Union[float, Sequence[float]],
     fig_dpi: float,
-    figsize: tuple[float, float],
+    fig_size: tuple[float, float],
     trans_attr: Optional[Union[str, Sequence[float], np.ndarray]],
     trans_fac: float,
     trans_th: float,
@@ -146,7 +146,7 @@ def _prepare_umap_context(
         alpha_values = alpha_values * compute_transparency(trans_vals, trans_fac, trans_th)
     alpha_is_array = isinstance(alpha, (list, tuple, np.ndarray, pd.Series)) or trans_attr is not None
     alpha_arg = None if alpha_is_array else float(alpha_values[0])
-    width_px, height_px = _figsize_to_px(figsize, fig_dpi)
+    width_px, height_px = _fig_size_to_px(fig_size, fig_dpi)
 
     return _PreparedUmapContext(
         coords=coords,
@@ -194,10 +194,10 @@ def _prepare_categorical_payload(
 def _compute_label_positions(
     plot_df: pd.DataFrame,
     *,
-    nudge_text_labels: bool,
+    nudge_text: bool,
 ) -> pd.DataFrame:
     label_df = plot_df.groupby("color", as_index=False)[["x", "y"]].median()
-    if nudge_text_labels and not label_df.empty:
+    if nudge_text and not label_df.empty:
         x_range = plot_df["x"].max() - plot_df["x"].min()
         y_range = plot_df["y"].max() - plot_df["y"].min()
         label_df["x"] += (label_df["x"].rank() / len(label_df)) * x_range * 0.02
@@ -322,9 +322,9 @@ def _render_umap_raster(
     order: Optional[Union[str, Sequence[int]]],
     na_color: str,
     hide_na: bool,
-    add_text_labels: bool,
-    label_text_size: float,
-    nudge_text_labels: bool,
+    text_labels: bool,
+    text_label_size: float,
+    nudge_text: bool,
 ) -> None:
     try:
         from matplotlib.cm import ScalarMappable
@@ -401,10 +401,10 @@ def _render_umap_raster(
             rasterized=True,
         )
 
-        if add_text_labels and not plot_df.empty:
-            label_df = _compute_label_positions(plot_df, nudge_text_labels=nudge_text_labels)
+        if text_labels and not plot_df.empty:
+            label_df = _compute_label_positions(plot_df, nudge_text=nudge_text)
             for _, row in label_df.iterrows():
-                ax.text(row["x"], row["y"], row["color"], fontsize=label_text_size, color="black")
+                ax.text(row["x"], row["y"], row["color"], fontsize=text_label_size, color="black")
 
         if legend:
             present_labels = set(plot_df["color"].unique().tolist())
@@ -519,7 +519,7 @@ def plot_umap(
     size: float = 1.5,
     alpha: Union[float, Sequence[float]] = 1,
     legend: bool = True,
-    figsize: tuple[float, float] = (6, 5),
+    fig_size: tuple[float, float] = (6, 5),
     fig_dpi: float = 100.0,
     title: Optional[str] = None,
     vmin: Optional[float] = None,
@@ -531,9 +531,9 @@ def plot_umap(
     trans_th: float = -0.5,
     hide_na: bool = False,
     color_slot: Optional[str] = "colors_actionet",
-    add_text_labels: bool = False,
-    label_text_size: float = 9.0,
-    nudge_text_labels: bool = False,
+    text_labels: bool = False,
+    text_label_size: float = 9.0,
+    nudge_text: bool = False,
     sampling: Literal["none", "random"] = "none",
     sample_n: Optional[int] = None,
     sampling_seed: int = 37,
@@ -567,7 +567,7 @@ def plot_umap(
         Scalar alpha or per-point alpha vector (length ``adata.n_obs``).
     legend
         Whether to show the legend.
-    figsize
+    fig_size
         Figure size in inches.
     fig_dpi
         DPI used to convert inches to pixels for lets-plot.
@@ -590,11 +590,11 @@ def plot_umap(
         If True, remove points with missing categorical labels.
     color_slot
         If no color specified, try ``adata.obsm[color_slot]`` for RGB colors.
-    add_text_labels
+    text_labels
         If True, add categorical label text at cluster centers.
-    label_text_size
+    text_label_size
         Font size for text labels (points).
-    nudge_text_labels
+    nudge_text
         If True, apply a small offset to label positions.
     sampling
         lets-plot point sampling strategy. Defaults to ``"none"``.
@@ -641,7 +641,7 @@ def plot_umap(
         basis=basis,
         alpha=alpha,
         fig_dpi=fig_dpi,
-        figsize=figsize,
+        fig_size=fig_size,
         trans_attr=trans_attr,
         trans_fac=trans_fac,
         trans_th=trans_th,
@@ -695,12 +695,12 @@ def plot_umap(
             plot_df = plot_df[plot_df["color"] != "NA"].copy()
         plot = ggplot(plot_df, _base_aes("color")) + geom_point(**point_kwargs)
         plot = plot + scale_color_manual(values=color_map)
-        if add_text_labels and not plot_df.empty:
-            label_df = _compute_label_positions(plot_df, nudge_text_labels=nudge_text_labels)
+        if text_labels and not plot_df.empty:
+            label_df = _compute_label_positions(plot_df, nudge_text=nudge_text)
             plot = plot + geom_text(
                 data=label_df,
                 mapping=aes("x", "y", label="color"),
-                size=label_text_size,
+                size=text_label_size,
                 color="black",
                 show_legend=False,
                 inherit_aes=False,
@@ -753,7 +753,7 @@ def plot_umap_raster(
     size: float = 1.5,
     alpha: Union[float, Sequence[float]] = 1,
     legend: bool = True,
-    figsize: tuple[float, float] = (6, 5),
+    fig_size: tuple[float, float] = (6, 5),
     fig_dpi: float = 100.0,
     title: Optional[str] = None,
     vmin: Optional[float] = None,
@@ -765,9 +765,9 @@ def plot_umap_raster(
     trans_th: float = -0.5,
     hide_na: bool = False,
     color_slot: Optional[str] = "colors_actionet",
-    add_text_labels: bool = False,
-    label_text_size: float = 9.0,
-    nudge_text_labels: bool = False,
+    text_labels: bool = False,
+    text_label_size: float = 9.0,
+    nudge_text: bool = False,
     ax=None,
 ) -> Any:
     """Plot a rasterized UMAP embedding using Matplotlib.
@@ -805,7 +805,7 @@ def plot_umap_raster(
         Scalar alpha or per-point alpha vector (length ``adata.n_obs``).
     legend
         Whether to show the legend.
-    figsize
+    fig_size
         Figure size in inches as ``(width, height)``.
     fig_dpi
         Resolution in dots per inch for the created figure.
@@ -828,15 +828,15 @@ def plot_umap_raster(
         If True, remove points with missing categorical labels.
     color_slot
         If no color specified, try ``adata.obsm[color_slot]`` for RGB colors.
-    add_text_labels
+    text_labels
         If True, add categorical label text at cluster centers.
-    label_text_size
+    text_label_size
         Font size for text labels (points).
-    nudge_text_labels
+    nudge_text
         If True, apply a small offset to label positions.
     ax
         An existing :class:`matplotlib.axes.Axes` to draw into.  When
-        provided, ``figsize`` and ``fig_dpi`` are ignored and the figure
+        provided, ``fig_size`` and ``fig_dpi`` are ignored and the figure
         that owns *ax* is returned.  When ``None`` (default) a new figure
         is created via :class:`matplotlib.figure.Figure` (not registered
         with pyplot, so the inline backend renders it exactly once).
@@ -852,7 +852,7 @@ def plot_umap_raster(
             from matplotlib.figure import Figure
         except ImportError as exc:  # pragma: no cover - optional dependency
             raise ImportError("matplotlib is required for raster UMAP plotting.") from exc
-        fig = Figure(figsize=figsize, dpi=fig_dpi, facecolor="white", layout="constrained")
+        fig = Figure(figsize=fig_size, dpi=fig_dpi, facecolor="white", layout="constrained")
         FigureCanvasAgg(fig)
         ax = fig.add_subplot(111)
     else:
@@ -866,7 +866,7 @@ def plot_umap_raster(
         basis=basis,
         alpha=alpha,
         fig_dpi=fig_dpi,
-        figsize=figsize,
+        fig_size=fig_size,
         trans_attr=trans_attr,
         trans_fac=trans_fac,
         trans_th=trans_th,
@@ -886,9 +886,9 @@ def plot_umap_raster(
         order=order,
         na_color=na_color,
         hide_na=hide_na,
-        add_text_labels=add_text_labels,
-        label_text_size=label_text_size,
-        nudge_text_labels=nudge_text_labels,
+        text_labels=text_labels,
+        text_label_size=text_label_size,
+        nudge_text=nudge_text,
     )
 
     return fig
@@ -907,7 +907,7 @@ def plot_umap_interactive(
     legend: bool = True,
     hover_data: Optional[Sequence[str]] = None,
     title: Optional[str] = None,
-    figsize: tuple[Optional[int], Optional[int]] = (600, 500),
+    fig_size: tuple[Optional[int], Optional[int]] = (600, 500),
     vmin: Optional[float] = None,
     vmax: Optional[float] = None,
     na_color: str = "#cccccc",
@@ -947,7 +947,7 @@ def plot_umap_interactive(
         Additional columns from ``adata.obs`` to include in hover tooltips.
     title
         Optional plot title.
-    figsize
+    fig_size
         Figure size as ``(width, height)`` in **pixels**. Pass ``None`` for either
         dimension to use a responsive (full-width or full-height) layout.
     vmin, vmax
@@ -1076,8 +1076,8 @@ def plot_umap_interactive(
         )
         fig.update_traces(marker={"size": size, "opacity": scalar_alpha, "line": {"width": 0}})
         fig.update_layout(
-            width=figsize[0],
-            height=figsize[1],
+            width=fig_size[0],
+            height=fig_size[1],
             scene={
                 "xaxis": _axis_hidden_3d,
                 "yaxis": _axis_hidden_3d,
@@ -1102,8 +1102,8 @@ def plot_umap_interactive(
         )
         fig.update_traces(marker={"size": size, "opacity": scalar_alpha})
         fig.update_layout(
-            width=figsize[0],
-            height=figsize[1],
+            width=fig_size[0],
+            height=fig_size[1],
             xaxis=_axis_hidden,
             yaxis=_axis_hidden,
             plot_bgcolor="white",

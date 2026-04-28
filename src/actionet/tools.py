@@ -46,39 +46,63 @@ def l1_norm_scale(
         return X / norms
 
 def scale(
-    X: Union[np.ndarray, list],
+    X,
     center: Union[bool, np.ndarray] = True,
-    scale: Union[bool, np.ndarray] = True
+    scale: Union[bool, np.ndarray] = True,
 ) -> np.ndarray:
-    X = np.asarray(X, dtype=np.float64)
+    """Column-wise centering and scaling, mirroring R's base ``scale()``.
+
+    Parameters
+    ----------
+    X : array-like
+        Numeric vector, matrix, or any object convertible via
+        ``np.asarray``.  Sparse matrices are densified first.
+        1-D inputs are treated as single-column matrices and the result
+        is returned with the same 1-D shape.
+    center : bool or array-like, default True
+        If ``True``, center each column by its mean.  If an array, use
+        those values directly.  ``False`` disables centering.
+    scale : bool or array-like, default True
+        If ``True``, scale each column by its sample standard deviation
+        (``ddof=1``).  If an array, use those values directly.  ``False``
+        disables scaling.
+
+    Returns
+    -------
+    np.ndarray
+        Scaled array with the same shape as *X*.
+    """
+    if sp.issparse(X):
+        X = np.asarray(X.toarray(), dtype=np.float64)
+    else:
+        X = np.asarray(X, dtype=np.float64)
+
+    squeezed = X.ndim == 1
+    if squeezed:
+        X = X[:, np.newaxis]
+    elif X.ndim == 0:
+        return X
+
     n_cols = X.shape[1]
 
-    # Handle center argument
     if isinstance(center, bool):
-        if center:
-            center_vals = X.mean(axis=0)
-        else:
-            center_vals = np.zeros(n_cols)
+        center_vals = X.mean(axis=0) if center else np.zeros(n_cols)
     else:
-        center_vals = np.asarray(center)
+        center_vals = np.asarray(center, dtype=np.float64).ravel()
         if center_vals.shape[0] != n_cols:
             raise ValueError("Length of center does not match number of columns")
 
-    # Handle scale argument
     if isinstance(scale, bool):
-        if scale:
-            scale_vals = X.std(axis=0, ddof=1)
-        else:
-            scale_vals = np.ones(n_cols)
+        scale_vals = X.std(axis=0, ddof=1) if scale else np.ones(n_cols)
     else:
-        scale_vals = np.asarray(scale)
+        scale_vals = np.asarray(scale, dtype=np.float64).ravel()
         if scale_vals.shape[0] != n_cols:
             raise ValueError("Length of scale does not match number of columns")
 
-    # Avoid division by zero
     scale_vals = np.where(scale_vals == 0, 1, scale_vals)
 
-    return (X - center_vals) / scale_vals
+    result = (X - center_vals) / scale_vals
+    return result.ravel() if squeezed else result
 
 
 def _check_group_vec_missing(group_vec: np.ndarray) -> None:

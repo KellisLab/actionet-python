@@ -1,7 +1,7 @@
 """ACTIONet: Single-cell multi-resolution data analysis toolkit.
 
 Python bindings for the ACTIONet C++ backend (libactionet) via pybind11.
-Uses AnnData as the core data container, integrates with the scanpy ecosystem.
+Uses AnnData as the core data container.
 
 System build requirements: CMake >= 3.19, C++17 compiler, BLAS/LAPACK,
 HDF5 (C library), and OpenMP.
@@ -18,6 +18,7 @@ except PackageNotFoundError:
 from .core import (
     run_action,
     build_network,
+    compute_network_centrality,
     compute_network_diffusion,
     layout_network,
 )
@@ -120,6 +121,7 @@ __all__ = [
     "run_action",
     "build_network",
     "cluster_network",
+    "compute_network_centrality",
     "compute_network_diffusion",
     "compute_feature_specificity",
     "compute_archetype_feature_specificity",
