@@ -110,6 +110,36 @@ def is_backed_adata(adata: AnnData) -> bool:
     return bool(getattr(adata, "isbacked", False) and getattr(adata, "filename", None))
 
 
+def set_auto_persist(adata: AnnData, enabled: bool = True) -> None:
+    """Control whether backed disk writes happen automatically.
+
+    When *enabled* is ``False``, :func:`persist_updates` applies changes
+    in-memory only and defers the HDF5 write until an explicit
+    :func:`checkpoint_backed` call or a structural operation that requires
+    on-disk consistency (subset, materialize, etc.).
+
+    The default (``True``) preserves the existing behaviour: every
+    ``persist_updates`` call writes to the backing file immediately.
+
+    Parameters
+    ----------
+    adata : AnnData
+        Target object (backed or in-memory -- the flag is simply stored).
+    enabled : bool, optional (default: True)
+        ``True`` for immediate writes, ``False`` for deferred mode.
+    """
+    adata.uns["_actionet_auto_persist"] = bool(enabled)
+
+
+def get_auto_persist(adata: AnnData) -> bool:
+    """Return the current auto-persist setting for *adata*.
+
+    Returns ``True`` (immediate writes) unless the flag has been
+    explicitly set to ``False`` via :func:`set_auto_persist`.
+    """
+    return bool(adata.uns.get("_actionet_auto_persist", True))
+
+
 def _ensure_backed_writable(adata: AnnData) -> None:
     """Raise if backed AnnData appears to be read-only."""
     if not is_backed_adata(adata):
@@ -291,6 +321,9 @@ def persist_updates(
     # Record which keys are being persisted for dirty tracking.
     _track_dirty_keys(adata, obs, var, obsm, varm, obsp, varp, layers, uns)
 
+    if not get_auto_persist(adata):
+        return
+
     filepath = str(adata.filename)
 
     if hasattr(adata, "file") and adata.file is not None:
@@ -321,6 +354,61 @@ def persist_layer(
         validate=validate,
         verbose=verbose,
     )
+
+
+def _flush_pending(adata: AnnData) -> None:
+    """Flush deferred in-memory changes to the backing file.
+
+    No-op when any of the following is true:
+    - *adata* is not backed.
+    - ``auto_persist`` is ``True`` (writes already happened eagerly).
+    - No dirty keys have been recorded.
+
+    Called automatically by structural operations that need the HDF5
+    file to be up-to-date before they read or rewrite it.
+    """
+    if not is_backed_adata(adata):
+        return
+    if get_auto_persist(adata):
+        return
+    dirty = _dirty_tracker.get_dirty(adata)
+    if not dirty:
+        return
+
+    if _anndata_io is None:
+        raise RuntimeError(
+            "Backed persistence requested but actionet.experimental._anndata_io "
+            "could not be imported."
+        )
+
+    _ensure_backed_writable(adata)
+
+    results = _anndata_io.collect_annotation_results(
+        adata,
+        obs_columns=sorted(dirty.get("obs_columns", set())),
+        var_columns=sorted(dirty.get("var_columns", set())),
+        obsm_keys=sorted(dirty.get("obsm_keys", set())),
+        varm_keys=sorted(dirty.get("varm_keys", set())),
+        obsp_keys=sorted(dirty.get("obsp_keys", set())),
+        varp_keys=sorted(dirty.get("varp_keys", set())),
+        layers_keys=sorted(dirty.get("layers_keys", set())),
+        uns_keys=sorted(dirty.get("uns_keys", set())),
+        verbose=False,
+    )
+
+    has_data = any(len(v) > 0 for v in results.values())
+    if not has_data:
+        _dirty_tracker.clear(adata)
+        return
+
+    filepath = str(adata.filename)
+
+    if hasattr(adata, "file") and adata.file is not None:
+        adata.file.close()
+
+    _anndata_io.append_to_anndata(filepath, results, verbose=False, validate=False)
+    _refresh_backed_handle(adata, filepath, mode="r+")
+    _dirty_tracker.clear(adata)
 
 
 # ---------------------------------------------------------------------------
@@ -944,6 +1032,8 @@ def _write_filtered_backed(
     import h5py
     from .experimental._anndata_io import _write_dataframe_to_h5, _write_dict_value
 
+    _flush_pending(adata)
+
     obs_sub = adata.obs.iloc[obs_idx].copy()
     var_sub = adata.var.iloc[var_idx].copy()
     h5file = adata.file._file if is_backed_adata(adata) else None
@@ -1156,6 +1246,8 @@ def materialize_backed(
         return
 
     parent = adata._adata_ref
+    _flush_pending(parent)
+
     obs_int = _view_idx_to_int(adata._oidx, parent.n_obs)
     var_int = _view_idx_to_int(adata._vidx, parent.n_vars)
 
@@ -1232,6 +1324,7 @@ def subset_backed_inplace(
             "Open with ad.read_h5ad(path, backed='r+')."
         )
     _ensure_backed_writable(adata)
+    _flush_pending(adata)
 
     if getattr(adata, "is_view", False):
         materialize_backed(adata, chunk_size=chunk_size)
