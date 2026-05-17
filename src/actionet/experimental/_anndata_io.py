@@ -875,7 +875,7 @@ def _update_column_order(f, df_name):
     columns = [k for k in grp.keys() if k != '_index']
 
     # Update column-order attribute
-    grp.attrs['column-order'] = np.array(columns, dtype=object)
+    grp.attrs['column-order'] = np.array(columns, dtype='S')
 
 
 def _write_dataframe_column(f, df_name, col, values, verbose):
@@ -1072,7 +1072,7 @@ def _write_dataframe_to_h5(f, key, df, compression_kwargs=None):
     grp.attrs['encoding-type'] = 'dataframe'
     grp.attrs['encoding-version'] = '0.2.0'
     grp.attrs['_index'] = '_index'
-    grp.attrs['column-order'] = np.array(df.columns.tolist(), dtype=object) if len(df.columns) else np.array([], dtype=object)
+    grp.attrs['column-order'] = np.array(df.columns.tolist(), dtype='S') if len(df.columns) else np.array([], dtype='S')
 
     # Store index - convert to string array for HDF5
     index_values = np.array([str(x) for x in df.index], dtype='S')
