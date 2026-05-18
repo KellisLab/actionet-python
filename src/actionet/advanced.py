@@ -2,10 +2,12 @@
 
 from typing import Optional, List, Union
 import numpy as np
+import pandas as pd
 import scipy.sparse as sp
 from anndata import AnnData
 
 from . import _core
+from ._backed_persist import persist_updates
 
 
 def run_archetypal_analysis(
@@ -196,8 +198,8 @@ def run_spa(
 
 
 def run_label_propagation(
-    adata: AnnData,
-    initial_labels: np.ndarray,
+    X: Union[AnnData, sp.spmatrix],
+    initial_labels: Union[str, np.ndarray, pd.Series, List],
     network_key: str = "actionet",
     lambda_param: float = 1.0,
     iterations: int = 3,
@@ -205,18 +207,31 @@ def run_label_propagation(
     fixed_labels: Optional[np.ndarray] = None,
     n_threads: int = 0,
     key_added: str = "propagated_labels",
-) -> AnnData:
+    return_raw: bool = False,
+    inplace: bool = True,
+) -> Optional[Union[AnnData, np.ndarray]]:
     """
     Run label propagation algorithm on network.
 
     Parameters
     ----------
-    adata
-        Annotated data matrix with network.
+    X
+        Either an AnnData object (network looked up from ``X.obsp[network_key]``)
+        or a raw sparse graph matrix to propagate over directly.  When a sparse
+        matrix is passed, the result is always returned as a raw array regardless
+        of ``return_raw``; ``inplace``, ``key_added``, and ``network_key`` are
+        ignored.
     initial_labels
-        Initial label assignments.
+        Initial label assignments. Can be:
+
+        - A string key into ``X.obs`` (only when ``X`` is AnnData).
+        - A list, pd.Series, or np.ndarray of labels (strings or integers).
+
+        Labels are internally factorized to numeric codes for the C++ backend
+        and decoded back to the original label space on return.
     network_key
-        Key in adata.obsp containing network.
+        Key in ``X.obsp`` containing network.  Ignored when ``X`` is a sparse
+        matrix.
     lambda_param
         Propagation strength.
     iterations
@@ -226,27 +241,69 @@ def run_label_propagation(
     fixed_labels
         Indices of labels to keep fixed (1-indexed).
     n_threads
-        Number of threads.
+        Number of threads (0 = auto).
     key_added
-        Key to store propagated labels in adata.obs.
+        Key to store propagated labels in ``X.obs``.
+        Ignored when ``return_raw=True`` or when ``X`` is a sparse matrix.
+    return_raw : bool, default ``False``
+        If ``True``, return the propagated labels array directly instead of
+        writing to the AnnData.  Always treated as ``True`` when ``X`` is a
+        sparse matrix.  When ``True``, ``adata`` is never modified and
+        ``inplace`` is ignored.
+    inplace
+        If True, modifies the AnnData object in place. If False, returns a new
+        AnnData object with the results.  Ignored when ``return_raw=True`` or
+        when ``X`` is a sparse matrix.
 
     Returns
     -------
-    Updates adata with:
-        - adata.obs[key_added]: Propagated labels
+    None
+        When ``X`` is AnnData, ``inplace=True``, and ``return_raw=False``.
+    AnnData
+        A modified copy when ``inplace=False`` and ``return_raw=False``.
+    np.ndarray
+        Propagated labels array (in the original label space) when
+        ``return_raw=True`` or when ``X`` is a sparse matrix.
     """
-    if network_key not in adata.obsp:
-        raise ValueError(f"Network '{network_key}' not found.")
+    is_anndata = isinstance(X, AnnData)
 
-    G = adata.obsp[network_key]
+    if is_anndata:
+        if network_key not in X.obsp:
+            raise ValueError(f"Network '{network_key}' not found in adata.obsp.")
+        G = X.obsp[network_key]
+    else:
+        G = X
 
-    new_labels = _core.run_lpa(
-        G, initial_labels, lambda_param, iterations,
+    if isinstance(initial_labels, str):
+        if not is_anndata:
+            raise ValueError(
+                "`initial_labels` must be an array when `X` is a sparse matrix, "
+                "not a string key."
+            )
+        if initial_labels not in X.obs:
+            raise ValueError(f"Labels column '{initial_labels}' not found in X.obs.")
+        raw_labels = X.obs[initial_labels].values
+    else:
+        raw_labels = np.asarray(initial_labels)
+
+    categories, numeric_codes = np.unique(raw_labels, return_inverse=True)
+    numeric_codes = numeric_codes.astype(np.float64)
+
+    new_codes = _core.run_lpa(
+        G, numeric_codes, lambda_param, iterations,
         sig_threshold, fixed_labels, n_threads
     )
 
-    adata.obs[key_added] = new_labels
-    return adata
+    new_labels = categories[new_codes.astype(np.intp)]
+
+    if not is_anndata or return_raw:
+        return new_labels
+
+    adata = X if inplace else X.copy()
+    persist_updates(adata, obs={key_added: new_labels})
+    if not inplace:
+        return adata
+    return None
 
 
 def compute_coreness(
