@@ -238,6 +238,38 @@ def apply_inmemory_updates(
     _assign_mapping(adata.uns, uns, tolerate_errors=tolerate_errors)
 
 
+def _include_all_inmemory_annotations(adata: AnnData, results: dict) -> None:
+    """Augment *results* with all in-memory annotations not already present.
+
+    Because ``append_to_anndata`` performs an atomic full-file rewrite (copy
+    source + apply updates), any in-memory state not included in *results* is
+    lost when the file is replaced and the handle refreshed.  This function
+    ensures that user modifications made directly on the AnnData (bypassing
+    ``persist_updates``) are preserved through the rewrite cycle.
+
+    Keys already present in *results* (freshly computed by the calling ACTIONet
+    function) take priority and are never overwritten.
+    """
+    for col in adata.obs.columns:
+        if col not in results["obs_columns"]:
+            results["obs_columns"][col] = adata.obs[col]
+
+    for col in adata.var.columns:
+        if col not in results["var_columns"]:
+            results["var_columns"][col] = adata.var[col]
+
+    for slot, key in [("obsm", "obsm_keys"), ("varm", "varm_keys"),
+                      ("obsp", "obsp_keys"), ("varp", "varp_keys")]:
+        container = getattr(adata, slot)
+        for k in container.keys():
+            if k not in results[key]:
+                results[key][k] = container[k]
+
+    for k, v in adata.uns.items():
+        if k not in results["uns_keys"]:
+            results["uns_keys"][k] = v
+
+
 def persist_updates(
     adata: AnnData,
     *,
@@ -325,6 +357,8 @@ def persist_updates(
         return
 
     filepath = str(adata.filename)
+
+    _include_all_inmemory_annotations(adata, results)
 
     if hasattr(adata, "file") and adata.file is not None:
         adata.file.close()
@@ -597,6 +631,8 @@ def checkpoint_backed(
         **_checkpoint_collect_args(adata),
         verbose=verbose,
     )
+
+    _include_all_inmemory_annotations(adata, results)
 
     has_data = any(len(v) > 0 for v in results.values())
 
