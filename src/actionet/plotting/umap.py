@@ -905,7 +905,7 @@ def plot_umap_interactive(
     size: float = 3,
     alpha: Union[float, Sequence[float]] = 1,
     legend: bool = True,
-    hover_data: Optional[Sequence[str]] = None,
+    hover_text: Optional[Union[str, Sequence, np.ndarray, pd.Series]] = None,
     title: Optional[str] = None,
     fig_size: tuple[Optional[int], Optional[int]] = (600, 500),
     vmin: Optional[float] = None,
@@ -943,8 +943,10 @@ def plot_umap_interactive(
         Scalar opacity for all points (per-point alpha is not supported by Plotly WebGL).
     legend
         Whether to show the legend.
-    hover_data
-        Additional columns from ``adata.obs`` to include in hover tooltips.
+    hover_text
+        Per-cell text to display on hover. Can be a key in ``adata.obs``, or any
+        array-like of length ``n_obs``. When ``None``, shows category labels
+        (if categorical coloring) or cell indices (1-based).
     title
         Optional plot title.
     fig_size
@@ -1054,6 +1056,28 @@ def plot_umap_interactive(
             )
         color_key = "value"
 
+    # Resolve hover text (after hide_na filtering to maintain index alignment)
+    if hover_text is not None:
+        if isinstance(hover_text, str):
+            ht_values = adata.obs[hover_text].values
+            if hide_na and kind == "categorical":
+                ht_values = ht_values[plot_df.index]
+            plot_df["hover_text"] = ht_values
+        else:
+            ht = np.asarray(hover_text)
+            if len(ht) != adata.n_obs:
+                raise ValueError(
+                    f"hover_text length ({len(ht)}) must match adata.n_obs ({adata.n_obs})."
+                )
+            if hide_na and kind == "categorical":
+                ht = ht[plot_df.index]
+            plot_df["hover_text"] = ht
+    else:
+        if kind == "categorical":
+            plot_df["hover_text"] = plot_df["color"]
+        else:
+            plot_df["hover_text"] = np.arange(1, len(plot_df) + 1)
+
     _axis_hidden = {"title": "", "showgrid": False, "showticklabels": False, "zeroline": False}
     _axis_hidden_3d = {
         "title": "",
@@ -1070,11 +1094,14 @@ def plot_umap_interactive(
             y="y",
             z="z",
             color=color_key,
-            hover_data=list(hover_data) if hover_data else None,
+            custom_data=["hover_text"],
             category_orders=category_orders_arg or None,
             **color_args,
         )
-        fig.update_traces(marker={"size": size, "opacity": scalar_alpha, "line": {"width": 0}})
+        fig.update_traces(
+            marker={"size": size, "opacity": scalar_alpha, "line": {"width": 0}},
+            hovertemplate="%{customdata[0]}<extra></extra>",
+        )
         fig.update_layout(
             width=fig_size[0],
             height=fig_size[1],
@@ -1095,12 +1122,15 @@ def plot_umap_interactive(
             x="x",
             y="y",
             color=color_key,
-            hover_data=list(hover_data) if hover_data else None,
+            custom_data=["hover_text"],
             render_mode="webgl",
             category_orders=category_orders_arg or None,
             **color_args,
         )
-        fig.update_traces(marker={"size": size, "opacity": scalar_alpha})
+        fig.update_traces(
+            marker={"size": size, "opacity": scalar_alpha},
+            hovertemplate="%{customdata[0]}<extra></extra>",
+        )
         fig.update_layout(
             width=fig_size[0],
             height=fig_size[1],
