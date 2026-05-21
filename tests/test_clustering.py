@@ -94,3 +94,17 @@ def test_cluster_network_validates_inputs():
     adata.obs["with_na"] = np.array([0, 0, np.nan, 1], dtype=object)
     with pytest.raises(ValueError, match="missing values"):
         an.cluster_network(adata, initial_membership="with_na")
+
+
+def test_cluster_network_mixed_index_dtypes():
+    """Regression: tocoo must not fail when indptr/indices dtypes differ."""
+    graph = _block_diagonal_graph([3, 3])
+    graph.indptr = graph.indptr.astype(np.int64)
+    assert graph.indices.dtype == np.int32
+
+    adata = ad.AnnData(np.zeros((6, 1), dtype=np.float64))
+    adata.obsp["actionet"] = graph
+
+    labels = an.cluster_network(adata, min_size=1, return_raw=True)
+    assert labels.shape == (6,)
+    assert len(np.unique(labels)) == 2

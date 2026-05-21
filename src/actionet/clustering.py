@@ -142,6 +142,10 @@ def cluster_network(
 
     if sp.issparse(adjacency):
         adjacency = adjacency.tocsr(copy=False)
+        if adjacency.indptr.dtype != adjacency.indices.dtype:
+            target_dtype = np.result_type(adjacency.indptr, adjacency.indices)
+            adjacency.indptr = adjacency.indptr.astype(target_dtype, copy=False)
+            adjacency.indices = adjacency.indices.astype(target_dtype, copy=False)
         if not np.isfinite(adjacency.data).all():
             raise ValueError(f"Network '{network_key}' contains non-finite edge weights.")
     else:
