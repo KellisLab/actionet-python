@@ -168,7 +168,10 @@ def plot_feature_expression(
     trans_fac
         Transparency scale factor for the logistic mapping.
     cmap
-        Continuous palette for expression values.
+        Continuous colormap name or list of hex color strings for gradient coloring.
+        Built-in palettes: ``"viridis"``, ``"magma"``, ``"inferno"``, ``"plasma"``,
+        ``"cividis"``, ``"greys"``, ``"BlGrRd"``, ``"RdYlBu"``, ``"Spectral"``.
+        Any valid matplotlib colormap name is also accepted.
     size
         Marker size for UMAP scatter.
     network_key
@@ -343,7 +346,10 @@ def plot_feature_expression_raster(
     trans_fac
         Transparency scale factor for the logistic mapping.
     cmap
-        Continuous palette for expression values.
+        Continuous colormap name or list of hex color strings for gradient coloring.
+        Built-in palettes: ``"viridis"``, ``"magma"``, ``"inferno"``, ``"plasma"``,
+        ``"cividis"``, ``"greys"``, ``"BlGrRd"``, ``"RdYlBu"``, ``"Spectral"``.
+        Any valid matplotlib colormap name is also accepted.
     size
         Marker size for UMAP scatter.
     network_key

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import warnings
 from dataclasses import dataclass
 from typing import Any, Literal, Optional, Sequence, Union
 
@@ -49,6 +50,21 @@ def _prepare_alpha(alpha: Union[float, Sequence[float]], n_obs: int) -> np.ndarr
 def _fig_size_to_px(fig_size: tuple[float, float], dpi: float) -> tuple[float, float]:
     """Convert an inches-based fig_size to pixels for plotting backends."""
     return float(fig_size[0]) * dpi, float(fig_size[1]) * dpi
+
+
+_CMAP_DEFAULT = "magma"
+
+
+def _warn_cmap_ignored(kind: str, cmap) -> None:
+    """Emit a warning when cmap is non-default but won't be used."""
+    if cmap != _CMAP_DEFAULT and kind != "continuous":
+        warnings.warn(
+            f"'cmap' parameter has no effect when color kind is '{kind}'. "
+            f"cmap only applies to continuous color variables. "
+            f"Use 'palette' to control categorical colors.",
+            UserWarning,
+            stacklevel=3,
+        )
 
 
 def _classify_color_values(
@@ -558,7 +574,12 @@ def plot_umap(
     basis
         Key in ``adata.obsm`` containing 2D coordinates.
     cmap
-        Continuous colormap name or list of colors for gradients.
+        Continuous colormap name or list of hex color strings for gradient coloring.
+        Only applies when the resolved color variable is continuous; ignored for
+        categorical or RGB color modes. Built-in palettes: ``"viridis"``, ``"magma"``,
+        ``"inferno"``, ``"plasma"``, ``"cividis"``, ``"greys"``, ``"BlGrRd"``,
+        ``"RdYlBu"``, ``"Spectral"``. Any valid matplotlib colormap name is also
+        accepted when matplotlib is installed.
     palette
         Discrete palette name, list of colors, or dict mapping category to color.
     size
@@ -647,6 +668,8 @@ def plot_umap(
         trans_th=trans_th,
         color_slot=color_slot,
     )
+
+    _warn_cmap_ignored(ctx.kind, cmap)
 
     point_kwargs = _point_render_kwargs(
         size=size,
@@ -796,7 +819,12 @@ def plot_umap_raster(
     basis
         Key in ``adata.obsm`` containing 2D coordinates.
     cmap
-        Continuous colormap name or list of colors for gradients.
+        Continuous colormap name or list of hex color strings for gradient coloring.
+        Only applies when the resolved color variable is continuous; ignored for
+        categorical or RGB color modes. Built-in palettes: ``"viridis"``, ``"magma"``,
+        ``"inferno"``, ``"plasma"``, ``"cividis"``, ``"greys"``, ``"BlGrRd"``,
+        ``"RdYlBu"``, ``"Spectral"``. Any valid matplotlib colormap name is also
+        accepted when matplotlib is installed.
     palette
         Discrete palette name, list of colors, or dict mapping category to color.
     size
@@ -873,6 +901,8 @@ def plot_umap_raster(
         color_slot=color_slot,
     )
 
+    _warn_cmap_ignored(ctx.kind, cmap)
+
     _render_umap_raster(
         ax,
         ctx,
@@ -934,7 +964,12 @@ def plot_umap_interactive(
     basis
         Key in ``adata.obsm`` containing 2D coordinates.
     cmap
-        Continuous colormap name or list of colors for gradients.
+        Continuous colormap name or list of hex color strings for gradient coloring.
+        Only applies when the resolved color variable is continuous; ignored for
+        categorical or RGB color modes. Built-in palettes: ``"viridis"``, ``"magma"``,
+        ``"inferno"``, ``"plasma"``, ``"cividis"``, ``"greys"``, ``"BlGrRd"``,
+        ``"RdYlBu"``, ``"Spectral"``. Any valid matplotlib colormap name is also
+        accepted when matplotlib is installed.
     palette
         Discrete palette name, list of colors, or dict mapping category to color.
     size
@@ -989,6 +1024,8 @@ def plot_umap_interactive(
         color_slot=color_slot,
         color_type=color_type,
     )
+
+    _warn_cmap_ignored(kind, cmap)
 
     if basis not in adata.obsm:
         raise ValueError(

@@ -280,11 +280,34 @@ def build_discrete_color_map(
 
 
 def normalize_cmap_spec(cmap: Optional[Union[str, Sequence[str]]]) -> list[str]:
-    """Return a list of colors for a named or explicit continuous palette."""
+    """Return a list of colors for a named or explicit continuous palette.
+
+    Resolution order for string names:
+    1. Built-in palette lookup (keys: {built_in_names}).
+    2. Matplotlib colormap lookup (requires matplotlib).
+    3. Raises ``ValueError`` if the name is not found in either.
+    """
     if cmap is None:
         return _CONTINUOUS_PALETTES["viridis"]
     if isinstance(cmap, str):
-        return _CONTINUOUS_PALETTES.get(cmap, _CONTINUOUS_PALETTES["viridis"])
+        if cmap in _CONTINUOUS_PALETTES:
+            return _CONTINUOUS_PALETTES[cmap]
+        try:
+            from matplotlib import colors as mpl_colors
+            from matplotlib.pyplot import get_cmap as _get_cmap
+
+            mpl_cmap = _get_cmap(cmap)
+            return [mpl_colors.to_hex(mpl_cmap(i / 9)) for i in range(10)]
+        except ImportError:
+            pass
+        except ValueError:
+            pass
+        raise ValueError(
+            f"Unknown colormap '{cmap}'. Built-in palettes: "
+            f"{list(_CONTINUOUS_PALETTES.keys())}. "
+            f"Any valid matplotlib colormap name is also accepted when "
+            f"matplotlib is installed. Alternatively, pass a list of hex color strings."
+        )
     if isinstance(cmap, Sequence):
         return list(cmap)
     raise TypeError("Unsupported cmap specification.")
