@@ -43,6 +43,61 @@ py::dict orthogonalize_batch_effect_sparse(py::object S, py::array_t<double> old
     return out;
 }
 
+py::dict orthogonalize_batch_effect_sparse_labels(
+    py::object S,
+    py::array_t<double> old_S_r,
+    py::array_t<double> old_U, py::array_t<double> old_A,
+    py::array_t<double> old_B, py::array_t<double> old_sigma,
+    py::array_t<long long, py::array::c_style | py::array::forcecast> batch_labels,
+    long long n_batches) {
+
+    if (n_batches <= 0) {
+        throw std::runtime_error(
+            "orthogonalize_batch_effect_sparse_labels: n_batches must be positive");
+    }
+
+    arma::sp_mat S_sp = scipy_to_arma_sparse(S);
+    arma::mat S_r_mat = numpy_to_arma_mat(old_S_r);
+    arma::mat U_mat = numpy_to_arma_mat(old_U);
+    arma::mat A_mat = numpy_to_arma_mat(old_A);
+    arma::mat B_mat = numpy_to_arma_mat(old_B);
+    arma::vec sigma_vec = numpy_to_arma_vec(old_sigma);
+
+    py::buffer_info buf = batch_labels.request();
+    if (buf.ndim != 1) {
+        throw std::runtime_error(
+            "orthogonalize_batch_effect_sparse_labels: batch_labels must be 1D");
+    }
+    const auto* lbl_ptr = static_cast<const long long*>(buf.ptr);
+    const arma::uword n_cells = static_cast<arma::uword>(buf.shape[0]);
+    arma::Col<arma::sword> labels(n_cells);
+    for (arma::uword i = 0; i < n_cells; ++i) {
+        labels(i) = static_cast<arma::sword>(lbl_ptr[i]);
+    }
+
+    arma::field<arma::mat> SVD_results(5);
+    SVD_results(0) = S_r_mat;
+    SVD_results(1) = sigma_vec;
+    SVD_results(2) = U_mat;
+    SVD_results(3) = A_mat;
+    SVD_results(4) = B_mat;
+
+    arma::field<arma::mat> orth_reduction;
+    {
+        py::gil_scoped_release release;
+        orth_reduction = actionet::orthogonalizeBatchEffect_sparse_labels(
+            S_sp, SVD_results, labels, static_cast<arma::uword>(n_batches));
+    }
+
+    py::dict out;
+    out["S_r"]    = arma_mat_to_numpy_c(orth_reduction(0));
+    out["sigma"]  = arma_vec_to_numpy(arma::vec(orth_reduction(1)));
+    out["U"]      = arma_mat_to_numpy_c(orth_reduction(2));
+    out["A"]      = arma_mat_to_numpy_c(orth_reduction(3));
+    out["B"]      = arma_mat_to_numpy_c(orth_reduction(4));
+    return out;
+}
+
 py::dict orthogonalize_batch_effect_dense(py::array_t<double> S, py::array_t<double> old_S_r,
                                             py::array_t<double> old_U, py::array_t<double> old_A,
                                             py::array_t<double> old_B, py::array_t<double> old_sigma,
@@ -335,6 +390,12 @@ void init_decomposition(py::module_ &m) {
           "Orthogonalize batch effects (sparse)",
           py::arg("S"), py::arg("old_S_r"), py::arg("old_U"), py::arg("old_A"),
           py::arg("old_B"), py::arg("old_sigma"), py::arg("design"));
+
+    m.def("orthogonalize_batch_effect_sparse_labels", &orthogonalize_batch_effect_sparse_labels,
+          "Orthogonalize batch effects (sparse, one-hot labels fast path)",
+          py::arg("S"), py::arg("old_S_r"), py::arg("old_U"), py::arg("old_A"),
+          py::arg("old_B"), py::arg("old_sigma"),
+          py::arg("batch_labels"), py::arg("n_batches"));
 
     m.def("orthogonalize_batch_effect_dense", &orthogonalize_batch_effect_dense,
           "Orthogonalize batch effects (dense)",

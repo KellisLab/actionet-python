@@ -104,23 +104,32 @@ def correct_batch_effect(
 
     old_S_r, old_U, old_A, old_B, old_sigma = _load_reduction_state(adata, reduction_key)
 
+    # When the user provides batch_key, build a categorical batch vector and capture
+    # integer labels.  These are used directly by the sparse one-hot fast path so we
+    # can avoid materialising a dense (n_obs × n_batches) design matrix.
+    batch_labels: Optional[pd.Categorical] = None
     if batch_key is not None:
-        batch_labels = pd.Series(adata.obs[batch_key].to_numpy(), index=adata.obs_names).astype("category")
-        if len(batch_labels.cat.categories) < 2:
+        batch_series = pd.Series(adata.obs[batch_key].to_numpy(), index=adata.obs_names).astype("category")
+        if len(batch_series.cat.categories) < 2:
             raise ValueError("'batch_key' must have at least 2 categories for correction.")
-        design = pd.get_dummies(batch_labels, drop_first=False).to_numpy(dtype=float)
+        batch_labels = batch_series
+        # Lazily build the dense design only when the fast path cannot be used.
+        design = None
     else:
         design = np.asarray(design, dtype=float)
         if design.ndim != 2:
             raise ValueError("'design' must be a 2D matrix (cells x covariates).")
-
-    if design.shape[0] != adata.n_obs:
-        raise ValueError("Design matrix does not match number of observations.")
-    design = np.ascontiguousarray(design)
+        if design.shape[0] != adata.n_obs:
+            raise ValueError("Design matrix does not match number of observations.")
+        design = np.ascontiguousarray(design)
 
     apply_log1p = False
 
     if source.is_backed:
+        # Backed/operator path: still requires a dense design matrix.
+        if design is None:
+            design = pd.get_dummies(batch_labels, drop_first=False).to_numpy(dtype=float)
+            design = np.ascontiguousarray(design)
         row_scale_factors, apply_log1p, log_scale = _resolve_lazy_backed_transform(
             source,
             lazy_transform=lazy_transform,
@@ -144,11 +153,24 @@ def correct_batch_effect(
     else:
         S = anndata_to_matrix(adata, layer=layer)  # cells x genes, native
         if sp.issparse(S):
-            result = _core.orthogonalize_batch_effect_sparse(
-                S, old_S_r, old_U, old_A, old_B, old_sigma, design
-            )
+            if batch_labels is not None:
+                # Sparse one-hot fast path: pass integer labels directly.
+                # C++ accumulates Z = S' * D in O(nnz + g*b) without ever
+                # materialising the dense design matrix.
+                codes = batch_labels.cat.codes.to_numpy(dtype=np.int64, copy=True)
+                n_batches = int(len(batch_labels.cat.categories))
+                result = _core.orthogonalize_batch_effect_sparse_labels(
+                    S, old_S_r, old_U, old_A, old_B, old_sigma, codes, n_batches,
+                )
+            else:
+                result = _core.orthogonalize_batch_effect_sparse(
+                    S, old_S_r, old_U, old_A, old_B, old_sigma, design
+                )
         else:
             S = np.asarray(S, dtype=float, order="C")
+            if design is None:
+                design = pd.get_dummies(batch_labels, drop_first=False).to_numpy(dtype=float)
+                design = np.ascontiguousarray(design)
             result = _core.orthogonalize_batch_effect_dense(
                 S, old_S_r, old_U, old_A, old_B, old_sigma, design
             )
