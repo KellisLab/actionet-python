@@ -647,6 +647,7 @@ def annotate_clusters(
     layer: Optional[str] = None,
     n_threads: int = 0,
     backed_chunk_size: int = 4096,
+    lazy_transform: Optional[LazyTransform] = None,
 ) -> Dict[str, np.ndarray]:
     """
     Annotate clusters using known marker genes.
@@ -682,6 +683,14 @@ def annotate_clusters(
     backed_chunk_size : int, optional (default: 4096)
         Number of rows per chunk when streaming backed AnnData.
         Only used if feature specificity needs to be computed.
+    lazy_transform : LazyTransform, optional
+        Pre-built lazy logcount transform for backed AnnData inputs.
+        When provided, the backed operator applies per-row normalization
+        and log1p on-the-fly without requiring a persisted ``logcounts``
+        layer.  Only valid when ``layer=None`` and the input is backed.
+        Only used when computing feature specificity de novo
+        (``specificity_key=None``); ignored with a warning otherwise.
+        Create with :func:`~actionet.lazy_transform.create_lazy_transform`.
 
     Returns
     -------
@@ -728,6 +737,15 @@ def annotate_clusters(
     """
     # Check if we have pre-computed specificity or need to compute it
     if specificity_key is not None:
+        if lazy_transform is not None:
+            import warnings
+            warnings.warn(
+                "`lazy_transform` is ignored when `specificity_key` is provided "
+                "(feature specificity is read from adata.varm, not computed).",
+                UserWarning,
+                stacklevel=2,
+            )
+
         # Use pre-computed feature specificity
         upper_key = f"{specificity_key}_upper"
         lower_key = f"{specificity_key}_lower"
@@ -757,6 +775,9 @@ def annotate_clusters(
 
         cluster_labels = adata.obs[cluster_key].values
 
+        source = MatrixSource(adata, layer=layer)
+        _validate_lazy_transform(lazy_transform, layer=layer, source=source)
+
         # Compute feature specificity on the fly using return_raw to avoid expensive AnnData copy
         result = compute_feature_specificity(
             adata,
@@ -765,6 +786,7 @@ def annotate_clusters(
             n_threads=n_threads,
             backed_chunk_size=backed_chunk_size,
             return_raw=True,
+            lazy_transform=lazy_transform,
         )
         # Combine upper and lower to get feature specificity
         upper_sig = result["upper_significance"]

@@ -167,10 +167,47 @@ def compute_feature_specificity(
     return_raw: bool = False,
     lazy_transform: Optional[LazyTransform] = None,
 ) -> Optional[Union[AnnData, dict]]:
-    """Compute feature specificity scores for clusters/archetypes.
+    """Compute feature specificity scores for discrete cluster labels.
+
+    For each cluster, scores each feature (gene) by how specifically it is
+    expressed in cells belonging to that cluster relative to all other clusters.
+    Results are stored in ``adata.varm`` under keys derived from ``key_added``.
 
     Parameters
     ----------
+    adata : AnnData
+        Annotated data matrix (cells x genes).
+    labels : str or np.ndarray
+        Cluster labels for each cell.  If a string, must be a key in
+        ``adata.obs``.  If an array, must have length equal to the number
+        of observations.  Non-negative integer values are treated as valid
+        cluster ids; negative values are treated as unassigned.  Non-integer
+        labels are encoded via pandas ``Categorical``.
+    layer : str, optional
+        Layer of ``adata`` to use as the expression matrix.  If ``None``,
+        ``adata.X`` is used.
+    n_threads : int, default 0
+        Number of threads for the C++ backend.  ``0`` lets the backend choose.
+    key_added : str, default ``"specificity"``
+        Prefix for the keys written to ``adata.varm``:
+
+        - ``<key_added>_profile`` — average expression profile per cluster
+          (genes x clusters).
+        - ``<key_added>_upper`` — upper-tail specificity scores
+          (genes x clusters).
+        - ``<key_added>_lower`` — lower-tail specificity scores
+          (genes x clusters).
+    inplace : bool, default ``True``
+        If ``True``, write results into ``adata`` and return ``None``.
+        If ``False``, operate on a copy of ``adata`` and return it.
+        Ignored when ``return_raw=True``.
+    backed_chunk_size : int, default 4096
+        Row chunk size used when streaming a backed (HDF5-on-disk) AnnData.
+    return_raw : bool, default ``False``
+        If ``True``, return the raw result dict from the C++ backend instead of
+        writing to ``adata``.  The dict contains keys ``"average_profile"``,
+        ``"upper_significance"``, and ``"lower_significance"``.
+        When ``True``, ``adata`` is never modified and ``inplace`` is ignored.
     lazy_transform : LazyTransform, optional
         Pre-built lazy logcount transform for backed AnnData inputs.
         When provided, the backed operator applies per-row normalization
@@ -178,6 +215,15 @@ def compute_feature_specificity(
         persisted ``logcounts`` layer.  Only valid when ``layer=None``
         and the input is backed.  Create with
         :func:`~actionet.lazy_transform.create_lazy_transform`.
+
+    Returns
+    -------
+    None
+        When ``inplace=True`` (default).
+    AnnData
+        A modified copy of ``adata`` when ``inplace=False``.
+    dict
+        Raw C++ result dict when ``return_raw=True``.
     """
     if not inplace and not return_raw:
         adata = adata.copy()
