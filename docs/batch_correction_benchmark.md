@@ -60,16 +60,21 @@ The benchmark script accepts `--batch-counts`, `--trials`, `--seed`, and
 
 ## Underlying changes
 
-The benchmark exercises four independent optimizations:
+The benchmark exercises four independent optimizations, each gated by a
+runtime threshold so small-`b` calls stay on the original code path:
 
 1. **Truncated final GEMMs** in `actionet::perturbedSVD`
-   (`src/libactionet/src/decomposition/svd_main.cpp`). The expansion
-   `U_new = [U|P] · U_p[:, :k]` is split into
-   `U · U_p_top + P · U_p_bot`, avoiding the
-   `(g × (k+b+1))` `join_horiz` allocation. Same for `V_new`.
+   (`src/libactionet/src/decomposition/svd_main.cpp`). For `c > 16`
+   (where `c = b + 1`), the expansion `U_new = [U|P] · U_p[:, :k]` is split
+   into `U · U_p_top + P · U_p_bot`, avoiding the `(g × (k+c))` `join_horiz`
+   allocation and the wasted work on `c` truncated columns. For `c ≤ 16`
+   the original single wide GEMM is kept (more cache-friendly when `c << k`).
+   Same for `V_new`.
 2. **Householder QR** (`arma::qr_econ`) replaces classical Gram-Schmidt
    for orthonormalising the residual subspaces (`P, Q`) and the batch
-   subspace (`Z`).
+   subspace (`Z`) — but **only when `c > 16`**. At smaller `c`, LAPACK
+   QR-and-reconstruct dispatch overhead exceeds the cost of the in-place
+   classical Gram-Schmidt column loop, so the legacy path is kept.
 3. **Sparse one-hot fast path**
    (`orthogonalizeBatchEffect_sparse_labels`): when the design is one-hot
    (typical for `batch_key` use), `Z = S' · D` is built by a single
@@ -77,9 +82,42 @@ The benchmark exercises four independent optimizations:
    `O(nnz·b)` for the generic sparse-dense product. The Python wrapper
    dispatches to this path automatically when `adata.X` is sparse.
 4. **Block-write of the core matrix `K`** in `perturbedSVD` removes the
-   `join_vert` / `arma::trans(arma::join_vert(...))` allocations.
+   `join_vert` / `arma::trans(arma::join_vert(...))` allocations
+   unconditionally.
+5. **`insert_cols` for cumulative perturbation history** instead of
+   `arma::join_rows(prior, new)`, also unconditional.
 
 Validation: `tests/test_batch_correction_parity.py` asserts that singular
 values match within `1e-8`, and that the singular subspaces match within a
 sign-fixed Frobenius distance of `1e-6` against both the dense-design and
-dense-X paths, across `b ∈ {2, 5, 10, 25}`.
+dense-X paths, across `b ∈ {2, 5, 10, 25}` — exercising both sides of the
+small-c threshold.
+
+## Larger dataset benchmark — `tmp_adata_agg_neur_st_pass1_20260530`
+
+Independent reproduction on a larger dataset confirms the wins scale up
+and validates the small-`c` fallback.
+
+- `n_obs = 91,759`, `n_vars = 17,786`, `nnz = 324,696,544`.
+- 126 unique `obs['Donor']` values used directly at `b = 126`.
+- `min` wall time across 3 trials per `b` (less noise than median due to
+  Python-heap cold-start effects on this dataset).
+
+| n_batches | baseline (s) | optimized (s) | speedup | sigma max abs diff |
+|----------:|-------------:|--------------:|--------:|-------------------:|
+|   2 | 3.23 | 3.89 | 0.83× | 2.5 × 10⁻¹² |
+|  10 | 5.10 | 5.07 | 1.01× | 0.0 |
+|  25 | 9.83 | 7.78 | 1.26× | 2.3 × 10⁻¹⁰ |
+|  50 | 33.16 | 20.31 | 1.63× | 6.2 × 10⁻¹¹ |
+| 100 | 73.59 | 40.72 | 1.81× | 9.8 × 10⁻¹¹ |
+| **126** | **91.65** | **50.94** | **1.80×** | 1.6 × 10⁻¹⁰ |
+
+At the natural `b = 126` (per-Donor batch correction):
+- 1.80× faster (91.65s → 50.94s).
+- Peak transient RSS roughly halved (10.4 GB → 4.8 GB).
+- Singular values match the baseline within `1.6 × 10⁻¹⁰`.
+
+Without the small-`c` fallback (intermediate revision `optimized` v1),
+the same configuration regressed at `b = 2` (3.23s → 6.48s) and `b = 10`
+(5.10s → 7.42s). The fallback restores baseline-equivalent performance
+at small `b` while preserving the large-`b` wins.
