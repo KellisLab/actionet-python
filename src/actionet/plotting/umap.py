@@ -310,7 +310,7 @@ def _rgba_values(
 
 
 def _style_raster_axes(ax, *, title: Optional[str]) -> None:
-    ax.set_aspect("equal", adjustable="box")
+    ax.set_aspect("auto")
     ax.set_xticks([])
     ax.set_yticks([])
     for spine in ax.spines.values():
