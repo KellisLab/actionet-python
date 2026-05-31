@@ -528,7 +528,6 @@ def layout_network(
     verbose: bool = True,
     key_added: str = "X_umap",
     inplace: bool = True,
-    repair_disconnected: bool = True,
 ) -> Optional[AnnData]:
     """
     Compute 2D/3D layout of ACTIONet graph using uwot methods.
@@ -591,9 +590,6 @@ def layout_network(
         Key to store layout in adata.obsm.
     inplace
         If True, modifies the AnnData object in place. If False, returns a new AnnData object with the results.
-    repair_disconnected
-        If True, apply the canonical umap-learn safeguard for
-        disconnected/orphaned vertices in the post-pruned graph.
 
     Returns
     -------
@@ -727,7 +723,6 @@ def layout_network(
         eps=eps,
         ai=ai_arr,
         aj=aj_arr,
-        repair_disconnected=repair_disconnected,
     )
 
     persist_updates(adata, obsm={key_added: coords})
