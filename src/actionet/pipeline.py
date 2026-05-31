@@ -195,16 +195,22 @@ def run_actionet(
         inplace=True,
     )
 
-    # # Step 3: Compute network centrality
-    # print("Computing network centrality...")
-    # compute_network_centrality(
-    #     adata,
-    #     algorithm="pagerank",
-    #     network_key=network_key,
-    #     key_added="node_centrality",
-    #     n_threads=n_threads,
-    #     inplace=True,
-    # )
+
+    # Step 3: Compute network centrality (parity with R `runACTIONet`).
+    # R uses `algorithm = "local_coreness"` keyed on `assigned_archetype`; we
+    # mirror that here. Centrality is written to `adata.obs["node_centrality"]`
+    # and is consumed downstream by `compute_node_colors` and external
+    # tooling.
+    print("Computing network centrality...")
+    compute_network_centrality(
+        adata,
+        algorithm="local_coreness",
+        labels="assigned_archetype",
+        network_key=network_key,
+        key_added="node_centrality",
+        n_threads=n_threads,
+        inplace=True,
+    )
 
     # Step 4: Smooth archetype footprints via network diffusion
     print("Computing archetype footprints via diffusion...")

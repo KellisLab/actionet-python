@@ -42,13 +42,14 @@ py::array_t<double> layout_network(py::object G, py::array_t<double> initial_coo
                                     unsigned int n_epochs = 0, int seed = 0,
                                     int thread_no = 0, bool verbose = true,
                                     float learning_rate = 1.0f, float repulsion_strength = 1.0f,
-                                    float negative_sample_rate = 5.0f, bool approx_pow = false,
+                                    float negative_sample_rate = 3.0f, bool approx_pow = true,
                                     bool pcg_rand = true, std::string rng_type = "",
                                     bool batch = true, unsigned int grain_size = 1,
                                     float a = 0.0f, float b = 0.0f,
                                     std::string opt_method = "adam", float alpha = -1.0f,
                                     float beta1 = 0.5f, float beta2 = 0.9f, float eps = 1e-7f,
-                                    py::object ai = py::none(), py::object aj = py::none()) {
+                                    py::object ai = py::none(), py::object aj = py::none(),
+                                    bool repair_disconnected = true) {
     arma::sp_mat G_sp = scipy_to_arma_sparse(G);
     arma::mat init_mat = numpy_to_arma_mat(initial_coords);
 
@@ -57,7 +58,8 @@ py::array_t<double> layout_network(py::object G, py::array_t<double> initial_coo
     UwotArgs uwot_args(
         method, n_components, spread, min_dist, n_epochs, learning_rate,
         repulsion_strength, negative_sample_rate, approx_pow, pcg_rand,
-        batch, seed, requested_threads, grain_size, verbose, opt_args, rng_type
+        batch, seed, requested_threads, grain_size, verbose, opt_args, rng_type,
+        repair_disconnected
     );
 
     if (a != 0.0f || b != 0.0f) {
@@ -99,13 +101,14 @@ void init_visualization(py::module_ &m) {
           py::arg("n_epochs") = 0, py::arg("seed") = 0,
           py::arg("thread_no") = 0, py::arg("verbose") = true,
           py::arg("learning_rate") = 1.0f, py::arg("repulsion_strength") = 1.0f,
-          py::arg("negative_sample_rate") = 5.0f, py::arg("approx_pow") = false,
+          py::arg("negative_sample_rate") = 3.0f, py::arg("approx_pow") = true,
           py::arg("pcg_rand") = true, py::arg("rng_type") = "",
           py::arg("batch") = true, py::arg("grain_size") = 1,
           py::arg("a") = 0.0f, py::arg("b") = 0.0f,
           py::arg("opt_method") = "adam", py::arg("alpha") = -1.0f,
           py::arg("beta1") = 0.5f, py::arg("beta2") = 0.9f, py::arg("eps") = 1e-7f,
-          py::arg("ai") = py::none(), py::arg("aj") = py::none());
+          py::arg("ai") = py::none(), py::arg("aj") = py::none(),
+          py::arg("repair_disconnected") = true);
 
     m.def("compute_node_colors", &compute_node_colors, "Compute node colors from coordinates",
           py::arg("coordinates"), py::arg("thread_no") = 1);

@@ -57,7 +57,7 @@ def test_layout_network_deterministic_rng_is_reproducible():
         n_components=2,
         n_epochs=20,
         rng_type="deterministic",
-        seed=999,
+        seed=1,
         n_threads=1,
         verbose=False,
         key_added="X_det",
