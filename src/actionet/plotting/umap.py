@@ -1180,6 +1180,9 @@ def plot_umap_interactive(
             coloraxis_colorbar_title_text="",
         )
 
+    fig._config = fig._config or {}
+    fig._config["showTips"] = False
+
     if title:
         fig.update_layout(title=title)
     return fig
