@@ -197,6 +197,42 @@ def run_spa(
     return result
 
 
+def _resolve_fixed_labels(
+    fixed_labels: Union[np.ndarray, pd.Series, pd.Index, List],
+    adata: Optional[AnnData],
+) -> np.ndarray:
+    """Normalize fixed_labels to a 1-indexed integer position array."""
+    arr = np.asarray(fixed_labels)
+
+    # Case 1: boolean mask
+    if arr.dtype == bool:
+        if adata is not None and len(arr) != adata.n_obs:
+            raise ValueError(
+                f"Boolean mask length ({len(arr)}) does not match "
+                f"number of observations ({adata.n_obs})."
+            )
+        return np.where(arr)[0].astype(np.intp) + 1
+
+    # Case 2: pd.Index (obs index values) — resolve positionally
+    if isinstance(fixed_labels, pd.Index):
+        if adata is None:
+            raise ValueError(
+                "A pd.Index for `fixed_labels` requires `X` to be an AnnData "
+                "so that obs names can be resolved to positions."
+            )
+        positions = adata.obs.index.get_indexer(fixed_labels)
+        missing = positions == -1
+        if missing.any():
+            bad = np.asarray(fixed_labels)[missing][:5]
+            raise KeyError(
+                f"Some fixed_labels not found in adata.obs.index: {bad.tolist()}"
+            )
+        return positions.astype(np.intp) + 1
+
+    # Case 3: already integer indices (existing behaviour) — pass through
+    return arr
+
+
 def run_label_propagation(
     X: Union[AnnData, sp.spmatrix],
     initial_labels: Union[str, np.ndarray, pd.Series, List],
@@ -204,7 +240,7 @@ def run_label_propagation(
     lambda_param: float = 1.0,
     iterations: int = 3,
     sig_threshold: float = 3.0,
-    fixed_labels: Optional[np.ndarray] = None,
+    fixed_labels: Optional[Union[np.ndarray, pd.Series, pd.Index, List]] = None,
     n_threads: int = 0,
     key_added: str = "propagated_labels",
     return_raw: bool = False,
@@ -239,7 +275,12 @@ def run_label_propagation(
     sig_threshold
         Significance threshold.
     fixed_labels
-        Indices of labels to keep fixed (1-indexed).
+        Cells whose labels should remain fixed during propagation. Accepts:
+
+        - An integer array of 1-indexed cell positions (legacy behavior).
+        - A boolean mask of length ``n_obs`` (``True`` = fixed).
+        - A ``pd.Index`` of observation names present in ``adata.obs.index``
+          (only valid when ``X`` is AnnData).
     n_threads
         Number of threads (0 = auto).
     key_added
@@ -288,6 +329,9 @@ def run_label_propagation(
 
     categories, numeric_codes = np.unique(raw_labels, return_inverse=True)
     numeric_codes = numeric_codes.astype(np.float64)
+
+    if fixed_labels is not None:
+        fixed_labels = _resolve_fixed_labels(fixed_labels, X if is_anndata else None)
 
     new_codes = _core.run_lpa(
         G, numeric_codes, lambda_param, iterations,
