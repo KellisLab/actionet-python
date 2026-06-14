@@ -1,0 +1,68 @@
+# Conda environment for GPU testing on Ubuntu 22+ (native / WSL2).
+# CUDA >= 12.2 required; targets Ampere+ (SM 80+).
+#
+# Usage:
+#   conda env create -f environment-gpu.yml
+#   conda activate actionet-gpu
+#
+# Then build the package with GPU support:
+#   LIBACTIONET_ENABLE_NVIDIA_GPU=ON pip install -e .
+
+name: actionet-gpu
+
+channels:
+  - conda-forge
+  - nvidia
+  - defaults
+
+dependencies:
+  # ---------- Python ----------
+  - python=3.12
+
+  # ---------- Build toolchain ----------
+  - cmake>=3.19
+  - ninja
+  - compilers
+  - cxx-compiler
+  - pybind11>=2.13.0
+  - scikit-build-core>=0.10.0
+
+  # ---------- CUDA toolkit ----------
+  - cuda-toolkit=12.2
+  - cuda-cudart-dev
+  - cuda-nvcc
+  - libcublas-dev
+  - libcusolver-dev
+
+  # ---------- Intel MKL (BLAS/LAPACK) ----------
+  - mkl>=2024.0
+  - mkl-devel
+  - mkl-include
+  - libblas=*=*mkl*
+  - liblapack=*=*mkl*
+  - libcblas=*=*mkl*
+
+  # ---------- HDF5 (C library) ----------
+  - hdf5>=1.12
+
+  # ---------- OpenMP (GNU libgomp — single runtime to avoid mixing) ----------
+  - libgomp
+
+  # ---------- Python runtime dependencies ----------
+  - numpy>=2.0.0
+  - scipy>=1.11.0
+  - pandas>=2.0.0
+  - h5py>=3.9.0
+  - anndata>=0.12.10
+  - python-igraph>=1.0.0
+
+  # ---------- Dev / test ----------
+  - pytest>=8.0.0
+  - pytest-cov>=5.0.0
+  - black>=24.0.0
+  - ruff>=0.1.0
+  - pip
+
+  # ---------- pip-only packages ----------
+  - pip:
+      - -e .
