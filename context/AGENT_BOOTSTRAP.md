@@ -17,6 +17,7 @@ Before proposing changes:
 Rules of engagement:
 
 - Prefer small, incremental diffs over large rewrites.
+- Document everything (docstrings and informative comments as needed), but keep it clean and readable.
 - Do not change output formats, parameter names, or directory structures without explicitly calling it out and getting confirmation.
 - When uncertain about data contracts or expected behavior, ask for an example input/output or schema.
 

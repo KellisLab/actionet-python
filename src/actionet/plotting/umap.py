@@ -1013,10 +1013,7 @@ def plot_umap_interactive(
     """
 
     try:
-        import types
-
         import plotly.express as px
-        import plotly.io as pio
     except ImportError as exc:  # pragma: no cover - optional dependency
         raise ImportError("plotly is required for interactive UMAP plotting.") from exc
 
@@ -1186,11 +1183,4 @@ def plot_umap_interactive(
     if title:
         fig.update_layout(title=title)
 
-    def _display_no_tips(self):
-        if pio.renderers.render_on_display and pio.renderers.default:
-            pio.show(self, config={"showTips": False})
-        else:
-            print(repr(self))
-
-    fig._ipython_display_ = types.MethodType(_display_no_tips, fig)
     return fig
