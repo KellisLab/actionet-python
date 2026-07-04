@@ -4,6 +4,13 @@ Python bindings for ACTIONet (Action-based Cell-Type Identification and Organism
 
 This package wraps the C++ backend `libactionet` without modifications, providing a Python interface with AnnData as the core data container, designed to integrate seamlessly with the scanpy ecosystem.
 
+## Documentation
+
+- **API reference & guides**: <https://kellislab.github.io/actionet-python/> (auto-built from docstrings on every push to `dev` / `dev-gpu-v2`).
+- **Build locally**: `pip install -e ".[docs]" && mkdocs serve` and open <http://127.0.0.1:8000>.
+- **C++ core** (`libactionet`) has its own docs (planned) at <https://github.com/KellisLab/libactionet>.
+
+
 ## Features
 
 - **Full C++ backend**: Leverages the high-performance `libactionet` C++ library

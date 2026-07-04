@@ -1,0 +1,104 @@
+site_name: ACTIONet (Python)
+site_description: Python front-end for the ACTIONet single-cell analysis toolkit.
+site_url: https://kellislab.github.io/actionet-python/
+repo_url: https://github.com/KellisLab/actionet-python
+repo_name: KellisLab/actionet-python
+edit_uri: edit/dev-gpu-v2/docs/
+
+docs_dir: docs
+
+theme:
+  name: material
+  features:
+    - navigation.sections
+    - navigation.top
+    - navigation.indexes
+    - content.code.copy
+    - content.action.edit
+    - search.suggest
+    - search.highlight
+    - toc.follow
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/weather-night
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/weather-sunny
+        name: Switch to light mode
+  icon:
+    repo: fontawesome/brands/github
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - md_in_html
+  - toc:
+      permalink: true
+  - pymdownx.details
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.inlinehilite
+  - pymdownx.snippets
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+  - pymdownx.tabbed:
+      alternate_style: true
+
+plugins:
+  - search
+  - mkdocstrings:
+      default_handler: python
+      handlers:
+        python:
+          paths: [src]
+          options:
+            docstring_style: numpy
+            show_source: true
+            show_root_heading: true
+            show_root_full_path: false
+            show_signature_annotations: true
+            separate_signature: true
+            members_order: source
+            filters:
+              - "!^_"
+            merge_init_into_class: true
+            heading_level: 2
+
+nav:
+  - Home: index.md
+  - Architecture: architecture.md
+  - Guides:
+      - Guide calling: guide_calling.md
+      - Batch correction benchmark: batch_correction_benchmark.md
+      - SVD GPU benchmark: svd_gpu_benchmark.md
+  - API Reference:
+      - Overview: api/index.md
+      - Pipeline: api/pipeline.md
+      - Core: api/core.md
+      - Reduction: api/reduction.md
+      - Clustering: api/clustering.md
+      - Advanced: api/advanced.md
+      - Batch correction: api/batch_correction.md
+      - Imputation: api/imputation.md
+      - Specificity: api/specificity.md
+      - Annotation: api/annotation.md
+      - Preprocessing: api/preprocessing.md
+      - AnnData utils: api/anndata_utils.md
+      - Backed persistence: api/backed.md
+      - Visualization: api/visualization.md
+      - Plotting: api/plotting.md
+      - Tools: api/tools.md
+      - Guide calling: api/guide_calling.md
+      - Lazy transform: api/lazy_transform.md
+      - GPU errors: api/gpu_errors.md

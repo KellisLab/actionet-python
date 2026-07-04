@@ -1,0 +1,69 @@
+name: Docs
+
+# Build the MkDocs + Material site and deploy to GitHub Pages.
+#
+# One-time manual step (only after this workflow's first successful run):
+#   GitHub repo Settings > Pages
+#     Source: Deploy from a branch
+#     Branch: gh-pages / (root)
+#
+# The workflow reuses the same build recipe as the `linux-cpu` job in
+# ci.yml so the C++ extension (actionet._core) is available when
+# mkdocstrings imports the package to render docstrings.
+
+on:
+  push:
+    branches: [dev, dev-gpu-v2]
+    paths:
+      - "docs/**"
+      - "mkdocs.yml"
+      - "src/actionet/**"
+      - "pyproject.toml"
+      - ".github/workflows/docs.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: docs-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-deploy:
+    name: Build and deploy docs
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install build prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake libhdf5-dev libomp-dev libopenblas-dev liblapack-dev
+
+      - name: Build extension and install docs deps
+        env:
+          LIBACTIONET_ENABLE_NVIDIA_GPU: "OFF"
+        run: |
+          python -m pip install --upgrade pip
+          pip install --no-build-isolation -e ".[docs]"
+
+      - name: Smoke test (import)
+        run: |
+          python -c "import actionet; print('actionet', actionet.__version__)"
+
+      - name: Configure git identity for gh-deploy
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Build and deploy to gh-pages
+        run: mkdocs gh-deploy --force

@@ -57,6 +57,9 @@ tests/**.txt
 # scikit-build
 _skbuild/
 
+# MkDocs build output
+/site/
+
 # macOS
 .DS_Store
 *.dylib
