@@ -9,8 +9,9 @@ set -euo pipefail
 # GNU, INTEL, or LLVM to force a specific runtime; AUTO (default) lets
 # CMake detect the compiler's preferred runtime.
 # Usage:
-#   ./install_optimized.sh [--native-macos] [pip args...]
+#   ./install_optimized.sh [--native-macos] [--verbose] [pip args...]
 #   ACTIONET_MACOS_NATIVE=1 ./install_optimized.sh [pip args...]
+# Pass --verbose (or -v) to forward the verbose flag to pip.
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$here"
@@ -30,11 +31,7 @@ for arg in "$@"; do
 done
 
 run_pip_install() {
-    if [[ "${#pip_args[@]}" -eq 0 ]]; then
-        python -m pip install .
-    else
-        python -m pip install "${pip_args[@]}"
-    fi
+    python -m pip install . "${pip_args[@]}"
 }
 
 if [[ "$os" == "Darwin" ]]; then
