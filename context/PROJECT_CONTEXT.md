@@ -36,6 +36,6 @@ This work aims to develop a multi-language computational biology data analysis t
 ## Key Principles (for humans + agents)
 
 - Changes must preserve correctness and (where applicable) parity between R and Python front-ends.
-- R front-end is more feature complete. Python version is more barebones and higher performance. This may change in the future.
+- R front-end is more feature complete. Python version is higher performance. Python version will eventually succeed R entirely.
 - Prefer spec/contract-driven interfaces across repos (I/O schemas, parameter names, output formats).
 - Assume all repos are present and readable on local machine.
