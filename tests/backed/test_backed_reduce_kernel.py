@@ -44,6 +44,7 @@ def test_flush_backed_handle_raises_on_flush_failure():
             raise OSError("simulated flush failure")
 
     class _DummyFile:
+        is_open = True
         _file = _BrokenHandle()
 
     class _DummyAdata:

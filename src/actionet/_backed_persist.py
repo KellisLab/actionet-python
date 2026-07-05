@@ -109,24 +109,15 @@ def is_backed_adata(adata: AnnData) -> bool:
 def _ensure_backed_open(adata: AnnData) -> None:
     """Reopen the backing HDF5 file if anndata silently closed it.
 
-    anndata 0.12+ closes the parent's backing file when ``.to_memory()``
-    is called on a backed view (see ``AnnData.to_memory`` -- when
-    ``self.isbacked`` it calls ``self.file.close()``). After that call
-    ``adata.isbacked`` still returns ``True`` and ``adata.filename`` is
-    still set, but ``adata.file._file`` is a closed ``h5py.File`` whose
-    identifier is invalid, and any direct h5py access raises
-    ``ValueError: Invalid file identifier``.
-
-    Anndata's own ``.X`` property auto-reopens on access, but nothing
-    else does. Call this before capturing ``adata.file._file`` directly.
+    Delegates to :func:`backed_io._flush_backed_handle` which performs
+    the reopen-then-flush sequence.  Persist call-sites need only the
+    reopen (the flush is a harmless no-op when nothing is dirty), so
+    this thin wrapper keeps call-sites readable.
     """
     if not is_backed_adata(adata):
         return
-    fm = getattr(adata, "file", None)
-    if fm is None or getattr(fm, "is_open", False):
-        return
-    mode = getattr(fm, "_filemode", None) or "r+"
-    fm.open(filemode=mode)
+    from .backed_io import _flush_backed_handle
+    _flush_backed_handle(adata, context="persist")
 
 
 def set_auto_persist(adata: AnnData, enabled: bool = True) -> None:
