@@ -68,6 +68,15 @@ def run_action(
         Merged archetype matrix (cells × archetypes, after merging similar archetypes).
     adata.obs["assigned_archetype"] : pd.Series or np.ndarray
         Cell-to-archetype assignments.
+
+    Notes
+    -----
+    The Python defaults for ``max_iter`` (50), ``tolerance`` (1e-100), and
+    ``min_observations`` (2) intentionally diverge from the C++ core /
+    ``decompose_action`` defaults (100, 1e-6, 3 respectively).  The Python
+    values were chosen to prioritize convergence speed and sensitivity for
+    interactive exploratory workflows.  Pass explicit values if you need
+    C++-identical behaviour.
     """
     if not inplace:
         adata = adata.copy()

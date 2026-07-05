@@ -346,7 +346,7 @@ def _lazy_params_for_metadata(
         payload["lazy_transform_key"] = str(lazy_transform.key)
     if lazy_transform.matrix_fingerprint is not None:
         payload["lazy_matrix_fingerprint"] = dict(lazy_transform.matrix_fingerprint)
-        payload["lazy_scale_cache_key"] = _stable_hash(lazy_transform.matrix_fingerprint)[:24]
+        payload["lazy_transform_fingerprint"] = _stable_hash(lazy_transform.matrix_fingerprint)[:24]
     return payload
 
 

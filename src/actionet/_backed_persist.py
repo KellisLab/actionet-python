@@ -275,6 +275,10 @@ def _include_all_inmemory_annotations(adata: AnnData, results: dict) -> None:
             if k not in results[key]:
                 results[key][k] = container[k]
 
+    for k in adata.layers.keys():
+        if k not in results["layers_keys"]:
+            results["layers_keys"][k] = adata.layers[k]
+
     for k, v in adata.uns.items():
         if k not in results["uns_keys"]:
             results["uns_keys"][k] = v
@@ -541,7 +545,7 @@ def _checkpoint_collect_args(adata: AnnData) -> dict:
             "varm_keys": list(adata.varm.keys()),
             "obsp_keys": list(adata.obsp.keys()),
             "varp_keys": list(adata.varp.keys()),
-            "layers_keys": [],
+            "layers_keys": list(adata.layers.keys()),
             "uns_keys": list(adata.uns.keys()),
         }
 

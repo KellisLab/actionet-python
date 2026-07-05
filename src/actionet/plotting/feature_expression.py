@@ -70,7 +70,10 @@ def _extract_expression(
     backed_chunk_size: int = 4096,
 ) -> pd.DataFrame:
     feature_labels = _resolve_feature_labels(adata, features_use)
-    feature_to_idx = {feat: idx for idx, feat in enumerate(feature_labels)}
+    feature_to_idx: dict = {}
+    for idx, feat in enumerate(feature_labels):
+        if feat not in feature_to_idx:
+            feature_to_idx[feat] = idx
     feature_indices = np.array([feature_to_idx[feat] for feat in features], dtype=np.int64)
 
     source = MatrixSource(adata, layer=layer)
