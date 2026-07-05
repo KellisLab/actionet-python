@@ -201,7 +201,7 @@ def _resolve_fixed_labels(
     fixed_labels: Union[np.ndarray, pd.Series, pd.Index, List],
     adata: Optional[AnnData],
 ) -> np.ndarray:
-    """Normalize fixed_labels to a 1-indexed integer position array."""
+    """Normalize fixed_labels to a 0-indexed integer position array."""
     arr = np.asarray(fixed_labels)
 
     # Case 1: boolean mask
@@ -211,7 +211,7 @@ def _resolve_fixed_labels(
                 f"Boolean mask length ({len(arr)}) does not match "
                 f"number of observations ({adata.n_obs})."
             )
-        return np.where(arr)[0].astype(np.intp) + 1
+        return np.where(arr)[0].astype(np.intp)
 
     # Case 2: pd.Index (obs index values) — resolve positionally
     if isinstance(fixed_labels, pd.Index):
@@ -227,10 +227,10 @@ def _resolve_fixed_labels(
             raise KeyError(
                 f"Some fixed_labels not found in adata.obs.index: {bad.tolist()}"
             )
-        return positions.astype(np.intp) + 1
+        return positions.astype(np.intp)
 
-    # Case 3: already integer indices (existing behaviour) — pass through
-    return arr
+    # Case 3: integer indices (0-indexed)
+    return arr.astype(np.intp)
 
 
 def run_label_propagation(
@@ -277,7 +277,7 @@ def run_label_propagation(
     fixed_labels
         Cells whose labels should remain fixed during propagation. Accepts:
 
-        - An integer array of 1-indexed cell positions (legacy behavior).
+        - An integer array of 0-indexed cell positions.
         - A boolean mask of length ``n_obs`` (``True`` = fixed).
         - A ``pd.Index`` of observation names present in ``adata.obs.index``
           (only valid when ``X`` is AnnData).

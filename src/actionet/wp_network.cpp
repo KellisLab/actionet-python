@@ -58,13 +58,13 @@ py::array_t<double> run_lpa(py::object G, py::array_t<double> labels, double lam
         fixed_labels_vec.set_size(static_cast<arma::uword>(fixed_buf.size));
         for (py::ssize_t i = 0; i < fixed_buf.size; ++i) {
             const int val = fixed_ptr[i];
-            if (val < 1) {
+            if (val < 0) {
                 throw std::runtime_error(
-                    "fixed_labels values must be >= 1 (1-indexed); got " +
+                    "fixed_labels values must be >= 0 (0-indexed); got " +
                     std::to_string(val)
                 );
             }
-            fixed_labels_vec(static_cast<arma::uword>(i)) = static_cast<arma::uword>(val - 1);
+            fixed_labels_vec(static_cast<arma::uword>(i)) = static_cast<arma::uword>(val);
         }
     }
 
