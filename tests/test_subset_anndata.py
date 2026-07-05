@@ -608,3 +608,99 @@ class TestBackedRewriteRegressions:
 
         assert backed.obsp["obs_graph"].shape == (30, 30)
         assert backed.varp["var_graph"].shape == (18, 18)
+
+
+# ---------------------------------------------------------------------------
+# Regression: anndata 0.12+ closes the parent's HDF5 handle when
+# `.to_memory()` is called on a backed view. `subset_anndata` must reopen
+# the file rather than surface `ValueError: Invalid file identifier`.
+# ---------------------------------------------------------------------------
+
+
+class TestSubsetAfterViewToMemory:
+    """`view.to_memory()` closes the parent's backing file on anndata >= 0.12.
+
+    After that call, `adata.isbacked` still reports True and `adata.filename`
+    is still set, but `adata.file._file` is a closed h5py handle. Every
+    entry point in `_backed_persist` that captures the raw handle must
+    detect and reopen it.
+    """
+
+    def _prime(self, backed_adata) -> None:
+        """Force the parent's HDF5 handle closed via `view.to_memory()`."""
+        _ = backed_adata[:10, :].to_memory()
+        assert backed_adata.isbacked
+        assert not backed_adata.file.is_open
+
+    def test_subset_anndata_inplace_true_after_to_memory(self, backed_adata):
+        self._prime(backed_adata)
+        mask = np.zeros(backed_adata.n_obs, dtype=bool)
+        mask[:40] = True
+
+        actionet.subset_anndata(backed_adata, obs_idx=mask, inplace=True)
+
+        assert backed_adata.n_obs == 40
+        assert backed_adata.isbacked
+
+    def test_subset_anndata_inplace_false_after_to_memory(self, backed_adata):
+        self._prime(backed_adata)
+        mask = np.zeros(backed_adata.n_obs, dtype=bool)
+        mask[:30] = True
+
+        result = actionet.subset_anndata(backed_adata, obs_idx=mask, inplace=False)
+
+        assert result is not None
+        assert result.n_obs == 30
+        assert not result.isbacked
+        assert backed_adata.n_obs == 200
+
+    def test_subset_anndata_output_file_after_to_memory(self, backed_adata, tmp_path):
+        self._prime(backed_adata)
+        mask = np.zeros(backed_adata.n_obs, dtype=bool)
+        mask[:25] = True
+        out_path = str(tmp_path / "subset_out.h5ad")
+
+        result = actionet.subset_anndata(
+            backed_adata, obs_idx=mask, inplace=False, output_file=out_path,
+        )
+
+        assert result is not None
+        assert result.n_obs == 25
+        assert result.isbacked
+        assert str(result.filename) == out_path
+        result.file.close()
+
+    def test_subset_view_inplace_true_after_to_memory(self, backed_adata):
+        """Notebook pattern: `subset_anndata(adata[mask, :])` after `.to_memory()`."""
+        self._prime(backed_adata)
+        mask = backed_adata.obs["group"] == "A"
+
+        actionet.subset_anndata(backed_adata[mask, :], inplace=True)
+
+        assert backed_adata.isbacked
+        assert backed_adata.n_obs == int(mask.sum())
+
+    def test_subset_view_inplace_false_after_to_memory(self, backed_adata):
+        """Notebook pattern: `subset_anndata(adata[mask, :], inplace=False)` after `.to_memory()`."""
+        self._prime(backed_adata)
+        mask = backed_adata.obs["group"] == "A"
+        expected_n = int(mask.sum())
+
+        result = actionet.subset_anndata(backed_adata[mask, :], inplace=False)
+
+        assert result is not None
+        assert result.n_obs == expected_n
+        assert not result.isbacked
+        assert backed_adata.n_obs == 200
+
+    def test_materialize_backed_after_to_memory(self, backed_adata):
+        self._prime(backed_adata)
+        view = backed_adata[10:30, :20]
+
+        actionet.materialize_backed(view)
+
+        assert not view.is_view
+        assert view.isbacked
+        assert view.n_obs == 20
+        assert view.n_vars == 20
+

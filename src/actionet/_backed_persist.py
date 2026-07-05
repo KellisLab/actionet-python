@@ -110,6 +110,29 @@ def is_backed_adata(adata: AnnData) -> bool:
     return bool(getattr(adata, "isbacked", False) and getattr(adata, "filename", None))
 
 
+def _ensure_backed_open(adata: AnnData) -> None:
+    """Reopen the backing HDF5 file if anndata silently closed it.
+
+    anndata 0.12+ closes the parent's backing file when ``.to_memory()``
+    is called on a backed view (see ``AnnData.to_memory`` -- when
+    ``self.isbacked`` it calls ``self.file.close()``). After that call
+    ``adata.isbacked`` still returns ``True`` and ``adata.filename`` is
+    still set, but ``adata.file._file`` is a closed ``h5py.File`` whose
+    identifier is invalid, and any direct h5py access raises
+    ``ValueError: Invalid file identifier``.
+
+    Anndata's own ``.X`` property auto-reopens on access, but nothing
+    else does. Call this before capturing ``adata.file._file`` directly.
+    """
+    if not is_backed_adata(adata):
+        return
+    fm = getattr(adata, "file", None)
+    if fm is None or getattr(fm, "is_open", False):
+        return
+    mode = getattr(fm, "_filemode", None) or "r+"
+    fm.open(filemode=mode)
+
+
 def set_auto_persist(adata: AnnData, enabled: bool = True) -> None:
     """Control whether backed disk writes happen automatically.
 
@@ -408,6 +431,8 @@ def _flush_pending(adata: AnnData) -> None:
     dirty = _dirty_tracker.get_dirty(adata)
     if not dirty:
         return
+
+    _ensure_backed_open(adata)
 
     if _anndata_io is None:
         raise RuntimeError(
@@ -1069,6 +1094,7 @@ def _write_filtered_backed(
     from .experimental._anndata_io import _write_dataframe_to_h5, _write_dict_value
 
     _flush_pending(adata)
+    _ensure_backed_open(adata)
 
     obs_sub = adata.obs.iloc[obs_idx].copy()
     var_sub = adata.var.iloc[var_idx].copy()
@@ -1283,6 +1309,7 @@ def materialize_backed(
 
     parent = adata._adata_ref
     _flush_pending(parent)
+    _ensure_backed_open(parent)
 
     obs_int = _view_idx_to_int(adata._oidx, parent.n_obs)
     var_int = _view_idx_to_int(adata._vidx, parent.n_vars)
@@ -1359,6 +1386,7 @@ def subset_backed_inplace(
             "subset_backed_inplace requires a backed AnnData object. "
             "Open with ad.read_h5ad(path, backed='r+')."
         )
+    _ensure_backed_open(adata)
     _ensure_backed_writable(adata)
     _flush_pending(adata)
 
