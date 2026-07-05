@@ -47,8 +47,7 @@ class LazyTransform:
         if int(validation_samples) <= 0:
             raise ValueError("`validation_samples` must be > 0.")
 
-        _validate_lazy_logcounts_params(
-            enabled=True,
+        _validate_lazy_transform_params(
             lazy_target_sum=target_sum,
             lazy_log_base=log_base,
             lazy_pseudocount=pseudocount,
@@ -102,10 +101,6 @@ class LazyTransform:
             and self.validation_row_indices is not None
             and self.validation_row_sums is not None
         )
-
-    def cache_size(self) -> int:
-        # Backward-compatible shim from stage-2A cache API.
-        return 1 if self.row_scale_factors is not None else 0
 
 
 def create_lazy_transform(
@@ -230,16 +225,12 @@ def _validate_lazy_transform(
         )
 
 
-def _validate_lazy_logcounts_params(
+def _validate_lazy_transform_params(
     *,
-    enabled: bool,
     lazy_target_sum: float,
     lazy_log_base: Optional[float],
     lazy_pseudocount: float,
 ) -> None:
-    if not enabled:
-        return
-
     if lazy_target_sum <= 0:
         raise ValueError("`lazy_target_sum` must be > 0 when `lazy_logcounts=True`.")
     if lazy_log_base is not None:
@@ -375,13 +366,6 @@ def _resolve_lazy_backed_transform(
 
     if lazy_transform is None:
         return None, False, 1.0
-
-    _validate_lazy_logcounts_params(
-        enabled=True,
-        lazy_target_sum=lazy_transform.target_sum,
-        lazy_log_base=lazy_transform.log_base,
-        lazy_pseudocount=lazy_transform.pseudocount,
-    )
 
     if not lazy_transform.is_initialized:
         raise ValueError(

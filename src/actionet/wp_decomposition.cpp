@@ -370,18 +370,6 @@ py::dict run_svd_dense(py::object A, int k = 30, int max_it = 0, int seed = 0,
     return out;
 }
 
-py::dict run_svd_operator(py::object op, int k = 30, int max_it = 0, int seed = 0,
-                          int algorithm = actionet::ALG_HALKO, bool verbose = true) {
-    PythonMatrixOperator mat_op(std::move(op));
-    actionet::SVDResult res = actionet::runSVD_Operator(mat_op, k, max_it, seed, algorithm, verbose);
-
-    py::dict out;
-    out["u"] = arma_mat_to_numpy(res.U);
-    out["d"] = arma_vec_to_numpy(res.sigma);
-    out["v"] = arma_mat_to_numpy(res.V);
-    return out;
-}
-
 // =====================================================================================================================
 
 void init_decomposition(py::module_ &m) {
@@ -439,8 +427,4 @@ void init_decomposition(py::module_ &m) {
     m.def("run_svd_dense", &run_svd_dense, "Run SVD (dense)",
           py::arg("A"), py::arg("k") = 30, py::arg("max_it") = 0, py::arg("seed") = 0,
           py::arg("algorithm") = 0, py::arg("verbose") = true);
-
-    m.def("run_svd_operator", &run_svd_operator, "Run SVD (generic operator)",
-          py::arg("op"), py::arg("k") = 30, py::arg("max_it") = 0, py::arg("seed") = 0,
-          py::arg("algorithm") = actionet::ALG_HALKO, py::arg("verbose") = true);
 }

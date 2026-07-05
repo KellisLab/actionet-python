@@ -38,9 +38,6 @@ from .clustering import (
 )
 from .anndata_utils import (
     anndata_to_matrix,
-    matrix_to_anndata,
-    add_action_results,
-    add_network_to_anndata,
     aggregate_anndata,
 )
 from .batch_correction import (
@@ -170,9 +167,6 @@ __all__ = [
     "run_actionet",
     # Utilities
     "anndata_to_matrix",
-    "matrix_to_anndata",
-    "add_action_results",
-    "add_network_to_anndata",
     "aggregate_anndata",
     "aggregate_matrix",
     "matrix_sums",

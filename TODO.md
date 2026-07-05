@@ -18,11 +18,14 @@
 * Lazy transform in-memory?
 * Allow changes to lazy transform params
   * Force recompute of attributes
-* `lazy_logcounts` in `_validate_lazy_logcounts_params()` does nothing?
 * compute_transparency() use scale()
 * Explore more accurate and faster log approximations for JSD and lazy transform
 * Combine plot_umap* paths with `raster=bool`
 * Python `compute_feature_specificity()` in-mem is still garbage (maybe not?)
+
+## Test bugs (FIXED)
+* ~~`tests/backed/test_backed_parity.py::_setup_full_pipeline`: case mismatch~~ Fixed: `reduction_key="action"`.
+* ~~`tests/test_plotting_static.py`: `fig._repr_png_()` removed in mpl 3.9+~~ Fixed: replaced with `savefig` roundtrip.
 
 ## Done
 * ARMA_DONT_USE_WRAPPER multiple redefinition

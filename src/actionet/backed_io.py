@@ -11,19 +11,16 @@ import warnings
 from typing import Any, Generator, Optional
 
 import numpy as np
-import scipy.sparse as sp
 from anndata import AnnData
 
 from ._backed_compression import (
     format_compression_summary,
     get_storage_metadata_from_adata,
-    get_storage_metadata_from_matrix,
     is_compressed_storage,
 )
 from .preprocessing import decompress_backed_storage
 
 
-_WARNED_COMPRESSED_BACKED_SVD: set[tuple[str, str, str]] = set()
 _LOCK_OPEN_ERROR_FRAGMENTS = (
     "createbackedoperator",
     "failed to open h5ad file",
@@ -37,69 +34,8 @@ _LOCK_OPEN_ERROR_FRAGMENTS = (
 )
 
 
-def _is_backed_matrix(X: Any) -> bool:
-    """Detect whether ``X`` is backed/on-disk rather than fully in memory."""
-    if sp.issparse(X) or isinstance(X, np.ndarray):
-        return False
-
-    if hasattr(X, "isbacked"):
-        return bool(X.isbacked)
-
-    if hasattr(X, "group"):
-        return True
-
-    mod = type(X).__module__
-    if mod and mod.startswith("h5py"):
-        return True
-
-    return False
-
-
-def _warn_if_compressed_backed_svd(
-    metadata: Optional[dict],
-    *,
-    context: str,
-    recommendation: str,
-) -> None:
-    """Warn once per (file, matrix key, context) for compressed backed SVD."""
-    if not is_compressed_storage(metadata):
-        return
-
-    filename = str((metadata or {}).get("filename") or "<unknown>")
-    matrix_key = str((metadata or {}).get("matrix_key") or "<unknown>")
-    dedupe_key = (filename, matrix_key, context)
-    if dedupe_key in _WARNED_COMPRESSED_BACKED_SVD:
-        return
-    _WARNED_COMPRESSED_BACKED_SVD.add(dedupe_key)
-
-    codecs = format_compression_summary(metadata)
-    warnings.warn(
-        (
-            f"Backed operator SVD in `{context}` is reading compressed storage "
-            f"for `{matrix_key}` ({codecs}). This can cause major runtime "
-            f"slowdowns due to repeated decompression during matvec passes. "
-            f"Recommended: `{recommendation}`."
-        ),
-        UserWarning,
-        stacklevel=3,
-    )
-
-
 def _backed_group_path(layer: Optional[str]) -> str:
     return "/X" if layer is None else f"/layers/{layer}"
-
-
-def _resolve_backed_handle(X: Any, layer: Optional[str] = None) -> tuple[str, str]:
-    if isinstance(X, AnnData):
-        if not bool(getattr(X, "isbacked", False) and getattr(X, "filename", None)):
-            raise ValueError("Backed AnnData expected")
-        return str(X.filename), _backed_group_path(layer)
-
-    group = getattr(X, "group", None)
-    if group is None or not hasattr(group, "file"):
-        raise ValueError("Unable to resolve backed file/group from matrix handle")
-
-    return str(group.file.filename), str(group.name)
 
 
 def _flush_backed_handle(adata: AnnData, *, context: str) -> None:

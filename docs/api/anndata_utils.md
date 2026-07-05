@@ -7,7 +7,4 @@ representations used by the C++ core.
     options:
       members:
         - anndata_to_matrix
-        - matrix_to_anndata
-        - add_action_results
-        - add_network_to_anndata
         - aggregate_anndata

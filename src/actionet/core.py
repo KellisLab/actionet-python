@@ -8,15 +8,7 @@ from anndata import AnnData
 
 from . import _core
 from ._backed_persist import persist_updates
-from .reduction import (
-    reduce_kernel,
-    reduce_kernel_from_svd,
-    run_svd,
-)
-from .specificity import (
-    compute_archetype_feature_specificity,
-    compute_feature_specificity,
-)
+from .reduction import run_svd
 from . import tools
 
 

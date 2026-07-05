@@ -17,8 +17,6 @@ import numpy as np
 import scipy.sparse as sp
 from anndata import AnnData
 
-from ._backed_persist import persist_layer
-
 
 def _is_sparse_matrix_like(X: object) -> bool:
     """Return ``True`` if *X* looks like a sparse matrix.

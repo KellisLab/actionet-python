@@ -3,12 +3,11 @@
 from __future__ import annotations
 
 import warnings
-from typing import Iterable, Mapping, Optional, Sequence, Tuple, Union
+from typing import Mapping, Optional, Sequence, Union
 
 import numpy as np
 import pandas as pd
 from anndata import AnnData
-from scipy import sparse as sp
 
 
 _DEFAULT_DISCRETE = [
@@ -194,61 +193,6 @@ def resolve_embedding(adata: AnnData, basis: str) -> np.ndarray:
     return coords[:, :2]
 
 
-def resolve_color_vector(
-    adata: AnnData,
-    color: Optional[Union[str, Sequence, np.ndarray]],
-    layer: Optional[str] = None,
-) -> Tuple[Optional[np.ndarray], str, Optional[pd.Index]]:
-    """Resolve a color spec into values, kind, and categories if applicable."""
-    if color is None:
-        return None, "none", None
-
-    if isinstance(color, str):
-        if color in adata.obs:
-            series = adata.obs[color]
-            return series.to_numpy(), _infer_color_kind(series), series.astype("category").cat.categories
-        if color in adata.var_names:
-            idx = int(np.where(adata.var_names == color)[0][0])
-            matrix = adata.layers[layer] if layer is not None else adata.X
-            if sp.issparse(matrix):
-                values = np.asarray(matrix[:, idx].toarray()).ravel()
-            else:
-                values = np.asarray(matrix[:, idx]).ravel()
-            return values, "continuous", None
-        if color in adata.obsm:
-            values = np.asarray(adata.obsm[color])
-            if values.ndim == 2 and values.shape[1] == 3:
-                return values, "rgb", None
-            if values.ndim == 2 and values.shape[1] == 1:
-                return values[:, 0], "continuous", None
-        raise ValueError(
-            f"Color key '{color}' not found in adata.obs, adata.var_names, or adata.obsm."
-        )
-
-    if _is_array_like(color):
-        values = _to_numpy_1d(color)
-        if values.shape[0] != adata.n_obs:
-            raise ValueError("Color vector length does not match number of observations.")
-        return values, _infer_color_kind(values), None
-
-    raise TypeError("Unsupported color specification.")
-
-
-def _infer_color_kind(values: Union[pd.Series, np.ndarray]) -> str:
-    """Infer whether values represent categorical, continuous, or rgb data."""
-    series = values if isinstance(values, pd.Series) else pd.Series(values)
-    if pd.api.types.is_bool_dtype(series):
-        return "categorical"
-    if pd.api.types.is_categorical_dtype(series):
-        return "categorical"
-    if pd.api.types.is_numeric_dtype(series):
-        unique_count = series.nunique(dropna=True)
-        if unique_count <= 50 and pd.api.types.is_integer_dtype(series):
-            return "categorical"
-        return "continuous"
-    return "categorical"
-
-
 def build_discrete_color_map(
     categories: Sequence,
     palette: Optional[Union[str, Sequence[str], Mapping[object, str]]],
@@ -406,17 +350,3 @@ def compute_transparency(
     alpha_val[z > trans_th] = 1
     alpha_val = alpha_val ** trans_fac
     return alpha_val
-
-
-def darken_hex(color: str, factor: float = 0.1) -> str:
-    """Darken a hex color by a given factor in [0, 1]."""
-    if not color.startswith("#") or len(color) != 7:
-        return color
-    factor = max(0.0, min(1.0, float(factor)))
-    r = int(color[1:3], 16)
-    g = int(color[3:5], 16)
-    b = int(color[5:7], 16)
-    r = max(0, int(r * (1 - factor)))
-    g = max(0, int(g * (1 - factor)))
-    b = max(0, int(b * (1 - factor)))
-    return f"#{r:02x}{g:02x}{b:02x}"

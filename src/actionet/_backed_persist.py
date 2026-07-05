@@ -37,11 +37,7 @@ import scipy.sparse as sp
 from anndata import AnnData
 
 from ._backed_compression import get_matrix_compression_policy
-
-try:
-    from .experimental import _anndata_io
-except Exception:  # pragma: no cover - optional in some build contexts
-    _anndata_io = None
+from .experimental import _anndata_io
 
 
 # ---------------------------------------------------------------------------
@@ -351,12 +347,6 @@ def persist_updates(
     if not is_backed_adata(adata):
         return
 
-    if _anndata_io is None:
-        raise RuntimeError(
-            "Backed persistence requested but actionet.experimental._anndata_io "
-            "could not be imported."
-        )
-
     _ensure_backed_writable(adata)
 
     results = {
@@ -396,23 +386,6 @@ def persist_updates(
     _refresh_backed_handle(adata, filepath, mode="r+")
 
 
-def persist_layer(
-    adata: AnnData,
-    layer: str,
-    matrix: Any,
-    *,
-    validate: bool = False,
-    verbose: bool = False,
-) -> None:
-    """Convenience wrapper: persist a single layer matrix to a backed file."""
-    persist_updates(
-        adata,
-        layers={layer: matrix},
-        validate=validate,
-        verbose=verbose,
-    )
-
-
 def _flush_pending(adata: AnnData) -> None:
     """Flush deferred in-memory changes to the backing file.
 
@@ -433,12 +406,6 @@ def _flush_pending(adata: AnnData) -> None:
         return
 
     _ensure_backed_open(adata)
-
-    if _anndata_io is None:
-        raise RuntimeError(
-            "Backed persistence requested but actionet.experimental._anndata_io "
-            "could not be imported."
-        )
 
     _ensure_backed_writable(adata)
 
@@ -644,12 +611,6 @@ def checkpoint_backed(
         )
 
     _ensure_backed_writable(adata)
-
-    if _anndata_io is None:
-        raise RuntimeError(
-            "Backed persistence requested but actionet.experimental._anndata_io "
-            "could not be imported."
-        )
 
     results = _anndata_io.collect_annotation_results(
         adata,

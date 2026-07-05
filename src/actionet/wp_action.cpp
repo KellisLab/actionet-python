@@ -210,28 +210,6 @@ py::dict reduce_kernel_dense(py::array_t<double> S, int k = 50, int svd_alg = 0,
     return out;
 }
 
-py::dict reduce_kernel_operator(py::object op, int k = 50, int svd_alg = actionet::ALG_HALKO,
-                                int max_it = 0, int seed = 0, bool verbose = true) {
-    PythonMatrixOperator mat_op(std::move(op));
-    actionet::KernelReductionResult res = actionet::reduceKernel_Operator(
-        mat_op, k, svd_alg, max_it, seed, verbose
-    );
-    return kernel_result_to_dict(res);
-}
-
-py::dict reduce_kernel_from_svd_operator(py::object op, py::array_t<double> u, py::object d,
-                                         py::array_t<double> v, bool verbose = true) {
-    PythonMatrixOperator mat_op(std::move(op));
-
-    actionet::SVDResult svd;
-    svd.U     = numpy_to_arma_mat(u);
-    svd.V     = numpy_to_arma_mat(v);
-    svd.sigma = parse_sigma(d);
-
-    actionet::KernelReductionResult res = actionet::reduceKernelFromSVD_Operator(mat_op, svd, verbose);
-    return kernel_result_to_dict(res);
-}
-
 py::dict reduce_kernel_from_svd_sparse(py::object S, py::array_t<double> u, py::object d,
                                        py::array_t<double> v, bool verbose = true) {
     arma::sp_mat S_sp = scipy_to_arma_sparse(S);
@@ -340,14 +318,6 @@ void init_action(py::module_ &m) {
     m.def("reduce_kernel_dense", &reduce_kernel_dense, "Reduce kernel (dense)",
           py::arg("S"), py::arg("k") = 50, py::arg("svd_alg") = 0,
           py::arg("max_it") = 0, py::arg("seed") = 0, py::arg("verbose") = true);
-
-    m.def("reduce_kernel_operator", &reduce_kernel_operator, "Reduce kernel (generic operator)",
-          py::arg("op"), py::arg("k") = 50, py::arg("svd_alg") = actionet::ALG_HALKO,
-          py::arg("max_it") = 0, py::arg("seed") = 0, py::arg("verbose") = true);
-
-    m.def("reduce_kernel_from_svd_operator", &reduce_kernel_from_svd_operator,
-          "Reduce kernel from precomputed SVD (operator)",
-          py::arg("op"), py::arg("u"), py::arg("d"), py::arg("v"), py::arg("verbose") = true);
 
     m.def("reduce_kernel_from_svd_sparse", &reduce_kernel_from_svd_sparse,
           "Reduce kernel from precomputed SVD (in-memory sparse)",

@@ -13,11 +13,8 @@ from ._matrix_source import MatrixSource
 from .backed_io import (
     _backed_group_path,
     _chunk_target_bytes,
-    _is_backed_matrix,
     _maybe_decompress_backed_path,
     _open_backed_operator,
-    _resolve_backed_handle,
-    _warn_if_compressed_backed_svd,
 )
 from .lazy_transform import (
     LazyTransform,
@@ -347,7 +344,7 @@ def reduce_kernel_from_svd(
 
 
 def run_svd(
-    X: Union[AnnData, np.ndarray, sp.spmatrix, Any],
+    X: Union[AnnData, np.ndarray, sp.spmatrix],
     n_components: int = 30,
     algorithm: Optional[str] = "auto",
     max_iter: int = 0,
@@ -365,8 +362,9 @@ def run_svd(
 
     Parameters
     ----------
-    X : AnnData, np.ndarray, scipy.sparse matrix, or backed matrix
-        Input data.  AnnData inputs support backed mode (HDF5-streamed).
+    X : AnnData, np.ndarray, or scipy.sparse matrix
+        Input data. Backed (HDF5-streamed) inputs must be a backed AnnData;
+        raw h5py-backed matrix handles are not supported.
     n_components : int
         Number of singular values/vectors to compute.
     algorithm : str or None
@@ -408,50 +406,40 @@ def run_svd(
 
     algorithm_name = _normalize_algorithm(algorithm, context="algorithm")
 
+    is_backed_anndata = isinstance(X, AnnData) and bool(getattr(X, "isbacked", False))
     source_ctx: Optional[MatrixSource] = MatrixSource(X, layer=layer) if isinstance(X, AnnData) else None
-    adata_ctx: Optional[AnnData] = X if isinstance(X, AnnData) else None
     matrix = source_ctx.matrix if source_ctx is not None else X
 
-    # Validate the lazy transform before any expensive operation.
     if lazy_transform is not None:
-        if adata_ctx is None:
+        if not is_backed_anndata:
             raise ValueError(
                 "`lazy_transform` in `run_svd` requires a backed AnnData input "
                 "so row-sum scaling factors can be streamed from the source matrix."
             )
         _validate_lazy_transform(lazy_transform, layer=layer, source=source_ctx)
 
-    if _is_backed_matrix(matrix):
+    if is_backed_anndata:
+        adata_ctx: AnnData = X  # type: ignore[assignment]
         row_scale_factors, apply_log1p, log_scale = _resolve_lazy_backed_transform(
             source_ctx,
             lazy_transform=lazy_transform,
             backed_chunk_size=backed_chunk_size,
-        ) if source_ctx is not None else (None, False, 1.0)
+        )
         selected_algorithm = _select_svd_algorithm_backed(algorithm_name, verbose)
         io_target_chunk_bytes = _chunk_target_bytes(backed_target_chunk_mb)
 
         temp_path: Optional[str] = None
         try:
-            if adata_ctx is not None:
-                temp_path = _maybe_decompress_backed_path(
-                    adata_ctx,
-                    layer=layer,
-                    allow_compressed=allow_compressed,
-                    chunk_size=backed_chunk_size,
-                    verbose=verbose,
-                    context="run_svd",
-                )
-                file_path = temp_path if temp_path is not None else str(adata_ctx.filename)
-                group_path = _backed_group_path(layer)
-            else:
-                metadata = get_storage_metadata_from_matrix(matrix)
-                if not allow_compressed and is_compressed_storage(metadata):
-                    _warn_if_compressed_backed_svd(
-                        metadata,
-                        context="run_svd",
-                        recommendation="run_svd(..., allow_compressed=True) or pass a backed AnnData object for auto-decompression",
-                    )
-                file_path, group_path = _resolve_backed_handle(matrix)
+            temp_path = _maybe_decompress_backed_path(
+                adata_ctx,
+                layer=layer,
+                allow_compressed=allow_compressed,
+                chunk_size=backed_chunk_size,
+                verbose=verbose,
+                context="run_svd",
+            )
+            file_path = temp_path if temp_path is not None else str(adata_ctx.filename)
+            group_path = _backed_group_path(layer)
 
             with _open_backed_operator(
                 adata=adata_ctx,
@@ -472,15 +460,11 @@ def run_svd(
             if temp_path is not None and os.path.exists(temp_path):
                 os.remove(temp_path)
     elif sp.issparse(matrix):
-        if lazy_transform is not None:
-            raise ValueError("`lazy_transform` is supported only for backed matrix inputs.")
         if not sp.isspmatrix_csr(matrix):
             matrix = matrix.tocsr()
         algorithm_id = _select_svd_algorithm_inmemory(matrix, algorithm_name, verbose)
         result = _core.run_svd_sparse(matrix, n_components, max_iter, seed, algorithm_id, verbose)
     else:
-        if lazy_transform is not None:
-            raise ValueError("`lazy_transform` is supported only for backed matrix inputs.")
         algorithm_id = _select_svd_algorithm_inmemory(matrix, algorithm_name, verbose)
         result = _core.run_svd_dense(matrix, n_components, max_iter, seed, algorithm_id, verbose)
 

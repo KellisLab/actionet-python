@@ -19,7 +19,7 @@ def _setup_full_pipeline(adata, backed_chunk_size=None):
     an.reduce_kernel(adata, n_components=12, seed=1, inplace=True, **kw)
     an.run_actionet(
         adata,
-        reduction_key="ACTION",
+        reduction_key="action",
         k_min=2,
         k_max=6,
         layout_3d=False,

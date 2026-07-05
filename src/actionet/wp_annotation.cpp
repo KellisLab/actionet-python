@@ -296,7 +296,10 @@ void init_annotation(py::module_ &m) {
           py::arg("thread_no") = 0, py::arg("ignore_baseline") = false);
 
     m.def("compute_feature_stats_vision", &compute_feature_stats_vision,
-          "Compute feature statistics (VISION method)",
+          "Compute feature statistics (VISION method). Retained as an in-memory "
+          "parity oracle for backed-operator regression tests; the production "
+          "annotation code path uses compute_feature_stats_vision_backed_operator "
+          "and compute_feature_stats_vision_from_stats.",
           py::arg("G"), py::arg("S"), py::arg("X"), py::arg("norm_method") = 2,
           py::arg("alpha") = 0.85, py::arg("max_it") = 5, py::arg("approx") = false,
           py::arg("thread_no") = 0);

@@ -1046,35 +1046,6 @@ def _decompress_sparse_group_inplace(group, chunk_size: int) -> bool:
     return changed
 
 
-def _copy_backed_matrix_to_layer(
-    adata: AnnData,
-    *,
-    source_layer: str | None,
-    layer_added: str,
-) -> None:
-    """Copy backed ``.X`` or one backed layer to ``layers[layer_added]``.
-
-    Existing destination layers are overwritten.
-    """
-    if not bool(getattr(adata, "isbacked", False) and getattr(adata, "filename", None)):
-        raise ValueError("_copy_backed_matrix_to_layer requires a backed AnnData object")
-    if not _is_writable_backed(adata):
-        raise ValueError(
-            "Backed layer copy requires backed mode 'r+'. "
-            "Re-open with `ad.read_h5ad(path, backed=\"r+\")`."
-        )
-
-    h5file = adata.file._file
-    layers_group = h5file["layers"] if "layers" in h5file else h5file.create_group("layers")
-
-    if layer_added in layers_group:
-        del layers_group[layer_added]
-
-    source_key = "X" if source_layer is None else f"layers/{source_layer}"
-    h5file.copy(source_key, layers_group, name=layer_added)
-    h5file.flush()
-
-
 def _resolve_backed_matrix_node(adata: AnnData, layer: str | None):
     """Resolve the HDF5 node backing `.X` or one layer."""
     h5file = adata.file._file
