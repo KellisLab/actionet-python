@@ -259,24 +259,7 @@ def plot_feature_expression(
         except ImportError as exc:  # pragma: no cover - optional dependency
             raise ImportError("lets-plot is required for plot grids.") from exc
         nrow, ncol = _grid_shape(len(out))
-        scale_size = size / max(nrow, 1)
-        plots = []
-        for key in list(out.keys()):
-            plots.append(
-                plot_umap(
-                    adata,
-                    color=expr_profile[key].to_numpy(),
-                    color_source=None,
-                    cmap=cmap,
-                    size=scale_size,
-                    trans_attr=trans_attr,
-                    trans_fac=trans_fac,
-                    trans_th=trans_th,
-                    basis=basis,
-                    legend=legend,
-                    title=key,
-                )
-            )
+        plots = list(out.values())
         total_cells = nrow * ncol
         if len(plots) < total_cells:
             plots.extend([None] * (total_cells - len(plots)))
