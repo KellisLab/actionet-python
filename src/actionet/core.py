@@ -434,7 +434,7 @@ def compute_network_centrality(
 
     # --- Compute centrality ------------------------------------------------
     if algorithm == "coreness":
-        centrality = np.asarray(_core.compute_coreness(G), dtype=np.float64)
+        centrality = np.asarray(_core.compute_coreness(G), dtype=np.int32)
 
     elif algorithm == "pagerank":
         uniform = np.full((n_cells, 1), 1.0 / n_cells)

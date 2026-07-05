@@ -55,7 +55,6 @@ from .advanced import (
     run_simplex_regression,
     run_spa,
     run_label_propagation,
-    compute_coreness,
     compute_archetype_centrality,
 )
 from .annotation import (
@@ -144,7 +143,6 @@ __all__ = [
     "run_simplex_regression",
     "run_spa",
     "run_label_propagation",
-    "compute_coreness",
     "compute_archetype_centrality",
     # Annotation
     "find_markers",

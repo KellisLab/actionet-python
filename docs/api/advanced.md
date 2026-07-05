@@ -13,5 +13,4 @@ Useful when you need to compose the pipeline manually or run individual stages.
         - run_simplex_regression
         - run_spa
         - run_label_propagation
-        - compute_coreness
         - compute_archetype_centrality
