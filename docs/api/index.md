@@ -1,7 +1,7 @@
 # API Reference
 
 The Python public API is defined by the `__all__` list in
-[`src/actionet/__init__.py`](https://github.com/KellisLab/actionet-python/blob/dev-gpu-v2/src/actionet/__init__.py).
+[`src/actionet/__init__.py`](https://github.com/KellisLab/actionet-python/blob/dev/src/actionet/__init__.py).
 Anything not listed there should be considered private and may change without
 notice.
 

@@ -7,13 +7,12 @@ name: Docs
 #     Source: Deploy from a branch
 #     Branch: gh-pages / (root)
 #
-# The workflow reuses the same build recipe as the `linux-cpu` job in
-# ci.yml so the C++ extension (actionet._core) is available when
-# mkdocstrings imports the package to render docstrings.
+# The workflow builds the C++ extension (actionet._core) so that
+# mkdocstrings can import the package to render docstrings.
 
 on:
   push:
-    branches: [dev, dev-gpu-v2]
+    branches: [dev]
     paths:
       - "docs/**"
       - "mkdocs.yml"
@@ -50,8 +49,6 @@ jobs:
           sudo apt-get install -y cmake libhdf5-dev libomp-dev libopenblas-dev liblapack-dev
 
       - name: Build extension and install docs deps
-        env:
-          LIBACTIONET_ENABLE_NVIDIA_GPU: "OFF"
         run: |
           python -m pip install --upgrade pip
           pip install --no-build-isolation -e ".[docs]"

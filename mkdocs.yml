@@ -3,7 +3,7 @@ site_description: Python front-end for the ACTIONet single-cell analysis toolkit
 site_url: https://kellislab.github.io/actionet-python/
 repo_url: https://github.com/KellisLab/actionet-python
 repo_name: KellisLab/actionet-python
-edit_uri: edit/dev-gpu-v2/docs/
+edit_uri: edit/dev/docs/
 
 docs_dir: docs
 
@@ -81,7 +81,6 @@ nav:
   - Guides:
       - Guide calling: guide_calling.md
       - Batch correction benchmark: batch_correction_benchmark.md
-      - SVD GPU benchmark: svd_gpu_benchmark.md
   - API Reference:
       - Overview: api/index.md
       - Pipeline: api/pipeline.md
@@ -101,4 +100,3 @@ nav:
       - Tools: api/tools.md
       - Guide calling: api/guide_calling.md
       - Lazy transform: api/lazy_transform.md
-      - GPU errors: api/gpu_errors.md

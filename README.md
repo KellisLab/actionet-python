@@ -6,7 +6,7 @@ This package wraps the C++ backend `libactionet` without modifications, providin
 
 ## Documentation
 
-- **API reference & guides**: <https://kellislab.github.io/actionet-python/> (auto-built from docstrings on every push to `dev` / `dev-gpu-v2`).
+- **API reference & guides**: <https://kellislab.github.io/actionet-python/> (auto-built from docstrings on every push to `dev`).
 - **Build locally**: `pip install -e ".[docs]" && mkdocs serve` and open <http://127.0.0.1:8000>.
 - **C++ core** (`libactionet`) has its own docs (planned) at <https://github.com/KellisLab/libactionet>.
 

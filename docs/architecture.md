@@ -35,7 +35,7 @@ flowchart TD
 
 The C++ core is a shared dependency of both the Python and R front-ends and is
 treated as a stable **contract** — see the project's
-[agent playbook](https://github.com/KellisLab/actionet-python/blob/dev-gpu-v2/context/AGENT_PLAYBOOK.md)
+[agent playbook](https://github.com/KellisLab/actionet-python/blob/dev/context/AGENT_PLAYBOOK.md)
 for details. When you want to understand a specific algorithm's C++
 implementation, follow the link above to the `libactionet` repository.
 
@@ -65,8 +65,8 @@ via HDF5 streaming. See [Backed persistence](api/backed.md) and
 
 ## GPU
 
-When `libactionet` is built with `LIBACTIONET_ENABLE_NVIDIA_GPU=ON`, selected
-routines (currently SVD) can dispatch to CUDA. The Python surface for this is
-the [GPU errors](api/gpu_errors.md) taxonomy: `GpuError`, `GpuUnavailableError`,
-and `GpuRuntimeError`, which let application code react to GPU-specific
-failures without pattern-matching on `RuntimeError` messages.
+GPU support is planned but not yet implemented. See
+[`context/GPU_INTEGRATION.md`](https://github.com/KellisLab/actionet-python/blob/dev/context/GPU_INTEGRATION.md)
+for the Python-side roadmap and
+[`libactionet/context/GPU_BACKEND_PLAN.md`](https://github.com/KellisLab/libactionet/blob/dev/context/GPU_BACKEND_PLAN.md)
+for the C++/build-side plan and the post-mortem of the scrapped first attempt.
