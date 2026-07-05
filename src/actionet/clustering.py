@@ -11,96 +11,6 @@ import scipy.sparse as sp
 from ._backed_persist import persist_updates
 
 
-def _normalize_leiden_objective(objective_function: str) -> str:
-    if not isinstance(objective_function, str):
-        raise TypeError("`objective_function` must be a string")
-
-    objective = objective_function.strip().lower()
-    if objective == "modularity":
-        return "modularity"
-    if objective == "cpm":
-        return "CPM"
-
-    raise ValueError("`objective_function` must be one of {'modularity', 'CPM'}")
-
-
-def _encode_initial_membership(
-    adata: AnnData,
-    initial_membership: Optional[Union[str, np.ndarray]],
-) -> Optional[np.ndarray]:
-    if initial_membership is None:
-        return None
-
-    if isinstance(initial_membership, str):
-        if initial_membership not in adata.obs:
-            raise ValueError(
-                f"Initial membership key '{initial_membership}' not found in adata.obs."
-            )
-        labels = np.asarray(adata.obs[initial_membership].values)
-    else:
-        labels = np.asarray(initial_membership)
-
-    labels = labels.reshape(-1)
-    if labels.shape[0] != adata.n_obs:
-        raise ValueError(
-            f"`initial_membership` length ({labels.shape[0]}) does not match adata.n_obs ({adata.n_obs})."
-        )
-
-    if np.issubdtype(labels.dtype, np.integer):
-        encoded = labels.astype(np.int64, copy=False)
-        if np.any(encoded < 0):
-            raise ValueError("`initial_membership` cannot contain negative labels.")
-    else:
-        from pandas import Categorical
-
-        cat = Categorical(labels)
-        encoded = np.asarray(cat.codes, dtype=np.int64)
-        if np.any(encoded < 0):
-            raise ValueError(
-                "`initial_membership` contains missing values. Fill/drop missing values before clustering."
-            )
-
-    # Compress arbitrary integer IDs into dense 0..K-1 labels for igraph.
-    _, encoded = np.unique(encoded, return_inverse=True)
-    return np.asarray(encoded, dtype=np.int64)
-
-
-def _relabel_clusters_by_size(labels: np.ndarray, min_size: int) -> np.ndarray:
-    if min_size < 1:
-        raise ValueError("`min_size` must be >= 1")
-
-    labels = np.asarray(labels, dtype=np.int64).reshape(-1)
-    if labels.size == 0:
-        return labels.astype(np.int32, copy=False)
-    if np.any(labels < 0):
-        raise ValueError("Leiden membership contains negative labels.")
-
-    counts = np.bincount(labels)
-    kept = np.where(counts >= min_size)[0]
-    remap = np.zeros(counts.shape[0], dtype=np.int32)
-
-    if kept.size > 0:
-        order = np.argsort(-counts[kept], kind="stable")
-        remap[kept[order]] = np.arange(1, kept.size + 1, dtype=np.int32)
-
-    return remap[labels]
-
-
-@contextmanager
-def _set_igraph_random_state(random_state: Optional[int]):
-    if random_state is None:
-        yield
-        return
-
-    import igraph
-
-    try:
-        igraph.set_random_number_generator(random.Random(int(random_state)))
-        yield
-    finally:
-        igraph.set_random_number_generator(random)
-
-
 def cluster_network(
     adata: AnnData,
     objective_function: Literal["modularity", "CPM", "cpm"] = "modularity",
@@ -153,8 +63,51 @@ def cluster_network(
         if not np.isfinite(adjacency).all():
             raise ValueError(f"Network '{network_key}' contains non-finite edge weights.")
 
-    objective = _normalize_leiden_objective(objective_function)
-    init_membership = _encode_initial_membership(adata, initial_membership)
+    # --- Normalize objective function string ---
+    if not isinstance(objective_function, str):
+        raise TypeError("`objective_function` must be a string")
+    _obj_lower = objective_function.strip().lower()
+    if _obj_lower == "modularity":
+        objective = "modularity"
+    elif _obj_lower == "cpm":
+        objective = "CPM"
+    else:
+        raise ValueError("`objective_function` must be one of {'modularity', 'CPM'}")
+
+    # --- Encode initial membership ---
+    init_membership: Optional[np.ndarray] = None
+    if initial_membership is not None:
+        if isinstance(initial_membership, str):
+            if initial_membership not in adata.obs:
+                raise ValueError(
+                    f"Initial membership key '{initial_membership}' not found in adata.obs."
+                )
+            _labels = np.asarray(adata.obs[initial_membership].values)
+        else:
+            _labels = np.asarray(initial_membership)
+
+        _labels = _labels.reshape(-1)
+        if _labels.shape[0] != adata.n_obs:
+            raise ValueError(
+                f"`initial_membership` length ({_labels.shape[0]}) does not match adata.n_obs ({adata.n_obs})."
+            )
+
+        if np.issubdtype(_labels.dtype, np.integer):
+            _encoded = _labels.astype(np.int64, copy=False)
+            if np.any(_encoded < 0):
+                raise ValueError("`initial_membership` cannot contain negative labels.")
+        else:
+            from pandas import Categorical
+
+            _cat = Categorical(_labels)
+            _encoded = np.asarray(_cat.codes, dtype=np.int64)
+            if np.any(_encoded < 0):
+                raise ValueError(
+                    "`initial_membership` contains missing values. Fill/drop missing values before clustering."
+                )
+
+        _, init_membership = np.unique(_encoded, return_inverse=True)
+        init_membership = np.asarray(init_membership, dtype=np.int64)
 
     try:
         import igraph
@@ -185,7 +138,19 @@ def cluster_network(
     graph = igraph.Graph(n=n_obs, edges=zip(src, dst), directed=False)
     graph.es["weight"] = weights
 
-    with _set_igraph_random_state(random_state):
+    # --- Run Leiden with igraph random state ---
+    @contextmanager
+    def _igraph_rng(seed):
+        if seed is None:
+            yield
+            return
+        try:
+            igraph.set_random_number_generator(random.Random(int(seed)))
+            yield
+        finally:
+            igraph.set_random_number_generator(random)
+
+    with _igraph_rng(random_state):
         part = graph.community_leiden(
             objective_function=objective,
             weights="weight",
@@ -195,10 +160,23 @@ def cluster_network(
             n_iterations=n_iterations,
         )
 
-    clusters = _relabel_clusters_by_size(
-        np.asarray(part.membership, dtype=np.int64),
-        min_size=min_size,
-    )
+    # --- Relabel clusters by size ---
+    if min_size < 1:
+        raise ValueError("`min_size` must be >= 1")
+
+    _raw_labels = np.asarray(part.membership, dtype=np.int64).reshape(-1)
+    if _raw_labels.size == 0:
+        clusters = _raw_labels.astype(np.int32, copy=False)
+    else:
+        if np.any(_raw_labels < 0):
+            raise ValueError("Leiden membership contains negative labels.")
+        _counts = np.bincount(_raw_labels)
+        _kept = np.where(_counts >= min_size)[0]
+        _remap = np.zeros(_counts.shape[0], dtype=np.int32)
+        if _kept.size > 0:
+            _order = np.argsort(-_counts[_kept], kind="stable")
+            _remap[_kept[_order]] = np.arange(1, _kept.size + 1, dtype=np.int32)
+        clusters = _remap[_raw_labels]
 
     if return_raw:
         return clusters
@@ -229,4 +207,3 @@ def cluster_network(
     if not inplace:
         return adata
     return None
-

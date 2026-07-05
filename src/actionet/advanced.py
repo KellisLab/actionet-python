@@ -37,8 +37,7 @@ def run_archetypal_analysis(
         - H: Archetype weights (k x observations)
         - W: Archetypes in original space
     """
-    result = _core.run_aa(data, W0, max_iter, tolerance)
-    return result
+    return _core.run_aa(data, W0, max_iter, tolerance)
 
 
 def decompose_action(
@@ -78,8 +77,7 @@ def decompose_action(
         - C_stacked: All C matrices column-stacked (n_cells x T)
         - H_stacked: All H matrices row-stacked (T x n_cells)
     """
-    result = _core.decomp_action(S_r, k_min, k_max, max_iter, tolerance, n_threads)
-    return result
+    return _core.decomp_action(S_r, k_min, k_max, max_iter, tolerance, n_threads)
 
 
 def collect_archetypes(
@@ -109,10 +107,9 @@ def collect_archetypes(
         - C_stacked: Filtered stacked C matrix
         - H_stacked: Filtered stacked H matrix
     """
-    result = _core.collect_archetypes(
+    return _core.collect_archetypes(
         C_stacked, H_stacked, specificity_threshold, min_observations
     )
-    return result
 
 
 def merge_archetypes(
@@ -143,8 +140,7 @@ def merge_archetypes(
         - H_merged: Merged H matrix
         - assigned_archetypes: Cell assignments to merged archetypes
     """
-    result = _core.merge_archetypes(S_r, C_stacked, H_stacked, n_threads)
-    return result
+    return _core.merge_archetypes(S_r, C_stacked, H_stacked, n_threads)
 
 
 def run_simplex_regression(
@@ -169,8 +165,7 @@ def run_simplex_regression(
     X
         Solution matrix.
     """
-    X = _core.run_simplex_regression(A, B, compute_XtX)
-    return X
+    return _core.run_simplex_regression(A, B, compute_XtX)
 
 
 def run_spa(
@@ -193,8 +188,7 @@ def run_spa(
         - selected_cols: Selected column indices (0-indexed)
         - norms: Column norms
     """
-    result = _core.run_spa(data, k)
-    return result
+    return _core.run_spa(data, k)
 
 
 def _resolve_fixed_labels(

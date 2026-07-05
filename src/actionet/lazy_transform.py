@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-from typing import Any, Mapping, Optional
+from typing import Any, Optional
 
 import numpy as np
 import scipy.sparse as sp
@@ -90,17 +90,6 @@ class LazyTransform:
         self.validation_row_sums = np.ascontiguousarray(sample_row_sums, dtype=np.float64)
 
         self._validated = False
-
-    @property
-    def is_initialized(self) -> bool:
-        return (
-            self.row_scale_factors is not None
-            and self.matrix_fingerprint is not None
-            and self.source_shape is not None
-            and self.source_group_path is not None
-            and self.validation_row_indices is not None
-            and self.validation_row_sums is not None
-        )
 
 
 def create_lazy_transform(
@@ -246,10 +235,6 @@ def _validate_lazy_transform_params(
         )
 
 
-def _lazy_log_base_mode(lazy_log_base: Optional[float]) -> str:
-    return "natural" if lazy_log_base is None else "numeric"
-
-
 def _matrix_nnz(source: MatrixSource) -> Optional[int]:
     matrix = source.matrix
 
@@ -301,11 +286,6 @@ def _matrix_fingerprint(source: MatrixSource) -> dict[str, Any]:
     return payload
 
 
-def _stable_hash(payload: Mapping[str, Any]) -> str:
-    serial = json.dumps(payload, sort_keys=True, separators=(",", ":"))
-    return hashlib.sha256(serial.encode("utf-8")).hexdigest()
-
-
 def _sample_row_indices(n_obs: int, max_samples: int = 16) -> np.ndarray:
     sample_n = int(min(max_samples, max(n_obs, 0)))
     if sample_n <= 0:
@@ -313,17 +293,6 @@ def _sample_row_indices(n_obs: int, max_samples: int = 16) -> np.ndarray:
     if sample_n == n_obs:
         return np.arange(n_obs, dtype=np.int64)
     return np.unique(np.linspace(0, n_obs - 1, num=sample_n, dtype=np.int64))
-
-
-def _row_sums_for_rows(source: MatrixSource, row_indices: np.ndarray) -> np.ndarray:
-    out = np.zeros(row_indices.size, dtype=np.float64)
-    for i, row_idx in enumerate(row_indices):
-        block = source.get_rows(int(row_idx), int(row_idx) + 1)
-        if sp.issparse(block):
-            out[i] = float(block.sum())
-        else:
-            out[i] = float(np.asarray(block, dtype=np.float64).sum())
-    return out
 
 
 def _lazy_params_for_metadata(
@@ -336,7 +305,7 @@ def _lazy_params_for_metadata(
         "lazy_logcounts": True,
         "lazy_target_sum": float(lazy_transform.target_sum),
         "lazy_pseudocount": float(lazy_transform.pseudocount),
-        "lazy_log_base_mode": _lazy_log_base_mode(lazy_transform.log_base),
+        "lazy_log_base_mode": "natural" if lazy_transform.log_base is None else "numeric",
         "lazy_apply_log1p": bool(lazy_transform._apply_log1p),
         "lazy_log_scale": float(lazy_transform._log_scale),
     }
@@ -346,7 +315,9 @@ def _lazy_params_for_metadata(
         payload["lazy_transform_key"] = str(lazy_transform.key)
     if lazy_transform.matrix_fingerprint is not None:
         payload["lazy_matrix_fingerprint"] = dict(lazy_transform.matrix_fingerprint)
-        payload["lazy_transform_fingerprint"] = _stable_hash(lazy_transform.matrix_fingerprint)[:24]
+        payload["lazy_transform_fingerprint"] = hashlib.sha256(
+            json.dumps(lazy_transform.matrix_fingerprint, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        ).hexdigest()[:24]
     return payload
 
 
@@ -367,7 +338,14 @@ def _resolve_lazy_backed_transform(
     if lazy_transform is None:
         return None, False, 1.0
 
-    if not lazy_transform.is_initialized:
+    if not (
+        lazy_transform.row_scale_factors is not None
+        and lazy_transform.matrix_fingerprint is not None
+        and lazy_transform.source_shape is not None
+        and lazy_transform.source_group_path is not None
+        and lazy_transform.validation_row_indices is not None
+        and lazy_transform.validation_row_sums is not None
+    ):
         raise ValueError(
             "Lazy transform is not initialized. Recreate it with "
             "`create_lazy_transform(backed_adata, ...)`."
@@ -413,7 +391,13 @@ def _resolve_lazy_backed_transform(
                 "Recreate the lazy transform."
             )
         if indices.size > 0:
-            observed = _row_sums_for_rows(source, indices)
+            observed = np.zeros(indices.size, dtype=np.float64)
+            for _i, _row_idx in enumerate(indices):
+                _block = source.get_rows(int(_row_idx), int(_row_idx) + 1)
+                if sp.issparse(_block):
+                    observed[_i] = float(_block.sum())
+                else:
+                    observed[_i] = float(np.asarray(_block, dtype=np.float64).sum())
             if not np.allclose(observed, expected, rtol=1e-8, atol=1e-8):
                 raise ValueError(
                     "Lazy transform validation failed: sampled source rows changed since "

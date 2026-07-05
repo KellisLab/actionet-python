@@ -75,32 +75,6 @@ class _DirtyTracker:
 _dirty_tracker = _DirtyTracker()
 
 
-def _track_dirty_keys(
-    adata: AnnData,
-    obs: dict, var: dict,
-    obsm: dict, varm: dict,
-    obsp: dict, varp: dict,
-    layers: dict, uns: dict,
-) -> None:
-    """Record which slots/keys were written, so checkpoint can skip them."""
-    if obs:
-        _dirty_tracker.mark(adata, "obs_columns", set(obs.keys()))
-    if var:
-        _dirty_tracker.mark(adata, "var_columns", set(var.keys()))
-    if obsm:
-        _dirty_tracker.mark(adata, "obsm_keys", set(obsm.keys()))
-    if varm:
-        _dirty_tracker.mark(adata, "varm_keys", set(varm.keys()))
-    if obsp:
-        _dirty_tracker.mark(adata, "obsp_keys", set(obsp.keys()))
-    if varp:
-        _dirty_tracker.mark(adata, "varp_keys", set(varp.keys()))
-    if layers:
-        _dirty_tracker.mark(adata, "layers_keys", set(layers.keys()))
-    if uns:
-        _dirty_tracker.mark(adata, "uns_keys", set(uns.keys()))
-
-
 def is_backed_adata(adata: AnnData) -> bool:
     """Return True when AnnData is backed and has a filename."""
     return bool(getattr(adata, "isbacked", False) and getattr(adata, "filename", None))
@@ -359,7 +333,22 @@ def persist_updates(
         return
 
     # Record which keys are being persisted for dirty tracking.
-    _track_dirty_keys(adata, obs, var, obsm, varm, obsp, varp, layers, uns)
+    if obs:
+        _dirty_tracker.mark(adata, "obs_columns", set(obs.keys()))
+    if var:
+        _dirty_tracker.mark(adata, "var_columns", set(var.keys()))
+    if obsm:
+        _dirty_tracker.mark(adata, "obsm_keys", set(obsm.keys()))
+    if varm:
+        _dirty_tracker.mark(adata, "varm_keys", set(varm.keys()))
+    if obsp:
+        _dirty_tracker.mark(adata, "obsp_keys", set(obsp.keys()))
+    if varp:
+        _dirty_tracker.mark(adata, "varp_keys", set(varp.keys()))
+    if layers:
+        _dirty_tracker.mark(adata, "layers_keys", set(layers.keys()))
+    if uns:
+        _dirty_tracker.mark(adata, "uns_keys", set(uns.keys()))
 
     if not get_auto_persist(adata):
         return
@@ -680,17 +669,6 @@ def _dataset_create_kwargs_from_spec(spec: dict | None) -> dict:
     return kwargs
 
 
-def _dense_compression_kwargs(compression_policy: dict | None) -> dict:
-    """Return compression kwargs for dense datasets."""
-    if not compression_policy:
-        return {}
-    datasets = compression_policy.get("datasets", {})
-    if not datasets:
-        return {}
-    first_spec = next(iter(datasets.values()))
-    return _dataset_create_kwargs_from_spec(first_spec)
-
-
 def _sparse_dataset_compression_kwargs(
     compression_policy: dict | None,
     dataset_name: str,
@@ -977,11 +955,17 @@ def _write_dense_subsetted(
     n_vars_out = var_idx.size if var_idx is not None else matrix.shape[1]
     out_dtype = np.dtype(getattr(matrix, "dtype", np.float64))
 
+    _dense_kwargs: dict = {}
+    if compression_policy:
+        _dense_ds = compression_policy.get("datasets", {})
+        if _dense_ds:
+            _dense_kwargs = _dataset_create_kwargs_from_spec(next(iter(_dense_ds.values())))
+
     ds = f.create_dataset(
         h5_key,
         shape=(n_out, n_vars_out),
         dtype=out_dtype,
-        **_dense_compression_kwargs(compression_policy),
+        **_dense_kwargs,
     )
     ds.attrs["encoding-type"] = "array"
     ds.attrs["encoding-version"] = "0.2.0"

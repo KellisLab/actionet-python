@@ -7,17 +7,12 @@ from typing import Any, Dict, Optional
 from anndata import AnnData
 
 
-def _decode_codec(value: Any) -> Any:
-    """Decode HDF5 codec values to plain Python scalars."""
-    if isinstance(value, bytes):
-        return value.decode("utf-8", errors="ignore")
-    return value
-
-
 def _dataset_compression_info(dataset: Any) -> Dict[str, Any]:
     """Return compression metadata for an h5py-like dataset."""
+    raw_codec = getattr(dataset, "compression", None)
+    codec = raw_codec.decode("utf-8", errors="ignore") if isinstance(raw_codec, bytes) else raw_codec
     return {
-        "compression": _decode_codec(getattr(dataset, "compression", None)),
+        "compression": codec,
         "compression_opts": getattr(dataset, "compression_opts", None),
     }
 

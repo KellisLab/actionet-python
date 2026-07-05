@@ -13,13 +13,6 @@ from typing import Any, Generator, Optional
 import numpy as np
 from anndata import AnnData
 
-from ._backed_compression import (
-    format_compression_summary,
-    get_storage_metadata_from_adata,
-    is_compressed_storage,
-)
-from .preprocessing import decompress_backed_storage
-
 
 _LOCK_OPEN_ERROR_FRAGMENTS = (
     "createbackedoperator",
@@ -229,60 +222,3 @@ def _open_backed_operator(
                     stacklevel=4,
                 )
 
-
-def _chunk_target_bytes(backed_target_chunk_mb: Optional[float]) -> int:
-    if backed_target_chunk_mb is None:
-        return 0
-    target = float(backed_target_chunk_mb)
-    if target <= 0:
-        raise ValueError("`backed_target_chunk_mb` must be > 0 when provided")
-    return int(target * 1024 * 1024)
-
-
-def _maybe_decompress_backed_path(
-    adata: AnnData,
-    *,
-    layer: Optional[str],
-    allow_compressed: bool,
-    chunk_size: int,
-    verbose: bool,
-    context: str,
-) -> Optional[str]:
-    if allow_compressed:
-        return None
-
-    metadata = get_storage_metadata_from_adata(adata, layer=layer)
-    if not is_compressed_storage(metadata):
-        return None
-
-    src_path = str(adata.filename)
-    parent = os.path.dirname(src_path) or "."
-    free_bytes = shutil.disk_usage(parent).free
-    required_bytes = max(int(os.path.getsize(src_path) * 3), 1)
-    if free_bytes < required_bytes:
-        codecs = format_compression_summary(metadata)
-        warnings.warn(
-            (
-                f"{context}: insufficient disk for auto-decompression "
-                f"(need ~{required_bytes / 1e9:.1f} GB free, have {free_bytes / 1e9:.1f} GB). "
-                f"Continuing with compressed matrix ({codecs})."
-            ),
-            UserWarning,
-            stacklevel=3,
-        )
-        return None
-
-    fd, tmp_path = tempfile.mkstemp(prefix="actionet_oom_", suffix=".h5ad", dir=parent)
-    os.close(fd)
-    os.unlink(tmp_path)
-    decompressed = decompress_backed_storage(
-        adata,
-        layer=layer,
-        scope="matrix",
-        output_file=tmp_path,
-        chunk_size=chunk_size,
-        verbose=verbose,
-    )
-    if decompressed is not None and getattr(decompressed, "file", None) is not None:
-        decompressed.file.close()
-    return tmp_path
