@@ -49,8 +49,9 @@ except Exception:
 
 requires_ext = pytest.mark.skipif(not _has_ext, reason="C extension not built")
 
+pytestmark = requires_ext
 
-@requires_ext
+
 @pytest.fixture(params=["csr"])
 def paired_adata(request, tmp_path):
     """Yield (in_memory_adata, backed_adata) both with full pipeline run."""

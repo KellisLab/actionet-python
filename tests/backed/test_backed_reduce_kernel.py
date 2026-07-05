@@ -4,6 +4,7 @@ import numpy as np
 import pytest
 import actionet as an
 import actionet.core as actionet_core
+from actionet import backed_io
 
 from .conftest import make_test_adata, open_backed
 
@@ -50,7 +51,7 @@ def test_flush_backed_handle_raises_on_flush_failure():
         file = _DummyFile()
 
     with pytest.raises(RuntimeError, match="failed to flush backed AnnData handle"):
-        actionet_core._flush_backed_handle(_DummyAdata(), context="reduce_kernel")
+        backed_io._flush_backed_handle(_DummyAdata(), context="reduce_kernel")
 
 
 @pytest.mark.parametrize("sparse_fmt", ["csr", "csc"])

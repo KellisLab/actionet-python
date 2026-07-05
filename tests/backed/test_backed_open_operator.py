@@ -38,7 +38,7 @@ def test_open_backed_operator_retry_then_success(tmp_path, monkeypatch):
 
     monkeypatch.setattr(backed_io.tempfile, "mkstemp", _no_fallback)
 
-    op, cleanup = backed_io._open_backed_operator(
+    with backed_io._open_backed_operator(
         adata=None,
         file_path=str(src),
         group_path="/X",
@@ -46,12 +46,9 @@ def test_open_backed_operator_retry_then_success(tmp_path, monkeypatch):
         chunk_size=32,
         retry_attempts=3,
         retry_backoff_seconds=0.0,
-    )
-    try:
+    ) as op:
         assert op is sentinel
         assert calls == [str(src), str(src)]
-    finally:
-        cleanup()
 
 
 @requires_actionet
@@ -70,7 +67,7 @@ def test_open_backed_operator_fallback_copy_then_cleanup(tmp_path, monkeypatch):
 
     monkeypatch.setattr(backed_io, "_create_backed_operator", fake_create)
 
-    op, cleanup = backed_io._open_backed_operator(
+    with backed_io._open_backed_operator(
         adata=None,
         file_path=str(src),
         group_path="/X",
@@ -78,17 +75,15 @@ def test_open_backed_operator_fallback_copy_then_cleanup(tmp_path, monkeypatch):
         chunk_size=32,
         retry_attempts=2,
         retry_backoff_seconds=0.0,
-    )
+    ) as op:
+        fallback_paths = [Path(p) for p in create_calls if p != str(src)]
+        assert len(fallback_paths) == 1
 
-    fallback_paths = [Path(p) for p in create_calls if p != str(src)]
-    assert len(fallback_paths) == 1
+        fallback_path = fallback_paths[0]
+        assert fallback_path.parent == src.parent
+        assert fallback_path.exists()
+        assert op["file_path"] == str(fallback_path)
 
-    fallback_path = fallback_paths[0]
-    assert fallback_path.parent == src.parent
-    assert fallback_path.exists()
-    assert op["file_path"] == str(fallback_path)
-
-    cleanup()
     assert not fallback_path.exists()
 
 
@@ -108,7 +103,7 @@ def test_open_backed_operator_non_lock_error_fails_fast(tmp_path, monkeypatch):
     monkeypatch.setattr(backed_io.tempfile, "mkstemp", _no_fallback)
 
     with pytest.raises(ValueError, match="invalid group path"):
-        backed_io._open_backed_operator(
+        with backed_io._open_backed_operator(
             adata=None,
             file_path=str(src),
             group_path="/X",
@@ -116,4 +111,5 @@ def test_open_backed_operator_non_lock_error_fails_fast(tmp_path, monkeypatch):
             chunk_size=32,
             retry_attempts=4,
             retry_backoff_seconds=0.0,
-        )
+        ):
+            pass

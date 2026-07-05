@@ -59,14 +59,12 @@ def _run_backed_workflow(
     )
     an.run_actionet(
         adata,
-        layer=layer,
         reduction_key="action_corrected",
         k_min=2,
         k_max=10,
         layout_3d=False,
         n_threads=1,
         seed=1,
-        backed_chunk_size=32,
         inplace=True,
     )
 
@@ -813,11 +811,11 @@ def test_backed_parity_markers_and_imputation(tmp_path):
 
     an.reduce_kernel(adata_mem, n_components=14, layer="logcounts", key_added="action", seed=2, inplace=True)
     an.correct_batch_effect(adata_mem, batch_key="batch", reduction_key="action", layer="logcounts", backed_chunk_size=24, inplace=True)
-    an.run_actionet(adata_mem, layer="logcounts", reduction_key="action_corrected", k_min=2, k_max=8, layout_3d=False, seed=2, n_threads=1, backed_chunk_size=24, inplace=True)
+    an.run_actionet(adata_mem, reduction_key="action_corrected", k_min=2, k_max=8, layout_3d=False, seed=2, n_threads=1, inplace=True)
 
     an.reduce_kernel(adata_backed, n_components=14, layer="logcounts", key_added="action", seed=2, backed_chunk_size=24, inplace=True)
     an.correct_batch_effect(adata_backed, batch_key="batch", reduction_key="action", layer="logcounts", backed_chunk_size=24, inplace=True)
-    an.run_actionet(adata_backed, layer="logcounts", reduction_key="action_corrected", k_min=2, k_max=8, layout_3d=False, seed=2, n_threads=1, backed_chunk_size=24, inplace=True)
+    an.run_actionet(adata_backed, reduction_key="action_corrected", k_min=2, k_max=8, layout_3d=False, seed=2, n_threads=1, inplace=True)
 
     ranks_mem = an.find_markers(adata_mem, labels="CellLabel", features_use="Gene", layer="logcounts", result="ranks", return_type="dataframe", backed_chunk_size=24)
     ranks_backed = an.find_markers(adata_backed, labels="CellLabel", features_use="Gene", layer="logcounts", result="ranks", return_type="dataframe", backed_chunk_size=24)

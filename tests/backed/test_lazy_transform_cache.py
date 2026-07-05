@@ -195,8 +195,6 @@ def test_lazy_transform_cache_reused_across_reduce_correct_and_run_actionet(tmp_
         network_k=10,
         n_threads=1,
         seed=3,
-        backed_chunk_size=16,
-        lazy_transform=lt,
         inplace=True,
     )
 
@@ -453,7 +451,7 @@ def test_annotate_cells_lazy_transform_runs_without_error(tmp_path):
     an.normalize_anndata(adata_ref, target_sum=1e4, layer="logcounts", log_transform=True, log_base=2, inplace=True)
     an.reduce_kernel(adata_ref, n_components=10, layer="logcounts", key_added="action", seed=seed, inplace=True)
     an.correct_batch_effect(adata_ref, batch_key="batch", reduction_key="action", layer="logcounts", inplace=True)
-    an.run_actionet(adata_ref, layer="logcounts", reduction_key="action_corrected", k_min=2, k_max=8,
+    an.run_actionet(adata_ref, reduction_key="action_corrected", k_min=2, k_max=8,
                     layout_3d=False, n_threads=1, seed=seed, inplace=True)
     markers = an.find_markers(adata_ref, labels="CellLabel", features_use="Gene",
                                layer="logcounts", top_genes=6, return_type="dataframe")

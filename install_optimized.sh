@@ -8,9 +8,16 @@ set -euo pipefail
 # OpenMP runtime is always required. Set ACTIONET_OPENMP_RUNTIME to
 # GNU, INTEL, or LLVM to force a specific runtime; AUTO (default) lets
 # CMake detect the compiler's preferred runtime.
+#
+# GPU support (Linux x86_64 + NVIDIA only):
+#   Pass --gpu or set LIBACTIONET_ENABLE_NVIDIA_GPU=ON to opt in.
+#   Optionally set CUDAToolkit_ROOT to a CUDA >= 12.2 install directory.
+#   Optionally set CMAKE_CUDA_ARCHITECTURES to override the default (80;86;89;90).
+#
 # Usage:
-#   ./install_optimized.sh [--native-macos] [--verbose] [pip args...]
+#   ./install_optimized.sh [--native-macos] [--gpu] [--verbose] [pip args...]
 #   ACTIONET_MACOS_NATIVE=1 ./install_optimized.sh [pip args...]
+#   LIBACTIONET_ENABLE_NVIDIA_GPU=ON CUDAToolkit_ROOT=/usr/local/cuda ./install_optimized.sh [pip args...]
 # Pass --verbose (or -v) to forward the verbose flag to pip.
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -21,10 +28,15 @@ arch="$(uname -m)"
 runtime="${ACTIONET_OPENMP_RUNTIME:-AUTO}"  # set to INTEL/GNU/LLVM to force, otherwise auto
 
 enable_macos_native="${ACTIONET_MACOS_NATIVE:-0}"
+enable_gpu="${LIBACTIONET_ENABLE_NVIDIA_GPU:-OFF}"
 declare -a pip_args=()
 for arg in "$@"; do
     if [[ "$arg" == "--native-macos" ]]; then
         enable_macos_native=1
+        continue
+    fi
+    if [[ "$arg" == "--gpu" ]]; then
+        enable_gpu="ON"
         continue
     fi
     pip_args+=("$arg")
@@ -34,10 +46,33 @@ run_pip_install() {
     python -m pip install . "${pip_args[@]}"
 }
 
+# Append GPU cmake flags to a cmake_args string (passed by name-ref).
+append_gpu_args() {
+    local -n _ref=$1
+    if [[ "$enable_gpu" == "ON" ]]; then
+        _ref+=" -DLIBACTIONET_ENABLE_NVIDIA_GPU=ON"
+        if [[ -n "${CUDAToolkit_ROOT:-}" ]]; then
+            _ref+=" -DCUDAToolkit_ROOT=${CUDAToolkit_ROOT}"
+        fi
+        if [[ -n "${CMAKE_CUDA_ARCHITECTURES:-}" ]]; then
+            _ref+=" -DCMAKE_CUDA_ARCHITECTURES=${CMAKE_CUDA_ARCHITECTURES}"
+        fi
+    fi
+}
+
 if [[ "$os" == "Darwin" ]]; then
     if [[ "$enable_macos_native" != "1" ]]; then
         echo "[INFO] macOS detected; running portable build."
         echo "[INFO] Use --native-macos (or ACTIONET_MACOS_NATIVE=1) to enable non-portable native CPU tuning."
+        cmake_args=""
+        if [[ "$runtime" != "AUTO" ]]; then
+            cmake_args+=" -DLIBACTIONET_OPENMP_RUNTIME=${runtime}"
+        fi
+        append_gpu_args cmake_args
+        if [[ -n "${cmake_args// }" ]]; then
+            export CMAKE_ARGS="${CMAKE_ARGS:-}${cmake_args}"
+            echo "[INFO] Using CMAKE_ARGS=${CMAKE_ARGS}"
+        fi
         run_pip_install
         exit 0
     fi
@@ -56,6 +91,7 @@ if [[ "$os" == "Darwin" ]]; then
     if [[ "$runtime" != "AUTO" ]]; then
         cmake_args+=" -DLIBACTIONET_OPENMP_RUNTIME=${runtime}"
     fi
+    append_gpu_args cmake_args
 
     export CMAKE_ARGS="${CMAKE_ARGS:-} ${cmake_args}"
     echo "[INFO] Using CMAKE_ARGS=${CMAKE_ARGS}"
@@ -66,6 +102,15 @@ fi
 
 if [[ "$arch" != "x86_64" && "$arch" != "amd64" ]]; then
     echo "[WARN] Non-x86_64 architecture ($arch) detected; skipping native flags. Running portable build."
+    cmake_args=""
+    if [[ "$runtime" != "AUTO" ]]; then
+        cmake_args+=" -DLIBACTIONET_OPENMP_RUNTIME=${runtime}"
+    fi
+    append_gpu_args cmake_args
+    if [[ -n "${cmake_args// }" ]]; then
+        export CMAKE_ARGS="${CMAKE_ARGS:-}${cmake_args}"
+        echo "[INFO] Using CMAKE_ARGS=${CMAKE_ARGS}"
+    fi
     run_pip_install
     exit 0
 fi
@@ -76,6 +121,7 @@ cmake_args="-DCMAKE_CXX_FLAGS='${native_cxxflags}' -DCMAKE_INTERPROCEDURAL_OPTIM
 if [[ "$runtime" != "AUTO" ]]; then
     cmake_args+=" -DLIBACTIONET_OPENMP_RUNTIME=${runtime}"
 fi
+append_gpu_args cmake_args
 
 export CMAKE_ARGS="${CMAKE_ARGS:-} ${cmake_args}"
 
