@@ -584,13 +584,10 @@ def smooth_kernel(
     Or, if return_raw=True:
         - Dictionary with raw outputs from diffusion and SVD.
     """
-    if isinstance(norm_method, str):
-        norm_method_code = 2 if norm_method == "pagerank_sym" else 0
-    else:
-        norm_method_code = int(norm_method)
+    from .anndata_utils import norm_method_to_int, resolve_network
+    norm_method_code = norm_method_to_int(norm_method)
 
-    if network_key not in adata.obsp:
-        raise ValueError(f"Network '{network_key}' not found.")
+    resolve_network(adata, network_key)
 
     if reduction_key not in adata.obsm:
         raise ValueError(f"Reduction '{reduction_key}' not found.")

@@ -159,14 +159,9 @@ def find_markers(
         labels_for_spec = labels_arr
         cluster_names = _cluster_names_for_specificity_labels(labels_arr)
 
-    # Handle features_use parameter
-    # Can be: None (use var_names) or str (column name in adata.var)
-    if features_use is None:
-        feature_labels = adata.var_names.values
-    else:
-        if features_use not in adata.var.columns:
-            raise ValueError(f"Column '{features_use}' not found in adata.var")
-        feature_labels = adata.var[features_use].values
+    from ._feature_lookup import resolve_feature_space
+
+    feature_labels = resolve_feature_space(adata, features_use).labels
 
     raw = compute_feature_specificity(
         adata,
@@ -386,15 +381,14 @@ def annotate_cells(
     _validate_lazy_transform(lazy_transform, layer=layer, source=source)
 
     # Get network graph
-    if network_key not in adata.obsp:
-        raise ValueError(f"Network '{network_key}' not found in adata.obsp")
-    G = adata.obsp[network_key]
+    from .anndata_utils import norm_method_to_int, resolve_network
+
+    G = resolve_network(adata, network_key)
 
     if not issparse(G):
         G = csr_matrix(G)
 
-    # Convert norm_method to integer code
-    norm_method_code = 2 if norm_method == "pagerank_sym" else 0
+    norm_method_code = norm_method_to_int(norm_method)
 
     # Ensure X_markers is sparse
     if not issparse(X_markers):
@@ -899,12 +893,9 @@ def _encode_markers(
         X = csr_matrix((X != 0).astype(np.float32))
         label_names = [f"Label_{i}" for i in range(X.shape[1])]
     elif isinstance(markers, (pd.DataFrame, dict)):
-        # Build first-occurrence lookup
-        lookup: dict = {}
-        for idx, lab in enumerate(feature_set):
-            key = str(lab)
-            if key not in lookup:
-                lookup[key] = idx
+        from ._feature_lookup import build_first_occurrence_lookup
+
+        lookup = build_first_occurrence_lookup(feature_set)
 
         if isinstance(markers, pd.DataFrame):
             if markers.columns is None or markers.columns.isnull().any():

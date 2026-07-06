@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict, Optional
+from dataclasses import dataclass, field
+from typing import Any, Dict, Optional, Sequence
 
+import numpy as np
 from anndata import AnnData
 
 
@@ -23,6 +25,29 @@ def _is_sparse_group(node: Any) -> bool:
         return False
     keys = set(node.keys())
     return {"data", "indices", "indptr"}.issubset(keys)
+
+
+def sparse_group_format(group: Any) -> Optional[str]:
+    """Return ``'csr'`` or ``'csc'`` when *group* has a recognizable encoding.
+
+    Inspects the ``encoding-type`` attribute (h5py or zarr-style) and returns
+    the matching format string, else ``None``. Passes a raw h5py group or any
+    object exposing an ``attrs`` mapping.
+    """
+    attrs = getattr(group, "attrs", None)
+    if attrs is None:
+        return None
+    enc = attrs.get("encoding-type", "")
+    if isinstance(enc, bytes):
+        enc = enc.decode("utf-8", errors="ignore")
+    if not isinstance(enc, str):
+        return None
+    enc = enc.lower()
+    if "csr" in enc:
+        return "csr"
+    if "csc" in enc:
+        return "csc"
+    return None
 
 
 def _normalize_matrix_key(matrix_key: Optional[str], fallback: str = "X") -> str:
@@ -158,3 +183,99 @@ def get_matrix_compression_policy(matrix: Any) -> Optional[Dict[str, Any]]:
             for name, details in metadata.get("datasets", {}).items()
         },
     }
+
+
+def _spec_to_create_kwargs(spec: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    """Translate a single dataset compression spec into h5py create kwargs."""
+    if not spec:
+        return {}
+    kwargs: Dict[str, Any] = {}
+    codec = spec.get("compression")
+    if codec is not None:
+        kwargs["compression"] = codec
+        if spec.get("compression_opts") is not None:
+            kwargs["compression_opts"] = spec["compression_opts"]
+    return kwargs
+
+
+def write_sparse_csr_group_attrs(
+    group,
+    *,
+    shape: tuple[int, int] | Sequence[int] | np.ndarray,
+    encoding: str = "csr_matrix",
+    version: str = "0.1.0",
+) -> None:
+    """Set the standard AnnData sparse-CSR group attrs on *group*.
+
+    Writes ``shape``, ``encoding-type`` and ``encoding-version`` in the exact
+    layout that AnnData and this package expect. Callers still create the
+    ``data``/``indices``/``indptr`` datasets themselves because their
+    compression/allocation strategy varies.
+    """
+    group.attrs["shape"] = np.asarray(shape, dtype=np.int64)
+    group.attrs["encoding-type"] = encoding
+    group.attrs["encoding-version"] = version
+
+
+@dataclass(frozen=True)
+class CompressionPolicy:
+    """Typed view over compression metadata for a backed matrix.
+
+    A ``CompressionPolicy`` wraps the per-dataset compression codec/opts that
+    should be preserved when writing subsetted/re-encoded copies of a backed
+    matrix. Use :meth:`dense_kwargs` for dense datasets and
+    :meth:`sparse_kwargs` for the ``data``/``indices``/``indptr`` triplet of
+    a sparse group.
+
+    Empty policies (no metadata available, or in-memory matrices) act as
+    no-ops and return empty kwarg dicts.
+    """
+
+    is_sparse: bool = False
+    datasets: Dict[str, Dict[str, Any]] = field(default_factory=dict)
+
+    @classmethod
+    def empty(cls) -> "CompressionPolicy":
+        return cls(is_sparse=False, datasets={})
+
+    @classmethod
+    def from_matrix(cls, matrix: Any) -> "CompressionPolicy":
+        """Build a policy by inspecting a backed matrix (returns empty for in-memory)."""
+        raw = get_matrix_compression_policy(matrix)
+        if raw is None:
+            return cls.empty()
+        return cls.from_dict(raw)
+
+    @classmethod
+    def from_dict(cls, raw: Optional[Dict[str, Any]]) -> "CompressionPolicy":
+        """Build a policy from a legacy dict representation."""
+        if not raw:
+            return cls.empty()
+        return cls(
+            is_sparse=bool(raw.get("is_sparse", False)),
+            datasets=dict(raw.get("datasets", {}) or {}),
+        )
+
+    def is_empty(self) -> bool:
+        return not self.datasets
+
+    def dense_kwargs(self) -> Dict[str, Any]:
+        """Return h5py create-dataset kwargs for a dense write.
+
+        The first dataset entry is used (matching prior behaviour for
+        single-dataset dense policies).
+        """
+        if not self.datasets:
+            return {}
+        return _spec_to_create_kwargs(next(iter(self.datasets.values())))
+
+    def sparse_kwargs(self, name: str) -> Dict[str, Any]:
+        """Return h5py create-dataset kwargs for a sparse component dataset.
+
+        ``name`` should be one of ``"data"``, ``"indices"``, ``"indptr"``.
+        """
+        return _spec_to_create_kwargs(self.datasets.get(name))
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Legacy dict representation, useful for callers still expecting a dict."""
+        return {"is_sparse": self.is_sparse, "datasets": dict(self.datasets)}

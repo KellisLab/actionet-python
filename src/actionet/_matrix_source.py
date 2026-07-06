@@ -17,6 +17,8 @@ import numpy as np
 import scipy.sparse as sp
 from anndata import AnnData
 
+from ._backed_compression import sparse_group_format
+
 
 def _is_sparse_matrix_like(X: object) -> bool:
     """Return ``True`` if *X* looks like a sparse matrix.
@@ -271,18 +273,7 @@ class MatrixSource:
             if fmt in {"csr", "csc"}:
                 return fmt
 
-        grp = self._resolve_h5_group()
-        enc = grp.attrs.get("encoding-type", "")
-        if isinstance(enc, bytes):
-            enc = enc.decode("utf-8", errors="ignore")
-        if isinstance(enc, str):
-            enc = enc.lower()
-            if "csr" in enc:
-                return "csr"
-            if "csc" in enc:
-                return "csc"
-
-        return None
+        return sparse_group_format(self._resolve_h5_group())
 
     @staticmethod
     def _h5py_cast_data_dataset(

@@ -303,9 +303,8 @@ def run_label_propagation(
     is_anndata = isinstance(X, AnnData)
 
     if is_anndata:
-        if network_key not in X.obsp:
-            raise ValueError(f"Network '{network_key}' not found in adata.obsp.")
-        G = X.obsp[network_key]
+        from .anndata_utils import resolve_network
+        G = resolve_network(X, network_key)
     else:
         G = X
 
@@ -369,10 +368,8 @@ def compute_archetype_centrality(
     Updates adata with:
         - adata.obs[key_added]: Centrality values
     """
-    if network_key not in adata.obsp:
-        raise ValueError(f"Network '{network_key}' not found.")
-
-    G = adata.obsp[network_key]
+    from .anndata_utils import resolve_network
+    G = resolve_network(adata, network_key)
     conn = _core.compute_archetype_centrality(G, assignments.astype(np.int32))
 
     adata.obs[key_added] = conn

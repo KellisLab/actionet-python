@@ -248,13 +248,17 @@ def correct_basal_expression(
 
     old_S_r, old_U, old_A, old_B, old_sigma = _load_reduction_state(adata, reduction_key)
 
-    basal_genes = np.array(basal_genes)
-    gene_mask = np.isin(adata.var_names, basal_genes)
-    if gene_mask.sum() == 0:
+    from ._feature_lookup import resolve_feature_space, resolve_requested_features
+
+    space = resolve_feature_space(adata, features_use=None, context="correct_basal_expression")
+    resolved = resolve_requested_features(
+        list(basal_genes), space, context="correct_basal_expression"
+    )
+    if resolved.matched_indices.size == 0:
         raise ValueError("None of the specified basal genes found in adata.var_names")
 
     basal = np.zeros((adata.n_vars, 1), dtype=float)
-    basal[gene_mask, 0] = 1.0
+    basal[resolved.matched_indices, 0] = 1.0
     basal = np.ascontiguousarray(basal)
 
     row_scale_factors: Optional[np.ndarray] = None

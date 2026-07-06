@@ -139,32 +139,18 @@ def _resolve_feature_indices(
     if len(feat_list) == 0:
         raise ValueError("'features' must be 'all' or a non-empty list of feature names.")
 
-    if features_use is None:
-        label_values = adata.var_names.tolist()
-        label_desc = "adata.var_names"
-    else:
-        if features_use not in adata.var.columns:
-            raise ValueError(
-                f"features_use column '{features_use}' not found in adata.var. "
-                f"Available columns: {list(adata.var.columns)}"
-            )
-        label_values = adata.var[features_use].astype(str).tolist()
-        label_desc = f"adata.var['{features_use}']"
+    from .._feature_lookup import resolve_feature_space
 
-    # Build first-occurrence lookup (mirrors R match() / which() semantics).
-    # pd.Index.get_indexer() raises InvalidIndexError on duplicate labels.
-    first_occurrence: dict[str, int] = {}
-    for i, lab in enumerate(label_values):
-        if lab not in first_occurrence:
-            first_occurrence[lab] = i
+    space = resolve_feature_space(adata, features_use, context="qc._resolve_feature_indices")
+    label_desc = "adata.var_names" if features_use is None else f"adata.var['{features_use}']"
 
     found = np.array(
-        [first_occurrence[f] for f in feat_list if f in first_occurrence],
+        [space.lookup[f] for f in feat_list if f in space.lookup],
         dtype=np.int64,
     )
 
     if found.size == 0:
-        missing_sample = [f for f in feat_list if f not in first_occurrence]
+        missing_sample = [f for f in feat_list if f not in space.lookup]
         raise ValueError(
             f"No features matched {label_desc}. "
             f"First few requested: {missing_sample[:5]}"

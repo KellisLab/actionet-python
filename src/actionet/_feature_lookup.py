@@ -34,6 +34,26 @@ class FeatureSpace:
     """Set of label strings that appear more than once."""
 
 
+def build_first_occurrence_lookup(labels: Sequence) -> dict:
+    """Return ``{str(label): first_index}`` for *labels* (skipping NaN entries).
+
+    Mirrors :func:`resolve_feature_space` semantics without requiring an
+    ``AnnData`` container. Useful when only a raw label array is available.
+    """
+    lookup: dict = {}
+    for idx, lab in enumerate(labels):
+        try:
+            is_null = pd.isna(lab)
+        except (TypeError, ValueError):
+            is_null = False
+        if is_null:
+            continue
+        lab_str = str(lab)
+        if lab_str not in lookup:
+            lookup[lab_str] = idx
+    return lookup
+
+
 def resolve_feature_space(
     adata: AnnData,
     features_use: Optional[str] = None,
@@ -62,10 +82,10 @@ def resolve_feature_space(
             raise ValueError(f"Column '{features_use}' not found in adata.var")
         labels = adata.var[features_use].to_numpy()
 
-    lookup: dict = {}
-    has_dup = False
+    lookup = build_first_occurrence_lookup(labels)
+    seen_once: set = set()
     dup_set: set = set()
-    for idx, lab in enumerate(labels):
+    for lab in labels:
         try:
             is_null = pd.isna(lab)
         except (TypeError, ValueError):
@@ -73,15 +93,14 @@ def resolve_feature_space(
         if is_null:
             continue
         lab_str = str(lab)
-        if lab_str not in lookup:
-            lookup[lab_str] = idx
-        else:
-            has_dup = True
+        if lab_str in seen_once:
             dup_set.add(lab_str)
+        else:
+            seen_once.add(lab_str)
 
     return FeatureSpace(
         labels=labels, lookup=lookup,
-        has_duplicates=has_dup, duplicated_labels=frozenset(dup_set),
+        has_duplicates=bool(dup_set), duplicated_labels=frozenset(dup_set),
     )
 
 

@@ -12,6 +12,8 @@ from pandas.api.types import is_string_dtype
 from scipy import sparse
 import warnings
 
+from .._backed_compression import write_sparse_csr_group_attrs
+
 
 class ValidationError(Exception):
     """Raised when data validation fails."""
@@ -1008,17 +1010,13 @@ def _write_matrix(f, container_name, key, matrix, verbose, compression_kwargs=No
 
     # Handle sparse matrices
     elif sparse.issparse(matrix):
-        # Convert to CSR format for storage
         matrix = matrix.tocsr()
 
-        # Create group for sparse matrix
         grp = f.create_group(h5_key)
         grp.create_dataset('data', data=matrix.data, **compression_kwargs)
         grp.create_dataset('indices', data=matrix.indices, **compression_kwargs)
         grp.create_dataset('indptr', data=matrix.indptr, **compression_kwargs)
-        grp.attrs['shape'] = matrix.shape
-        grp.attrs['encoding-type'] = 'csr_matrix'
-        grp.attrs['encoding-version'] = '0.1.0'
+        write_sparse_csr_group_attrs(grp, shape=matrix.shape)
 
     else:
         # Dense matrix — ensure C-contiguous layout before writing.

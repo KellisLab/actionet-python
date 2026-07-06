@@ -36,7 +36,11 @@ import numpy as np
 import scipy.sparse as sp
 from anndata import AnnData
 
-from ._backed_compression import get_matrix_compression_policy
+from ._backed_compression import (
+    CompressionPolicy,
+    get_matrix_compression_policy,
+    write_sparse_csr_group_attrs,
+)
 from .experimental import _anndata_io
 
 
@@ -122,6 +126,24 @@ def get_auto_persist(adata: AnnData) -> bool:
     explicitly set to ``False`` via :func:`set_auto_persist`.
     """
     return bool(adata.uns.get("_actionet_auto_persist", True))
+
+
+def is_writable_backed(adata: AnnData) -> bool:
+    """Return True when *adata* is backed and its file allows writes.
+
+    Detects files opened in a mode containing ``"+"`` (e.g. ``"r+"``), which
+    is the mode AnnData uses for writable backed access. Returns ``False``
+    for in-memory AnnData or for files opened read-only.
+    """
+    if not bool(getattr(adata, "isbacked", False) and getattr(adata, "filename", None)):
+        return False
+    file_handle = getattr(getattr(adata, "file", None), "_file", None)
+    if file_handle is None:
+        return False
+    mode = getattr(file_handle, "mode", None)
+    if not mode:
+        return False
+    return "+" in mode
 
 
 def _ensure_backed_writable(adata: AnnData) -> None:
@@ -426,53 +448,114 @@ def _flush_pending(adata: AnnData) -> None:
 # ---------------------------------------------------------------------------
 
 
-def _copy_h5_group_faithful(src_group, dst_group, chunk_size: int) -> None:
-    """Recursively copy an HDF5 group preserving compression settings."""
+def _copy_h5_attrs(src, dst) -> None:
+    """Copy all HDF5 attrs from *src* to *dst*."""
+    for key, value in src.attrs.items():
+        dst.attrs[key] = value
+
+
+def _copy_h5_dataset_chunked(src_ds, dst_ds, chunk_size: int) -> None:
+    """Copy an h5py dataset's contents into an existing dataset in chunks."""
+    if src_ds.shape == () or src_ds.ndim == 0:
+        dst_ds[()] = src_ds[()]
+        return
+
+    n_rows = src_ds.shape[0]
+    if n_rows == 0:
+        return
+
+    step = int(max(1, chunk_size))
+    for start in range(0, n_rows, step):
+        end = min(start + step, n_rows)
+        dst_ds[start:end, ...] = src_ds[start:end, ...]
+
+
+def _dataset_kwargs_mirror(src_ds, *, preserve_compression: bool) -> dict:
+    """Build create_dataset kwargs mirroring *src_ds*'s layout.
+
+    When ``preserve_compression`` is True, all codec settings
+    (``compression``, ``compression_opts``, ``shuffle``, ``fletcher32``)
+    are copied. When False, only shape/dtype/chunks/maxshape are kept.
+    """
+    kwargs: dict[str, Any] = {
+        "shape": src_ds.shape,
+        "dtype": src_ds.dtype,
+    }
+    if src_ds.chunks is not None:
+        kwargs["chunks"] = src_ds.chunks
+    if src_ds.maxshape is not None:
+        kwargs["maxshape"] = src_ds.maxshape
+
+    if preserve_compression:
+        if src_ds.compression is not None:
+            kwargs["compression"] = src_ds.compression
+        if src_ds.compression_opts is not None:
+            kwargs["compression_opts"] = src_ds.compression_opts
+        if getattr(src_ds, "shuffle", False):
+            kwargs["shuffle"] = True
+        if getattr(src_ds, "fletcher32", False):
+            kwargs["fletcher32"] = True
+    return kwargs
+
+
+def copy_h5_group(
+    src_group,
+    dst_group,
+    *,
+    chunk_size: int,
+    preserve_compression: bool,
+) -> None:
+    """Recursively copy an HDF5 group into *dst_group*.
+
+    Parameters
+    ----------
+    src_group, dst_group
+        h5py groups (or files) — source and destination.
+    chunk_size
+        Row chunk size for streaming dataset copies (axis-0).
+    preserve_compression
+        When True, faithfully preserves compression codec, opts, shuffle
+        and fletcher32 filters. When False, destination datasets are
+        written uncompressed but keep the original ``chunks``/``maxshape``.
+    """
     import h5py
 
-    for key, value in src_group.attrs.items():
-        dst_group.attrs[key] = value
+    _copy_h5_attrs(src_group, dst_group)
 
     for name, obj in src_group.items():
         if isinstance(obj, h5py.Group):
             child = dst_group.create_group(name)
-            _copy_h5_group_faithful(obj, child, chunk_size=chunk_size)
+            copy_h5_group(
+                obj,
+                child,
+                chunk_size=chunk_size,
+                preserve_compression=preserve_compression,
+            )
         elif isinstance(obj, h5py.Dataset):
-            kwargs: dict[str, Any] = {
-                "shape": obj.shape,
-                "dtype": obj.dtype,
-            }
-            if obj.chunks is not None:
-                kwargs["chunks"] = obj.chunks
-            if obj.maxshape is not None:
-                kwargs["maxshape"] = obj.maxshape
-            if obj.compression is not None:
-                kwargs["compression"] = obj.compression
-            if obj.compression_opts is not None:
-                kwargs["compression_opts"] = obj.compression_opts
-            if obj.shuffle:
-                kwargs["shuffle"] = True
-            if obj.fletcher32:
-                kwargs["fletcher32"] = True
-
+            kwargs = _dataset_kwargs_mirror(
+                obj, preserve_compression=preserve_compression
+            )
             dst_ds = dst_group.create_dataset(name, **kwargs)
-
-            # Chunked copy along axis-0.
-            if obj.shape == () or obj.ndim == 0:
-                dst_ds[()] = obj[()]
-            else:
-                n_rows = obj.shape[0]
-                step = max(1, chunk_size)
-                for start in range(0, n_rows, step):
-                    end = min(start + step, n_rows)
-                    dst_ds[start:end, ...] = obj[start:end, ...]
-
-            for key, value in obj.attrs.items():
-                dst_ds.attrs[key] = value
+            _copy_h5_dataset_chunked(obj, dst_ds, chunk_size=chunk_size)
+            _copy_h5_attrs(obj, dst_ds)
         else:
             raise TypeError(
                 f"Unsupported HDF5 object type for key '{name}': {type(obj)}"
             )
+
+
+def _copy_h5_group_faithful(src_group, dst_group, chunk_size: int) -> None:
+    """Legacy alias for :func:`copy_h5_group` with ``preserve_compression=True``.
+
+    Retained for backwards-compatibility with any external callers that
+    referenced the private name. New code should call :func:`copy_h5_group`.
+    """
+    copy_h5_group(
+        src_group,
+        dst_group,
+        chunk_size=chunk_size,
+        preserve_compression=True,
+    )
 
 
 def _repack_h5ad(
@@ -498,7 +581,12 @@ def _repack_h5ad(
 
     try:
         with h5py.File(src_path, "r") as src_f, h5py.File(tmp_path, "w") as dst_f:
-            _copy_h5_group_faithful(src_f, dst_f, chunk_size=chunk_size)
+            copy_h5_group(
+                src_f,
+                dst_f,
+                chunk_size=chunk_size,
+                preserve_compression=True,
+            )
 
         if hasattr(adata, "file") and adata.file is not None:
             adata.file.close()
@@ -655,29 +743,11 @@ def _init_from_reopened(adata: AnnData, reopened: AnnData) -> None:
     adata.file = reopened.file
 
 
-def _dataset_create_kwargs_from_spec(spec: dict | None) -> dict:
-    """Translate compression metadata into h5py create_dataset kwargs."""
-    if not spec:
-        return {}
-
-    kwargs: dict = {}
-    codec = spec.get("compression")
-    if codec is not None:
-        kwargs["compression"] = codec
-        if spec.get("compression_opts") is not None:
-            kwargs["compression_opts"] = spec["compression_opts"]
-    return kwargs
-
-
-def _sparse_dataset_compression_kwargs(
-    compression_policy: dict | None,
-    dataset_name: str,
-) -> dict:
-    """Return compression kwargs for one sparse component dataset."""
-    if not compression_policy:
-        return {}
-    spec = (compression_policy.get("datasets", {}) or {}).get(dataset_name)
-    return _dataset_create_kwargs_from_spec(spec)
+def _as_compression_policy(policy) -> CompressionPolicy:
+    """Coerce legacy dict / None inputs into a :class:`CompressionPolicy`."""
+    if isinstance(policy, CompressionPolicy):
+        return policy
+    return CompressionPolicy.from_dict(policy)
 
 
 def _normalize_index_array(
@@ -813,9 +883,10 @@ def _write_sparse_subsetted(
     var_idx: np.ndarray | None,
     chunk_size: int,
     encoding: str = "csr_matrix",
-    compression_policy: dict | None = None,
+    compression_policy: CompressionPolicy | dict | None = None,
 ):
     """Write a row/col-subsetted sparse matrix to *f[h5_key]* in chunks."""
+    policy = _as_compression_policy(compression_policy)
     source_mat = matrix
     n_out = obs_idx.size
     n_vars_out = var_idx.size if var_idx is not None else source_mat.shape[1]
@@ -867,13 +938,13 @@ def _write_sparse_subsetted(
             "data",
             shape=(alloc_size,),
             dtype=data_dtype,
-            **_sparse_dataset_compression_kwargs(compression_policy, "data"),
+            **policy.sparse_kwargs("data"),
         )
         indices_ds = grp.create_dataset(
             "indices",
             shape=(alloc_size,),
             dtype=indices_dtype,
-            **_sparse_dataset_compression_kwargs(compression_policy, "indices"),
+            **policy.sparse_kwargs("indices"),
         )
     else:
         data_ds = grp.create_dataset(
@@ -881,14 +952,14 @@ def _write_sparse_subsetted(
             shape=(alloc_size,),
             maxshape=(None,),
             dtype=data_dtype,
-            **_sparse_dataset_compression_kwargs(compression_policy, "data"),
+            **policy.sparse_kwargs("data"),
         )
         indices_ds = grp.create_dataset(
             "indices",
             shape=(alloc_size,),
             maxshape=(None,),
             dtype=indices_dtype,
-            **_sparse_dataset_compression_kwargs(compression_policy, "indices"),
+            **policy.sparse_kwargs("indices"),
         )
 
     indptr = np.zeros(n_out + 1, dtype=np.int64)
@@ -932,11 +1003,9 @@ def _write_sparse_subsetted(
     grp.create_dataset(
         "indptr",
         data=indptr,
-        **_sparse_dataset_compression_kwargs(compression_policy, "indptr"),
+        **policy.sparse_kwargs("indptr"),
     )
-    grp.attrs["shape"] = np.array([n_out, n_vars_out])
-    grp.attrs["encoding-type"] = encoding
-    grp.attrs["encoding-version"] = "0.1.0"
+    write_sparse_csr_group_attrs(grp, shape=(n_out, n_vars_out), encoding=encoding)
 
 
 def _write_dense_subsetted(
@@ -946,26 +1015,21 @@ def _write_dense_subsetted(
     obs_idx: np.ndarray,
     var_idx: np.ndarray | None,
     chunk_size: int,
-    compression_policy: dict | None = None,
+    compression_policy: CompressionPolicy | dict | None = None,
 ):
     """Write a row/col-subsetted dense matrix to *f[h5_key]* in chunks."""
+    policy = _as_compression_policy(compression_policy)
     if hasattr(matrix, "to_numpy"):
         matrix = matrix.to_numpy()
     n_out = obs_idx.size
     n_vars_out = var_idx.size if var_idx is not None else matrix.shape[1]
     out_dtype = np.dtype(getattr(matrix, "dtype", np.float64))
 
-    _dense_kwargs: dict = {}
-    if compression_policy:
-        _dense_ds = compression_policy.get("datasets", {})
-        if _dense_ds:
-            _dense_kwargs = _dataset_create_kwargs_from_spec(next(iter(_dense_ds.values())))
-
     ds = f.create_dataset(
         h5_key,
         shape=(n_out, n_vars_out),
         dtype=out_dtype,
-        **_dense_kwargs,
+        **policy.dense_kwargs(),
     )
     ds.attrs["encoding-type"] = "array"
     ds.attrs["encoding-version"] = "0.2.0"
@@ -988,12 +1052,15 @@ def _write_subsetted_matrix(
     obs_idx: np.ndarray,
     var_idx: np.ndarray | None,
     chunk_size: int,
-    compression_policy: dict | None = None,
+    compression_policy: CompressionPolicy | dict | None = None,
 ):
     """Dispatch to sparse or dense chunked writer."""
     from ._matrix_source import _is_sparse_matrix_like
 
-    policy = compression_policy if compression_policy is not None else get_matrix_compression_policy(matrix)
+    if compression_policy is None:
+        policy = CompressionPolicy.from_matrix(matrix)
+    else:
+        policy = _as_compression_policy(compression_policy)
 
     if _is_sparse_matrix_like(matrix):
         _write_sparse_subsetted(

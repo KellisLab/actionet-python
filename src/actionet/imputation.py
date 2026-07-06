@@ -153,13 +153,10 @@ def impute_features(
     # ------------------------------------------------------------------
     # Network-diffusion paths ("diffusion" and "pca")
     # ------------------------------------------------------------------
-    if isinstance(norm_method, str):
-        norm_method_code = 2 if norm_method == "pagerank_sym" else 0
-    else:
-        norm_method_code = int(norm_method)
+    from .anndata_utils import norm_method_to_int, resolve_network
+    norm_method_code = norm_method_to_int(norm_method)
 
-    if network_key not in adata.obsp:
-        raise ValueError(f"Network '{network_key}' not found. Run build_network first.")
+    resolve_network(adata, network_key)
 
     print(
         f"impute_features: method={method} | "

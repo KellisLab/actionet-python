@@ -38,11 +38,9 @@ def _flatten_features(features: Union[str, Sequence[Union[str, Iterable[str]]]])
 
 
 def _resolve_feature_labels(adata: AnnData, features_use: Optional[str]) -> np.ndarray:
-    if features_use is None:
-        return adata.var_names.to_numpy()
-    if features_use not in adata.var.columns:
-        raise ValueError(f"Column '{features_use}' not found in adata.var")
-    return adata.var[features_use].to_numpy()
+    from .._feature_lookup import resolve_feature_space
+
+    return resolve_feature_space(adata, features_use).labels
 
 
 def _select_features(
@@ -69,12 +67,12 @@ def _extract_expression(
     lazy_transform: Optional[LazyTransform] = None,
     backed_chunk_size: int = 4096,
 ) -> pd.DataFrame:
-    feature_labels = _resolve_feature_labels(adata, features_use)
-    feature_to_idx: dict = {}
-    for idx, feat in enumerate(feature_labels):
-        if feat not in feature_to_idx:
-            feature_to_idx[feat] = idx
-    feature_indices = np.array([feature_to_idx[feat] for feat in features], dtype=np.int64)
+    from .._feature_lookup import resolve_feature_space
+
+    space = resolve_feature_space(adata, features_use, context="plot_feature_expression")
+    feature_indices = np.array(
+        [space.lookup[feat] for feat in features], dtype=np.int64
+    )
 
     source = MatrixSource(adata, layer=layer)
     if source.is_backed:

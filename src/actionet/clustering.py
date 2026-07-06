@@ -40,10 +40,8 @@ def cluster_network(
     if n_iterations == 0:
         raise ValueError("`n_iterations` cannot be 0. Use positive values or -1.")
 
-    if network_key not in adata.obsp:
-        raise ValueError(f"Network '{network_key}' not found in adata.obsp.")
-
-    adjacency = adata.obsp[network_key]
+    from .anndata_utils import resolve_network
+    adjacency = resolve_network(adata, network_key)
     if adjacency.shape != (adata.n_obs, adata.n_obs):
         raise ValueError(
             f"Network '{network_key}' must be shape ({adata.n_obs}, {adata.n_obs}), "

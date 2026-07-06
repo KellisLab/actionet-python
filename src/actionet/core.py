@@ -276,9 +276,8 @@ def compute_network_diffusion(
     is_anndata = isinstance(X, AnnData)
 
     if is_anndata:
-        if network_key not in X.obsp:
-            raise ValueError(f"Network '{network_key}' not found. Run build_network first.")
-        G = X.obsp[network_key]
+        from .anndata_utils import resolve_network
+        G = resolve_network(X, network_key)
     else:
         G = X
 
@@ -408,9 +407,8 @@ def compute_network_centrality(
     is_anndata = isinstance(X, AnnData)
 
     if is_anndata:
-        if network_key not in X.obsp:
-            raise ValueError(f"Network '{network_key}' not found. Run build_network first.")
-        G = X.obsp[network_key]
+        from .anndata_utils import resolve_network
+        G = resolve_network(X, network_key)
     else:
         G = X
 
@@ -641,10 +639,8 @@ def layout_network(
 
     if not inplace:
         adata = adata.copy()
-    if network_key not in adata.obsp:
-        raise ValueError(f"Network '{network_key}' not found.")
-    
-    G = adata.obsp[network_key]
+    from .anndata_utils import resolve_network
+    G = resolve_network(adata, network_key)
     
     # Handle initial_coords
     if initial_coords is None:

@@ -253,3 +253,47 @@ def aggregate_anndata(
 
 
     return adata_agg
+
+
+# ---------------------------------------------------------------------------
+# Shared injection helpers used by public actionet functions
+# ---------------------------------------------------------------------------
+
+
+def maybe_copy_adata(adata: AnnData, inplace: bool) -> AnnData:
+    """Return *adata* when ``inplace`` else a full ``.copy()`` clone.
+
+    For backed AnnData, ``.copy()`` is delegated to AnnData itself; note that
+    backed copies may require read-write mode — see
+    :func:`materialize_backed` for a fully in-memory alternative.
+    """
+    if inplace:
+        return adata
+    return adata.copy()
+
+
+def resolve_network(adata: AnnData, network_key: str):
+    """Return ``adata.obsp[network_key]`` after validating presence.
+
+    Raises a ``ValueError`` with a consistent message when the key is
+    missing from ``adata.obsp``. Used by all functions that consume a
+    precomputed cell-cell network.
+    """
+    if network_key not in adata.obsp:
+        raise ValueError(
+            f"Network '{network_key}' not found. Run build_network first."
+        )
+    return adata.obsp[network_key]
+
+
+def norm_method_to_int(norm_method) -> int:
+    """Translate the ``norm_method`` argument into the C++ integer code.
+
+    Accepts ``"pagerank"`` (=> ``0``), ``"pagerank_sym"`` (=> ``2``), or any
+    value that can be cast to :class:`int`. Kept in one place so all diffusion
+    call sites agree on the encoding.
+    """
+    if isinstance(norm_method, str):
+        return 2 if norm_method == "pagerank_sym" else 0
+    return int(norm_method)
+

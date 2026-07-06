@@ -15,9 +15,11 @@ from anndata import AnnData
 from scipy.io import mmread
 from scipy.sparse import csr_matrix, issparse
 
-from ._backed_compression import get_matrix_compression_policy
+from ._backed_compression import sparse_group_format
 from ._backed_persist import (
     is_backed_adata,
+    is_writable_backed,
+    copy_h5_group,
     _refresh_backed_handle,
     _adaptive_sparse_chunk_size,
     _write_filtered_backed,
@@ -169,7 +171,7 @@ def normalize_anndata(
 
     if layer_added is not None:
         if source.is_backed:
-            if not _is_writable_backed(adata):
+            if not is_writable_backed(adata):
                 raise ValueError(
                     "`layer_added` with backed AnnData requires writable mode 'r+'. "
                     "Re-open with `ad.read_h5ad(path, backed=\"r+\")`."
@@ -525,7 +527,7 @@ def _normalize_backed_streamed(
     is_sparse_dest = hasattr(dest_node, "keys") and "data" in dest_node
 
     if is_sparse_dest:
-        dest_encoding = _backed_sparse_group_format(dest_node)
+        dest_encoding = sparse_group_format(dest_node)
         if dest_encoding != "csr":
             raise ValueError(
                 "Streamed sparse normalization destinations must use CSR-backed storage."
@@ -584,21 +586,6 @@ def _normalize_backed_streamed(
             dest_node[chunk.start:chunk.end, :] = arr
 
     h5file.flush()
-
-
-def _backed_sparse_group_format(group) -> str | None:
-    """Return ``'csr'`` or ``'csc'`` for one sparse HDF5 group when known."""
-    enc = group.attrs.get("encoding-type", "")
-    if isinstance(enc, bytes):
-        enc = enc.decode("utf-8", errors="ignore")
-    if not isinstance(enc, str):
-        return None
-    enc = enc.lower()
-    if "csr" in enc:
-        return "csr"
-    if "csc" in enc:
-        return "csc"
-    return None
 
 
 def _dataset_create_kwargs_like(
@@ -1077,23 +1064,17 @@ def _decompress_matrix_in_adata(
 
 
 def _copy_h5_group_uncompressed(src_group, dst_group, chunk_size: int) -> None:
-    """Recursively copy an HDF5 group without compression."""
-    import h5py
+    """Recursively copy an HDF5 group without compression.
 
-    _copy_h5_attrs(src_group, dst_group)
-    for name, obj in src_group.items():
-        if isinstance(obj, h5py.Group):
-            child = dst_group.create_group(name)
-            _copy_h5_group_uncompressed(obj, child, chunk_size=chunk_size)
-        elif isinstance(obj, h5py.Dataset):
-            dst_ds = dst_group.create_dataset(
-                name,
-                **_dataset_create_kwargs_uncompressed(obj),
-            )
-            _copy_dataset_chunked(obj, dst_ds, chunk_size=chunk_size)
-            _copy_h5_attrs(obj, dst_ds)
-        else:
-            raise TypeError(f"Unsupported HDF5 object type for key '{name}': {type(obj)}")
+    Thin wrapper around :func:`copy_h5_group` that drops codec settings while
+    preserving shape/chunks/maxshape.
+    """
+    copy_h5_group(
+        src_group,
+        dst_group,
+        chunk_size=chunk_size,
+        preserve_compression=False,
+    )
 
 
 def _rewrite_h5ad_uncompressed(src_path: str, dest_path: str, chunk_size: int) -> None:
@@ -1102,16 +1083,6 @@ def _rewrite_h5ad_uncompressed(src_path: str, dest_path: str, chunk_size: int) -
 
     with h5py.File(src_path, "r") as src_f, h5py.File(dest_path, "w") as dst_f:
         _copy_h5_group_uncompressed(src_f, dst_f, chunk_size=chunk_size)
-
-
-def _is_writable_backed(adata: AnnData) -> bool:
-    """Return True when backed file is opened in writable mode."""
-    if not bool(getattr(adata, "isbacked", False) and getattr(adata, "filename", None)):
-        return False
-    mode = getattr(getattr(adata, "file", None), "_file", None)
-    if mode is None:
-        return False
-    return "+" in getattr(mode, "mode", "")
 
 
 def decompress_backed_storage(
@@ -1158,7 +1129,7 @@ def decompress_backed_storage(
     dest_path = src_path if inplace else str(output_file)
     chunk_size = int(max(1, chunk_size))
 
-    if inplace and not _is_writable_backed(adata):
+    if inplace and not is_writable_backed(adata):
         raise ValueError(
             "In-place decompression requires backed mode 'r+'. "
             "Re-open with `ad.read_h5ad(path, backed=\"r+\")` or pass `output_file`."
