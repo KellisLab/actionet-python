@@ -21,16 +21,6 @@ namespace {
         return out;
     }
 
-    py::dict kernel_to_dict(const actionet::KernelReductionResult& res) {
-        py::dict out;
-        out["S_r"] = arma_mat_to_numpy_c(res.S_r);
-        out["sigma"] = arma_vec_to_numpy(res.sigma);
-        out["U"] = arma_mat_to_numpy_c(res.U);
-        out["A"] = arma_mat_to_numpy_c(res.A);
-        out["B"] = arma_mat_to_numpy_c(res.B);
-        return out;
-    }
-
     std::vector<double> optional_row_scale(py::object row_scale_factors) {
         if (row_scale_factors.is_none()) {
             return {};
@@ -96,7 +86,7 @@ py::dict reduce_kernel_backed_operator(std::shared_ptr<actionet::MatrixOperator>
         py::gil_scoped_release release;
         res = actionet::reduceKernel_Operator(*op, k, svd_alg, max_it, seed, verbose);
     }
-    return kernel_to_dict(res);
+    return kernel_result_to_dict(res);
 }
 
 py::dict reduce_kernel_from_svd_backed_operator(std::shared_ptr<actionet::MatrixOperator> op,
@@ -115,7 +105,7 @@ py::dict reduce_kernel_from_svd_backed_operator(std::shared_ptr<actionet::Matrix
         py::gil_scoped_release release;
         res = actionet::reduceKernelFromSVD_Operator(*op, svd, verbose);
     }
-    return kernel_to_dict(res);
+    return kernel_result_to_dict(res);
 }
 
 void init_io(py::module_ &m) {
@@ -215,34 +205,28 @@ void init_io(py::module_ &m) {
                   }
               }
 
-              // Dispatch to the concrete operator type.
-              auto* sparse_op = dynamic_cast<actionet::BackedSparseMatrixOperator*>(op.get());
-              auto* dense_op = dynamic_cast<actionet::BackedDenseMatrixOperator*>(op.get());
-
               if (prefer_sparse) {
                   arma::sp_mat result;
                   {
                       py::gil_scoped_release release;
-                      if (sparse_op) {
-                          result = sparse_op->takeColumnsSparse(col_indices, row_indices);
-                      } else if (dense_op) {
-                          result = dense_op->takeColumnsSparse(col_indices, row_indices);
-                      } else {
-                          throw std::runtime_error("backed_take_columns: unsupported operator type");
-                      }
+                      result = dispatch_backed_op(
+                          op,
+                          "backed_take_columns",
+                          [&](auto& concrete_op) {
+                              return concrete_op.takeColumnsSparse(col_indices, row_indices);
+                          });
                   }
                   return arma_sparse_to_scipy(result);
               } else {
                   arma::mat result;
                   {
                       py::gil_scoped_release release;
-                      if (sparse_op) {
-                          result = sparse_op->takeColumnsDense(col_indices, row_indices);
-                      } else if (dense_op) {
-                          result = dense_op->takeColumnsDense(col_indices, row_indices);
-                      } else {
-                          throw std::runtime_error("backed_take_columns: unsupported operator type");
-                      }
+                      result = dispatch_backed_op(
+                          op,
+                          "backed_take_columns",
+                          [&](auto& concrete_op) {
+                              return concrete_op.takeColumnsDense(col_indices, row_indices);
+                          });
                   }
                   return py::cast<py::object>(arma_mat_to_numpy(result));
               }

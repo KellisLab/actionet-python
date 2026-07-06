@@ -23,10 +23,10 @@ from actionet._matrix_source import MatrixSource
 
 from .conftest import make_test_adata, open_backed, MatrixLike
 
-_has_perturbed_svd_with_prior = hasattr(_core, "perturbed_svd_with_prior")
+_has_run_svd_backed_operator = hasattr(_core, "run_svd_backed_operator")
 requires_rebuilt_ext = pytest.mark.skipif(
-    not _has_perturbed_svd_with_prior,
-    reason="C++ extension needs rebuild to expose perturbed_svd_with_prior",
+    not _has_run_svd_backed_operator,
+    reason="C++ extension needs rebuild to expose run_svd_backed_operator",
 )
 
 

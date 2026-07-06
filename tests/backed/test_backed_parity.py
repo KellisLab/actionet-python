@@ -135,6 +135,7 @@ def test_annotate_cells_backed_handles_retryable_open_conflict(tmp_path, monkeyp
     import actionet as an
     import actionet.annotation as an_annotation
     import actionet.backed_io as backed_io
+    import actionet.lazy_transform as lazy_transform_mod
 
     adata = make_test_adata(n_cells=32, n_genes=36, sparse_fmt="csr", seed=123)
     adata.obsp["actionet"] = sp.eye(adata.n_obs, format="csr")
@@ -153,7 +154,7 @@ def test_annotate_cells_backed_handles_retryable_open_conflict(tmp_path, monkeyp
     monkeypatch.setattr(backed_io, "_create_backed_operator", flaky_create)
 
     monkeypatch.setattr(
-        an_annotation,
+        lazy_transform_mod,
         "_resolve_lazy_backed_transform",
         lambda source, lazy_transform=None, backed_chunk_size=4096: (None, False, 1.0),
     )

@@ -617,15 +617,11 @@ class MatrixSource:
     ):
         """Backed fast-path: extract columns via the C++ operator."""
         from . import _core
-        from .backed_io import _backed_group_path, _open_backed_operator
+        from .backed_io import open_backed_operator_for
 
-        file_path = str(self.adata.filename)
-        group_path = _backed_group_path(self.layer)
-
-        with _open_backed_operator(
-            adata=self.adata,
-            file_path=file_path,
-            group_path=group_path,
+        with open_backed_operator_for(
+            self.adata,
+            layer=self.layer,
             context="MatrixSource.feature_subset",
             chunk_size=chunk_size,
         ) as op:

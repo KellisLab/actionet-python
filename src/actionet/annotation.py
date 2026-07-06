@@ -12,8 +12,8 @@ from .specificity import (
     _cluster_names_for_specificity_labels,
     compute_feature_specificity,
 )
-from .lazy_transform import LazyTransform, _validate_lazy_transform, _resolve_lazy_backed_transform
-from .backed_io import _backed_group_path, _open_backed_operator
+from .lazy_transform import LazyTransform, _validate_lazy_transform
+from .backed_io import open_backed_operator_for
 from . import _core
 from ._matrix_source import MatrixSource
 
@@ -410,22 +410,13 @@ def annotate_cells(
             # lazy_transform) and row_sums, then compute row_sum_sq via
             # MatrixSource streaming.  Pass pre-computed arrays to the
             # new split binding — avoids copying S across the pybind boundary.
-            row_scale_factors, apply_log1p, log_scale = _resolve_lazy_backed_transform(
-                source,
-                lazy_transform=lazy_transform,
-                backed_chunk_size=backed_chunk_size,
-            )
-            file_path = str(adata.filename)
-            group_path = _backed_group_path(layer)
-            with _open_backed_operator(
-                adata=adata,
-                file_path=file_path,
-                group_path=group_path,
+            with open_backed_operator_for(
+                adata,
+                layer=layer,
                 context="annotate_cells",
                 chunk_size=backed_chunk_size,
-                row_scale_factors=row_scale_factors,
-                apply_log1p=apply_log1p,
-                log_scale=log_scale,
+                lazy_transform=lazy_transform,
+                source=source,
             ) as op:
                 if use_enrichment:
                     fused = _core.annotate_cells_vision_backed_fused(

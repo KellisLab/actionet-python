@@ -33,45 +33,6 @@ bool fits_sparse_index_type(const actionet::CSRGraph& graph) {
     return graph.n <= index_max && graph.nnz() <= index_max;
 }
 
-py::object arma_sparse_to_scipy_legacy(const arma::sp_mat& sp_mat) {
-    py::module_ scipy_sparse = py::module_::import("scipy.sparse");
-
-    std::vector<double> data;
-    std::vector<py::ssize_t> rows;
-    std::vector<py::ssize_t> cols;
-
-    data.reserve(static_cast<size_t>(sp_mat.n_nonzero));
-    rows.reserve(static_cast<size_t>(sp_mat.n_nonzero));
-    cols.reserve(static_cast<size_t>(sp_mat.n_nonzero));
-
-    for (arma::sp_mat::const_iterator it = sp_mat.begin(); it != sp_mat.end(); ++it) {
-        data.push_back(*it);
-        rows.push_back(static_cast<py::ssize_t>(it.row()));
-        cols.push_back(static_cast<py::ssize_t>(it.col()));
-    }
-
-    py::array_t<double> data_arr(data.size());
-    py::array_t<py::ssize_t> rows_arr(rows.size());
-    py::array_t<py::ssize_t> cols_arr(cols.size());
-
-    if (!data.empty()) {
-        std::memcpy(data_arr.mutable_data(), data.data(), data.size() * sizeof(double));
-        std::memcpy(rows_arr.mutable_data(), rows.data(), rows.size() * sizeof(py::ssize_t));
-        std::memcpy(cols_arr.mutable_data(), cols.data(), cols.size() * sizeof(py::ssize_t));
-    }
-
-    return scipy_sparse.attr("coo_matrix")(
-        py::make_tuple(
-            data_arr,
-            py::make_tuple(
-                rows_arr,
-                cols_arr
-            )
-        ),
-        py::make_tuple(sp_mat.n_rows, sp_mat.n_cols)
-    ).attr("tocsr")();
-}
-
 template <typename IndexT>
 py::object arma_sparse_to_scipy_csr_impl(const arma::sp_mat& sp_mat) {
     py::module_ scipy_sparse = py::module_::import("scipy.sparse");
@@ -356,5 +317,37 @@ py::array_t<double> arma_vec_to_numpy(const arma::vec& vec) {
     double* ptr = static_cast<double*>(buf.ptr);
     std::memcpy(ptr, vec.memptr(), vec.n_elem * sizeof(double));
     return arr;
+}
+
+arma::field<arma::mat> pack_reduction_field(const arma::mat& S_r, const arma::vec& sigma,
+                                            const arma::mat& U, const arma::mat& A,
+                                            const arma::mat& B) {
+    arma::field<arma::mat> out(5);
+    out(0) = S_r;
+    out(1) = sigma;
+    out(2) = U;
+    out(3) = A;
+    out(4) = B;
+    return out;
+}
+
+py::dict kernel_field_to_dict(const arma::field<arma::mat>& reduction) {
+    py::dict out;
+    out["S_r"]   = arma_mat_to_numpy_c(reduction(0));
+    out["sigma"] = arma_vec_to_numpy(arma::vec(reduction(1)));
+    out["U"]     = arma_mat_to_numpy_c(reduction(2));
+    out["A"]     = arma_mat_to_numpy_c(reduction(3));
+    out["B"]     = arma_mat_to_numpy_c(reduction(4));
+    return out;
+}
+
+py::dict kernel_result_to_dict(const actionet::KernelReductionResult& res) {
+    py::dict out;
+    out["S_r"]   = arma_mat_to_numpy_c(res.S_r);
+    out["sigma"] = arma_vec_to_numpy(res.sigma);
+    out["U"]     = arma_mat_to_numpy_c(res.U);
+    out["A"]     = arma_mat_to_numpy_c(res.A);
+    out["B"]     = arma_mat_to_numpy_c(res.B);
+    return out;
 }
 

@@ -18,10 +18,7 @@ from ._backed_compression import (
     is_compressed_storage,
 )
 from ._matrix_source import MatrixSource
-from .backed_io import (
-    _backed_group_path,
-    _open_backed_operator,
-)
+from .backed_io import open_backed_operator_for
 from .lazy_transform import (
     LazyTransform,
     create_lazy_transform,
@@ -271,15 +268,15 @@ def reduce_kernel(
             if temp_path is not None:
                 file_path = temp_path
 
-            with _open_backed_operator(
-                adata=adata,
-                file_path=file_path,
-                group_path=_backed_group_path(layer),
+            with open_backed_operator_for(
+                adata,
+                layer=layer,
                 context="reduce_kernel",
                 chunk_size=backed_chunk_size,
                 row_scale_factors=row_scale_factors,
                 apply_log1p=apply_log1p,
                 log_scale=log_scale,
+                file_path=file_path,
                 io_target_chunk_bytes=io_target_chunk_bytes,
                 n_threads=backed_n_threads,
             ) as op:
@@ -504,17 +501,16 @@ def run_svd(
                 context="run_svd",
             )
             file_path = temp_path if temp_path is not None else str(adata_ctx.filename)
-            group_path = _backed_group_path(layer)
 
-            with _open_backed_operator(
-                adata=adata_ctx,
-                file_path=file_path,
-                group_path=group_path,
+            with open_backed_operator_for(
+                adata_ctx,
+                layer=layer,
                 context="run_svd",
                 chunk_size=backed_chunk_size,
                 row_scale_factors=row_scale_factors,
                 apply_log1p=apply_log1p,
                 log_scale=log_scale,
+                file_path=file_path,
                 io_target_chunk_bytes=io_target_chunk_bytes,
                 n_threads=backed_n_threads,
             ) as op:

@@ -10,8 +10,15 @@
 
 // Armadillo includes (libactionet uses Armadillo)
 #include "armadillo"
+#include "action/reduce_kernel.hpp"
 #include "decomposition/matrix_operator.hpp"
+#include "io/backed_h5ad/backed_dense_matrix_operator.hpp"
+#include "io/backed_h5ad/backed_sparse_matrix_operator.hpp"
 #include "network/build_network_core.hpp"
+
+#include <memory>
+#include <stdexcept>
+#include <string>
 
 namespace py = pybind11;
 
@@ -41,6 +48,20 @@ arma::vec numpy_to_arma_vec(py::array_t<double, py::array::c_style | py::array::
 // Convert Armadillo vector to NumPy array
 py::array_t<double> arma_vec_to_numpy(const arma::vec& vec);
 
+/// @brief Pack (S_r, sigma, U, A, B) into an arma::field<arma::mat> in Plan-02
+/// public layout: {S_r (cells x k), sigma, U (genes x k), A, B}.
+arma::field<arma::mat> pack_reduction_field(const arma::mat& S_r, const arma::vec& sigma,
+                                            const arma::mat& U, const arma::mat& A,
+                                            const arma::mat& B);
+
+/// @brief Unpack a 5-element arma::field<arma::mat> in the Plan-02 layout
+/// to a Python dict with keys ("S_r","sigma","U","A","B").
+py::dict kernel_field_to_dict(const arma::field<arma::mat>& reduction);
+
+/// @brief Convert a KernelReductionResult struct to a Python dict with keys
+/// ("S_r","sigma","U","A","B"). Used by reduce_kernel / orthogonalize APIs.
+py::dict kernel_result_to_dict(const actionet::KernelReductionResult& res);
+
 /// @brief Parse a flexible singular-value argument (1D, Nx1, or 1xN) into arma::vec.
 inline arma::vec parse_sigma(py::object d) {
     py::array_t<double, py::array::forcecast> d_arr = d.cast<py::array_t<double, py::array::forcecast>>();
@@ -53,6 +74,30 @@ inline arma::vec parse_sigma(py::object d) {
         return arma::vec(ptr, static_cast<arma::uword>(d_buf.shape[0] * d_buf.shape[1]), true, true);
     }
     throw std::runtime_error("Expected singular values `d` to be a 1D vector or Nx1/1xN array");
+}
+
+/// @brief Dispatch a callable to the concrete backed operator subtype.
+///
+/// ``op_base`` must be a ``std::shared_ptr<actionet::MatrixOperator>`` that
+/// actually points to a ``BackedSparseMatrixOperator`` or
+/// ``BackedDenseMatrixOperator``.  ``fn`` is invoked as ``fn(*concrete_op)``
+/// with the appropriately-typed reference; use a generic (auto&) lambda so the
+/// same body compiles against both sparse and dense operators.  Throws with a
+/// ``context``-prefixed message if the pointer is null or the concrete type is
+/// neither of the two supported backed operator classes.
+template <typename F>
+auto dispatch_backed_op(const std::shared_ptr<actionet::MatrixOperator>& op_base,
+                        const char* context, F&& fn) {
+    if (!op_base) {
+        throw std::runtime_error(std::string(context) + ": operator is null");
+    }
+    if (auto* sparse_op = dynamic_cast<actionet::BackedSparseMatrixOperator*>(op_base.get())) {
+        return fn(*sparse_op);
+    }
+    if (auto* dense_op = dynamic_cast<actionet::BackedDenseMatrixOperator*>(op_base.get())) {
+        return fn(*dense_op);
+    }
+    throw std::runtime_error(std::string(context) + ": unsupported operator type");
 }
 
 #endif // WP_UTILS_H

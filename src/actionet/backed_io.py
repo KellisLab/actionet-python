@@ -222,3 +222,73 @@ def _open_backed_operator(
                     stacklevel=4,
                 )
 
+
+@contextlib.contextmanager
+def open_backed_operator_for(
+    adata: AnnData,
+    *,
+    layer: Optional[str],
+    context: str,
+    chunk_size: int,
+    lazy_transform: Optional[Any] = None,
+    source: Optional[Any] = None,
+    row_scale_factors: Optional[np.ndarray] = None,
+    apply_log1p: bool = False,
+    log_scale: float = 1.0,
+    file_path: Optional[str] = None,
+    io_target_chunk_bytes: Optional[int] = None,
+    n_threads: Optional[int] = None,
+    retry_attempts: int = 3,
+    retry_backoff_seconds: float = 0.25,
+) -> Generator[Any, None, None]:
+    """Open a backed operator for the ``.X`` (or a named layer) of ``adata``.
+
+    Consolidates the common preamble used by every backed-operator call site:
+
+    - resolves the HDF5 group path from ``layer``,
+    - optionally resolves lazy-transform parameters from ``lazy_transform``
+      (overrides any explicit ``row_scale_factors`` / ``apply_log1p`` / ``log_scale``),
+    - opens a lock-safe backed operator via :func:`_open_backed_operator`.
+
+    Parameters
+    ----------
+    file_path
+        Override for the source file path. Defaults to ``str(adata.filename)``.
+        Used e.g. by ``reduce_kernel`` / ``run_svd`` when routing through a
+        temporary uncompressed copy.
+    source
+        Pre-built :class:`MatrixSource`. Only consulted when ``lazy_transform``
+        is not None; passed through to avoid a redundant reconstruction.
+
+    Yields the backed operator handle for use inside a ``with`` block.
+    """
+    if lazy_transform is not None:
+        from ._matrix_source import MatrixSource
+        from .lazy_transform import _resolve_lazy_backed_transform
+
+        if source is None:
+            source = MatrixSource(adata, layer=layer)
+        row_scale_factors, apply_log1p, log_scale = _resolve_lazy_backed_transform(
+            source,
+            lazy_transform=lazy_transform,
+            backed_chunk_size=chunk_size,
+        )
+
+    resolved_file_path = file_path if file_path is not None else str(adata.filename)
+
+    with _open_backed_operator(
+        adata=adata,
+        file_path=resolved_file_path,
+        group_path=_backed_group_path(layer),
+        context=context,
+        chunk_size=chunk_size,
+        row_scale_factors=row_scale_factors,
+        apply_log1p=apply_log1p,
+        log_scale=log_scale,
+        io_target_chunk_bytes=io_target_chunk_bytes,
+        n_threads=n_threads,
+        retry_attempts=retry_attempts,
+        retry_backoff_seconds=retry_backoff_seconds,
+    ) as op:
+        yield op
+

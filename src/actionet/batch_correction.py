@@ -10,7 +10,7 @@ from . import _core
 from .anndata_utils import anndata_to_matrix
 from ._backed_persist import persist_updates
 from ._matrix_source import MatrixSource
-from .backed_io import _backed_group_path, _open_backed_operator
+from .backed_io import open_backed_operator_for
 from .lazy_transform import (
     LazyTransform,
     _lazy_params_for_metadata,
@@ -135,12 +135,9 @@ def correct_batch_effect(
             lazy_transform=lazy_transform,
             backed_chunk_size=backed_chunk_size,
         )
-        file_path = str(adata.filename)
-        group_path = _backed_group_path(layer)
-        with _open_backed_operator(
-            adata=adata,
-            file_path=file_path,
-            group_path=group_path,
+        with open_backed_operator_for(
+            adata,
+            layer=layer,
             context="correct_batch_effect",
             chunk_size=backed_chunk_size,
             row_scale_factors=row_scale_factors,
@@ -271,12 +268,9 @@ def correct_basal_expression(
             lazy_transform=lazy_transform,
             backed_chunk_size=backed_chunk_size,
         )
-        file_path = str(adata.filename)
-        group_path = _backed_group_path(layer)
-        with _open_backed_operator(
-            adata=adata,
-            file_path=file_path,
-            group_path=group_path,
+        with open_backed_operator_for(
+            adata,
+            layer=layer,
             context="correct_basal_expression",
             chunk_size=backed_chunk_size,
             row_scale_factors=row_scale_factors,
@@ -300,7 +294,7 @@ def correct_basal_expression(
 
     corrected_params = {
         "sigma": result["sigma"],
-        "basal_genes": basal_genes[np.isin(basal_genes, adata.var_names)].tolist(),
+        "basal_genes": np.asarray(basal_genes)[np.isin(basal_genes, adata.var_names)].tolist(),
         "original_reduction": reduction_key,
     }
     corrected_params.update(_lazy_params_for_metadata(lazy_transform if apply_log1p else None))

@@ -162,18 +162,6 @@ py::dict merge_archetypes(py::array_t<double> S_r, py::array_t<double> C_stacked
 
 // reduce_kernel =======================================================================================================
 
-// Helper to unpack KernelReductionResult to Python dict.
-// The output keys use "U" for the left singular vectors (consistent with SVD convention).
-static py::dict kernel_result_to_dict(const actionet::KernelReductionResult& res) {
-    py::dict out;
-    out["S_r"]   = arma_mat_to_numpy_c(res.S_r);
-    out["sigma"] = arma_vec_to_numpy(res.sigma);
-    out["U"]     = arma_mat_to_numpy_c(res.U);
-    out["A"]     = arma_mat_to_numpy_c(res.A);
-    out["B"]     = arma_mat_to_numpy_c(res.B);
-    return out;
-}
-
 py::dict reduce_kernel_sparse(py::object S, int k = 50, int svd_alg = 0,
                                int max_it = 0, int seed = 0, bool verbose = true) {
     arma::sp_mat S_sp = scipy_to_arma_sparse(S);
@@ -182,14 +170,7 @@ py::dict reduce_kernel_sparse(py::object S, int k = 50, int svd_alg = 0,
         py::gil_scoped_release release;
         res = actionet::reduceKernel(S_sp, k, svd_alg, max_it, seed, verbose);
     }
-
-    py::dict out;
-    out["S_r"]   = arma_mat_to_numpy_c(res(0));
-    out["sigma"] = arma_vec_to_numpy(arma::vec(res(1)));
-    out["U"]     = arma_mat_to_numpy_c(res(2));
-    out["A"]     = arma_mat_to_numpy_c(res(3));
-    out["B"]     = arma_mat_to_numpy_c(res(4));
-    return out;
+    return kernel_field_to_dict(res);
 }
 
 py::dict reduce_kernel_dense(py::array_t<double> S, int k = 50, int svd_alg = 0,
@@ -200,14 +181,7 @@ py::dict reduce_kernel_dense(py::array_t<double> S, int k = 50, int svd_alg = 0,
         py::gil_scoped_release release;
         res = actionet::reduceKernel(S_mat, k, svd_alg, max_it, seed, verbose);
     }
-
-    py::dict out;
-    out["S_r"]   = arma_mat_to_numpy_c(res(0));
-    out["sigma"] = arma_vec_to_numpy(arma::vec(res(1)));
-    out["U"]     = arma_mat_to_numpy_c(res(2));
-    out["A"]     = arma_mat_to_numpy_c(res(3));
-    out["B"]     = arma_mat_to_numpy_c(res(4));
-    return out;
+    return kernel_field_to_dict(res);
 }
 
 py::dict reduce_kernel_from_svd_sparse(py::object S, py::array_t<double> u, py::object d,

@@ -16,7 +16,7 @@ from . import _core
 from ._backed_persist import persist_updates
 from ._matrix_source import MatrixSource
 from .anndata_utils import anndata_to_matrix
-from .backed_io import _backed_group_path, _open_backed_operator
+from .backed_io import open_backed_operator_for
 from .lazy_transform import (
     LazyTransform,
     _resolve_lazy_backed_transform,
@@ -37,12 +37,9 @@ def _run_specificity_backed_sparse(
     log_scale: float = 1.0,
 ) -> dict:
     """Dispatch backed sparse specificity through the C++ ABI."""
-    file_path = str(adata.filename)
-    group_path = _backed_group_path(layer)
-    with _open_backed_operator(
-        adata=adata,
-        file_path=file_path,
-        group_path=group_path,
+    with open_backed_operator_for(
+        adata,
+        layer=layer,
         context="compute_feature_specificity_sparse",
         chunk_size=chunk_size,
         row_scale_factors=row_scale_factors,
@@ -68,12 +65,9 @@ def _run_specificity_backed_dense(
     log_scale: float = 1.0,
 ) -> dict:
     """Dispatch backed dense specificity through the C++ ABI."""
-    file_path = str(adata.filename)
-    group_path = _backed_group_path(layer)
-    with _open_backed_operator(
-        adata=adata,
-        file_path=file_path,
-        group_path=group_path,
+    with open_backed_operator_for(
+        adata,
+        layer=layer,
         context="compute_feature_specificity_dense",
         chunk_size=chunk_size,
         row_scale_factors=row_scale_factors,

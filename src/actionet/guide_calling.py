@@ -18,7 +18,7 @@ from anndata import AnnData
 from . import _core
 from ._matrix_source import MatrixSource
 from .anndata_utils import anndata_to_matrix
-from .backed_io import _backed_group_path, _open_backed_operator
+from .backed_io import open_backed_operator_for
 
 
 ArrayLike1D = Union[np.ndarray, Sequence[float]]
@@ -96,10 +96,9 @@ def _resolve_input(
                 )
 
         if source.is_backed:
-            cm = _open_backed_operator(
-                adata=X,
-                file_path=str(X.filename),
-                group_path=_backed_group_path(layer),
+            cm = open_backed_operator_for(
+                X,
+                layer=layer,
                 context="guide_call_gmm",
                 chunk_size=max(1, int(backed_chunk_size)),
                 n_threads=int(n_threads),

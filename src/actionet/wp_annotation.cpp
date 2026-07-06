@@ -415,27 +415,19 @@ void init_annotation(py::module_ &m) {
              py::object G_obj, py::object X_obj,
              int norm_method, double alpha, int max_it,
              bool approx, int thread_no) -> py::array_t<double> {
-              if (!op_base) {
-                  throw std::runtime_error("compute_feature_stats_vision_backed_operator: operator is null");
-              }
               arma::sp_mat G_sp = scipy_to_arma_sparse(G_obj);
               arma::sp_mat X_sp = scipy_to_arma_sparse(X_obj);
-
-              auto* sparse_op = dynamic_cast<actionet::BackedSparseMatrixOperator*>(op_base.get());
-              auto* dense_op = dynamic_cast<actionet::BackedDenseMatrixOperator*>(op_base.get());
 
               arma::mat result;
               {
                   py::gil_scoped_release release;
-                  if (sparse_op) {
-                      result = actionet::computeFeatureStatsVision(
-                          *sparse_op, G_sp, X_sp, norm_method, alpha, max_it, approx, thread_no);
-                  } else if (dense_op) {
-                      result = actionet::computeFeatureStatsVision(
-                          *dense_op, G_sp, X_sp, norm_method, alpha, max_it, approx, thread_no);
-                  } else {
-                      throw std::runtime_error("compute_feature_stats_vision_backed_operator: unsupported operator type");
-                  }
+                  result = dispatch_backed_op(
+                      op_base,
+                      "compute_feature_stats_vision_backed_operator",
+                      [&](auto& op) {
+                          return actionet::computeFeatureStatsVision(
+                              op, G_sp, X_sp, norm_method, alpha, max_it, approx, thread_no);
+                      });
               }
               return arma_mat_to_numpy(result);
           },
@@ -452,28 +444,20 @@ void init_annotation(py::module_ &m) {
              int norm_method, double alpha, int max_it,
              bool approx, int enrichment_norm_method,
              int thread_no) -> py::dict {
-              if (!op_base) {
-                  throw std::runtime_error("annotate_cells_vision_backed_fused: operator is null");
-              }
               arma::sp_mat G_sp = scipy_to_arma_sparse(G_obj);
               arma::sp_mat X_sp = scipy_to_arma_sparse(X_obj);
-
-              auto* sparse_op = dynamic_cast<actionet::BackedSparseMatrixOperator*>(op_base.get());
-              auto* dense_op = dynamic_cast<actionet::BackedDenseMatrixOperator*>(op_base.get());
 
               arma::mat marker_stats;
               arma::mat log_pvals;
               {
                   py::gil_scoped_release release;
-                  if (sparse_op) {
-                      marker_stats = actionet::computeFeatureStatsVision(
-                          *sparse_op, G_sp, X_sp, norm_method, alpha, max_it, approx, thread_no);
-                  } else if (dense_op) {
-                      marker_stats = actionet::computeFeatureStatsVision(
-                          *dense_op, G_sp, X_sp, norm_method, alpha, max_it, approx, thread_no);
-                  } else {
-                      throw std::runtime_error("annotate_cells_vision_backed_fused: unsupported operator type");
-                  }
+                  marker_stats = dispatch_backed_op(
+                      op_base,
+                      "annotate_cells_vision_backed_fused",
+                      [&](auto& op) {
+                          return actionet::computeFeatureStatsVision(
+                              op, G_sp, X_sp, norm_method, alpha, max_it, approx, thread_no);
+                      });
 
                   arma::sp_mat Gn = G_sp;
                   actionet::normalizeGraph(Gn, enrichment_norm_method);

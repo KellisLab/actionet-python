@@ -475,10 +475,6 @@ py::dict fit_guides_gmm_backed_operator(std::shared_ptr<actionet::MatrixOperator
                                         int seed = 0,
                                         int n_threads = 0,
                                         int backed_chunk_guides = 256) {
-    if (!op_base) {
-        throw std::runtime_error("fit_guides_gmm_backed_operator: operator is null");
-    }
-
     actionet::GuideGMMFitParams params = make_guide_fit_params(
         min_points,
         min_counts,
@@ -495,13 +491,10 @@ py::dict fit_guides_gmm_backed_operator(std::shared_ptr<actionet::MatrixOperator
     actionet::GuideGMMFitResult fits;
     {
         py::gil_scoped_release release;
-        if (auto* sparse_op = dynamic_cast<actionet::BackedSparseMatrixOperator*>(op_base.get())) {
-            fits = actionet::fitGuidesSharedVarianceGMM(*sparse_op, params);
-        } else if (auto* dense_op = dynamic_cast<actionet::BackedDenseMatrixOperator*>(op_base.get())) {
-            fits = actionet::fitGuidesSharedVarianceGMM(*dense_op, params);
-        } else {
-            throw std::runtime_error("fit_guides_gmm_backed_operator: unsupported operator type");
-        }
+        fits = dispatch_backed_op(
+            op_base,
+            "fit_guides_gmm_backed_operator",
+            [&](auto& op) { return actionet::fitGuidesSharedVarianceGMM(op, params); });
     }
     return guide_fit_to_dict(fits);
 }
@@ -615,33 +608,19 @@ py::dict apply_guide_thresholds_backed_operator(std::shared_ptr<actionet::Matrix
                                                 py::array_t<double> background_thresholds,
                                                 py::array_t<double> foreground_thresholds,
                                                 int chunk_guides = 256) {
-    if (!op_base) {
-        throw std::runtime_error("apply_guide_thresholds_backed_operator: operator is null");
-    }
-
     arma::vec bg = numpy_to_arma_vec(background_thresholds);
     arma::vec fg = numpy_to_arma_vec(foreground_thresholds);
     arma::field<arma::sp_mat> out;
 
     {
         py::gil_scoped_release release;
-        if (auto* sparse_op = dynamic_cast<actionet::BackedSparseMatrixOperator*>(op_base.get())) {
-            out = actionet::applyGuideThresholds(
-                *sparse_op,
-                bg,
-                fg,
-                static_cast<arma::uword>(std::max(chunk_guides, 1))
-            );
-        } else if (auto* dense_op = dynamic_cast<actionet::BackedDenseMatrixOperator*>(op_base.get())) {
-            out = actionet::applyGuideThresholds(
-                *dense_op,
-                bg,
-                fg,
-                static_cast<arma::uword>(std::max(chunk_guides, 1))
-            );
-        } else {
-            throw std::runtime_error("apply_guide_thresholds_backed_operator: unsupported operator type");
-        }
+        out = dispatch_backed_op(
+            op_base,
+            "apply_guide_thresholds_backed_operator",
+            [&](auto& op) {
+                return actionet::applyGuideThresholds(
+                    op, bg, fg, static_cast<arma::uword>(std::max(chunk_guides, 1)));
+            });
     }
 
     py::dict result;

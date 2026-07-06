@@ -11,11 +11,8 @@ from anndata import AnnData
 from ..anndata_utils import anndata_to_matrix
 from ..imputation import impute_features
 from .._matrix_source import MatrixSource
-from ..backed_io import _backed_group_path, _open_backed_operator
-from ..lazy_transform import (
-    LazyTransform,
-    _resolve_lazy_backed_transform,
-)
+from ..backed_io import open_backed_operator_for
+from ..lazy_transform import LazyTransform
 from .. import _core
 from .umap import (
     _prepare_umap_context,
@@ -76,20 +73,13 @@ def _extract_expression(
 
     source = MatrixSource(adata, layer=layer)
     if source.is_backed:
-        row_scale_factors, apply_log1p, log_scale = _resolve_lazy_backed_transform(
-            source,
-            lazy_transform=lazy_transform,
-            backed_chunk_size=backed_chunk_size,
-        )
-        with _open_backed_operator(
-            adata=adata,
-            file_path=str(adata.filename),
-            group_path=_backed_group_path(layer),
+        with open_backed_operator_for(
+            adata,
+            layer=layer,
             context="plot_feature_expression",
             chunk_size=backed_chunk_size,
-            row_scale_factors=row_scale_factors,
-            apply_log1p=apply_log1p,
-            log_scale=log_scale,
+            lazy_transform=lazy_transform,
+            source=source,
         ) as op:
             expr = np.asarray(
                 _core.backed_take_columns(op, feature_indices, prefer_sparse=False),
