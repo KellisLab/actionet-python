@@ -391,13 +391,7 @@ def _resolve_lazy_backed_transform(
                 "Recreate the lazy transform."
             )
         if indices.size > 0:
-            observed = np.zeros(indices.size, dtype=np.float64)
-            for _i, _row_idx in enumerate(indices):
-                _block = source.get_rows(int(_row_idx), int(_row_idx) + 1)
-                if sp.issparse(_block):
-                    observed[_i] = float(_block.sum())
-                else:
-                    observed[_i] = float(np.asarray(_block, dtype=np.float64).sum())
+            observed = source.row_sums(row_indices=indices)
             if not np.allclose(observed, expected, rtol=1e-8, atol=1e-8):
                 raise ValueError(
                     "Lazy transform validation failed: sampled source rows changed since "

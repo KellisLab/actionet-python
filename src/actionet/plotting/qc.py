@@ -373,16 +373,18 @@ def _streaming_row_sums(
                 apply_log1p,
                 log_scale,
             )
-        elif sp.issparse(block):
-            block = block  # keep sparse; binarise below if needed
-        else:
+        elif not sp.issparse(block):
             block = np.asarray(block, dtype=np.float64)
 
         if nonzero:
             if sp.issparse(block):
-                block = (block > 0).astype(np.float64)
-            else:
-                block = (block > 0).astype(np.float64)
+                # Note: getnnz counts stored entries. For raw AnnData counts
+                # (non-negative, no explicit zeros) this matches (block > 0).sum;
+                # sparse blocks reach this branch only when row_scale_factors is
+                # None (the lazy-transform path always densifies first).
+                out[start:end] = np.asarray(block.getnnz(axis=1)).ravel().astype(np.float64, copy=False)
+                continue
+            block = (block > 0).astype(np.float64)
 
         if sp.issparse(block):
             out[start:end] = np.asarray(block.sum(axis=1)).ravel()

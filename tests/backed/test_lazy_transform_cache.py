@@ -156,7 +156,11 @@ def test_lazy_transform_cache_reused_across_reduce_correct_and_run_actionet(tmp_
     original_row_sums = MatrixSource.row_sums
 
     def _count_row_sums(self, *args, **kwargs):
-        call_count["row_sums"] += 1
+        # Only count full-matrix row_sums recomputations; the validation
+        # path issues a targeted `row_indices=...` call for a small sample
+        # which is not a regression.
+        if kwargs.get("row_indices") is None and (len(args) < 3 or args[2] is None):
+            call_count["row_sums"] += 1
         return original_row_sums(self, *args, **kwargs)
 
     monkeypatch.setattr(MatrixSource, "row_sums", _count_row_sums)
@@ -235,7 +239,9 @@ def test_lazy_transform_cache_reused_after_reopen(tmp_path, monkeypatch):
     original_row_sums = MatrixSource.row_sums
 
     def _count_row_sums(self, *args, **kwargs):
-        call_count["row_sums"] += 1
+        # Count only full-matrix row_sums recomputations (see reuse test above).
+        if kwargs.get("row_indices") is None and (len(args) < 3 or args[2] is None):
+            call_count["row_sums"] += 1
         return original_row_sums(self, *args, **kwargs)
 
     monkeypatch.setattr(MatrixSource, "row_sums", _count_row_sums)
@@ -282,7 +288,9 @@ def test_lazy_transform_invalidates_when_source_changes_before_first_use(tmp_pat
     original_row_sums = MatrixSource.row_sums
 
     def _count_row_sums(self, *args, **kwargs):
-        call_count["row_sums"] += 1
+        # Count only full-matrix row_sums recomputations (see reuse test above).
+        if kwargs.get("row_indices") is None and (len(args) < 3 or args[2] is None):
+            call_count["row_sums"] += 1
         return original_row_sums(self, *args, **kwargs)
 
     monkeypatch.setattr(MatrixSource, "row_sums", _count_row_sums)
