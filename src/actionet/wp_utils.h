@@ -32,8 +32,9 @@ arma::sp_mat scipy_to_arma_sparse(py::object scipy_sparse);
 py::array_t<double> arma_mat_to_numpy(const arma::mat& mat);
 
 // Convert Armadillo dense matrix to C-contiguous NumPy array.
-// Costlier than arma_mat_to_numpy (element-wise transpose), but the result
-// is optimal for subsequent h5py/HDF5 writes which expect row-major data.
+// Uses a cache-blocked (32x32) tiled transpose so both reads and writes hit
+// L1; peak memory is unchanged vs a raw copy.  Optimal for downstream
+// h5py/HDF5 writes which expect row-major data.
 py::array_t<double> arma_mat_to_numpy_c(const arma::mat& mat);
 
 // Convert Armadillo sparse matrix to SciPy CSC sparse matrix (direct internal copy)

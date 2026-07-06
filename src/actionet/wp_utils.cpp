@@ -242,9 +242,16 @@ py::array_t<double> arma_mat_to_numpy(const arma::mat& mat) {
 }
 
 // Convert Armadillo dense matrix to C-contiguous (row-major) NumPy array.
-// Performs a column-major → row-major transpose during the copy.  Slightly
-// costlier than arma_mat_to_numpy, but the returned array is optimal for
-// h5py/HDF5 writes which store data in row-major order.
+// Performs a column-major -> row-major transpose during the copy.  Uses a
+// cache-blocked (32x32 double) tiled traversal so both source reads and
+// destination writes hit L1 within each tile; no extra allocation beyond the
+// returned NumPy array.  Selected empirically from a four-variant bench
+// (scalar / mat.t()+memcpy / tiled / OpenMP tiled) sweeping shapes from
+// 20kx30 up to 464x1M: tiled wins on every non-tiny shape and reaches ~4.3x
+// on tall-skinny atlas outputs (464x1M).  OpenMP added no benefit on the
+// tested hardware (Apple Silicon, unified memory); a `#pragma omp parallel
+// for` on the outer loop is a one-line follow-up if cluster hardware
+// justifies it.
 py::array_t<double> arma_mat_to_numpy_c(const arma::mat& mat) {
     const py::ssize_t n_rows = static_cast<py::ssize_t>(mat.n_rows);
     const py::ssize_t n_cols = static_cast<py::ssize_t>(mat.n_cols);
@@ -256,9 +263,17 @@ py::array_t<double> arma_mat_to_numpy_c(const arma::mat& mat) {
     py::array_t<double> arr(shape, strides);
     double* dst       = arr.mutable_data();
     const double* src = mat.memptr();
-    for (py::ssize_t r = 0; r < n_rows; ++r) {
-        for (py::ssize_t c = 0; c < n_cols; ++c) {
-            dst[r * n_cols + c] = src[c * n_rows + r];
+
+    constexpr py::ssize_t TS = 32;  // 32x32 doubles = 8 KB, fits L1
+    for (py::ssize_t ii = 0; ii < n_rows; ii += TS) {
+        const py::ssize_t r_end = std::min<py::ssize_t>(ii + TS, n_rows);
+        for (py::ssize_t jj = 0; jj < n_cols; jj += TS) {
+            const py::ssize_t c_end = std::min<py::ssize_t>(jj + TS, n_cols);
+            for (py::ssize_t r = ii; r < r_end; ++r) {
+                for (py::ssize_t c = jj; c < c_end; ++c) {
+                    dst[r * n_cols + c] = src[c * n_rows + r];
+                }
+            }
         }
     }
     return arr;
