@@ -544,20 +544,6 @@ def copy_h5_group(
             )
 
 
-def _copy_h5_group_faithful(src_group, dst_group, chunk_size: int) -> None:
-    """Legacy alias for :func:`copy_h5_group` with ``preserve_compression=True``.
-
-    Retained for backwards-compatibility with any external callers that
-    referenced the private name. New code should call :func:`copy_h5_group`.
-    """
-    copy_h5_group(
-        src_group,
-        dst_group,
-        chunk_size=chunk_size,
-        preserve_compression=True,
-    )
-
-
 def _repack_h5ad(
     adata: AnnData,
     *,
@@ -596,8 +582,6 @@ def _repack_h5ad(
         if os.path.exists(tmp_path):
             os.unlink(tmp_path)
         raise
-
-    import anndata as ad
 
     reopened = ad.read_h5ad(src_path, backed="r+")
     _init_from_reopened(adata, reopened)
@@ -1105,7 +1089,7 @@ def _write_filtered_backed(
 
     obs_sub = adata.obs.iloc[obs_idx].copy()
     var_sub = adata.var.iloc[var_idx].copy()
-    h5file = adata.file._file if is_backed_adata(adata) else None
+    h5file = adata.file._file
 
     obs_is_identity = (
         obs_idx.size == adata.n_obs
@@ -1117,15 +1101,11 @@ def _write_filtered_backed(
     )
 
     with h5py.File(dest_path, "w") as f:
-        if h5file is not None:
-            for key, value in h5file.attrs.items():
-                f.attrs[key] = value
-        else:
-            f.attrs["encoding-type"] = "anndata"
-            f.attrs["encoding-version"] = "0.1.0"
+        for key, value in h5file.attrs.items():
+            f.attrs[key] = value
 
         # -- X -----------------------------------------------------------
-        x_policy = get_matrix_compression_policy(h5file["X"]) if h5file is not None and "X" in h5file else None
+        x_policy = get_matrix_compression_policy(h5file["X"]) if "X" in h5file else None
         _write_subsetted_matrix(
             f,
             "X",
@@ -1142,13 +1122,13 @@ def _write_filtered_backed(
 
         # -- layers ------------------------------------------------------
         layer_keys = list(adata.layers.keys())
-        if layer_keys or (h5file is not None and "layers" in h5file):
+        if layer_keys or "layers" in h5file:
             lg = f.create_group("layers")
             lg.attrs["encoding-type"] = "dict"
             lg.attrs["encoding-version"] = "0.1.0"
             for lk in layer_keys:
                 layer_policy = None
-                if h5file is not None and "layers" in h5file and lk in h5file["layers"]:
+                if "layers" in h5file and lk in h5file["layers"]:
                     layer_policy = get_matrix_compression_policy(h5file["layers"][lk])
                 _write_subsetted_matrix(
                     f,
@@ -1166,13 +1146,13 @@ def _write_filtered_backed(
             (adata.varm, var_idx, var_is_identity, "varm"),
         ]:
             keys = list(container.keys())
-            if keys or (h5file is not None and name in h5file):
+            if keys or name in h5file:
                 group = f.create_group(name)
                 group.attrs["encoding-type"] = "dict"
                 group.attrs["encoding-version"] = "0.1.0"
                 for k in keys:
                     # Fast path: copy directly when no row subsetting needed
-                    if is_identity and h5file is not None and name in h5file and k in h5file[name]:
+                    if is_identity and name in h5file and k in h5file[name]:
                         h5file[name].copy(k, group, name=k)
                         continue
                     mat = container[k]
@@ -1183,7 +1163,7 @@ def _write_filtered_backed(
                             _write_dataframe_to_h5(f, f"{name}/{k}", mat_sub)
                         else:
                             emb_policy = None
-                            if h5file is not None and name in h5file and k in h5file[name]:
+                            if name in h5file and k in h5file[name]:
                                 emb_policy = get_matrix_compression_policy(h5file[name][k])
                             _write_subsetted_matrix(
                                 f,
@@ -1201,19 +1181,19 @@ def _write_filtered_backed(
             (adata.varp, var_idx, var_is_identity, "varp"),
         ]:
             keys = list(container.keys())
-            if keys or (h5file is not None and name in h5file):
+            if keys or name in h5file:
                 group = f.create_group(name)
                 group.attrs["encoding-type"] = "dict"
                 group.attrs["encoding-version"] = "0.1.0"
                 for k in keys:
                     # Fast path: copy directly when no subsetting needed
-                    if is_identity and h5file is not None and name in h5file and k in h5file[name]:
+                    if is_identity and name in h5file and k in h5file[name]:
                         h5file[name].copy(k, group, name=k)
                         continue
                     mat = container[k]
                     if mat is not None:
                         pair_policy = None
-                        if h5file is not None and name in h5file and k in h5file[name]:
+                        if name in h5file and k in h5file[name]:
                             pair_policy = get_matrix_compression_policy(h5file[name][k])
                         _write_subsetted_matrix(
                             f,
@@ -1232,7 +1212,7 @@ def _write_filtered_backed(
             uns_grp.attrs["encoding-version"] = "0.1.0"
             for k, v in adata.uns.items():
                 _write_dict_value(uns_grp, k, v)
-        elif h5file is not None and "uns" in h5file:
+        elif "uns" in h5file:
             h5file.copy("uns", f, name="uns")
 
         # -- raw (subset by obs only; keep raw var/varm unchanged) -------
@@ -1243,7 +1223,7 @@ def _write_filtered_backed(
             raw_grp.attrs["encoding-version"] = "0.1.0"
 
             raw_policy = None
-            if h5file is not None and "raw" in h5file and "X" in h5file["raw"]:
+            if "raw" in h5file and "X" in h5file["raw"]:
                 raw_policy = get_matrix_compression_policy(h5file["raw"]["X"])
             _write_subsetted_matrix(
                 f,
@@ -1256,15 +1236,14 @@ def _write_filtered_backed(
             )
             _write_dataframe_to_h5(f, "raw/var", raw.var.copy())
 
-            if h5file is not None and "raw" in h5file and "varm" in h5file["raw"]:
+            if "raw" in h5file and "varm" in h5file["raw"]:
                 h5file.copy("raw/varm", raw_grp, name="varm")
 
         # -- pass through unhandled top-level groups ----------------------
-        if h5file is not None:
-            for top_key in h5file.keys():
-                if top_key in f:
-                    continue
-                h5file.copy(top_key, f, name=top_key)
+        for top_key in h5file.keys():
+            if top_key in f:
+                continue
+            h5file.copy(top_key, f, name=top_key)
 
 
 def _view_idx_to_int(idx, axis_size: int) -> np.ndarray:

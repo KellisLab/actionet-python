@@ -1,6 +1,8 @@
 ## Primary
+* Consolidate plotting paths with render backend (lets_plot or matplotlib)
 * NaN and Inf support for _anndata_io
 * Recreate LazyTransform from uns
+* Documentation audit
 * Numerical precision inconsistency
   * Mix of float32 and float64 (mainly in operator, sometimes in-mem) causes drift within and across modes
   * C++ uses 64-bit, R/Rcpp does also — always consistent
@@ -11,7 +13,7 @@
 * UMAP points have no stroke
 * `compute_archetype_feature_specificity()`: `key_added` > `key_prefix`
 * Make archetype specificity and network centrality optional in `run_actionet()`
-
+* Split _backed_persist.py 
 ## Secondary
 * Consolidate normalization code-paths
 * Add network centrality to run_actionet?

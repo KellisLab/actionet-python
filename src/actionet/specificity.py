@@ -427,11 +427,6 @@ def compute_archetype_feature_specificity(
 
 
 __all__ = [
-    "_cluster_names_for_specificity_labels",
-    "_encode_labels_for_specificity",
-    "_run_specificity_backed_dense",
-    "_run_specificity_backed_sparse",
-    "_validate_archetype_membership",
     "compute_archetype_feature_specificity",
     "compute_feature_specificity",
 ]

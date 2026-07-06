@@ -285,7 +285,6 @@ def _normalize_matrix_in_memory(
 
             if log_transform:
                 if X.data.min() < 0:
-                    import warnings
                     warnings.warn(
                         f"Matrix contains negative values (min={X.data.min():.4g}). "
                         "log transform is only meaningful for non-negative data; "

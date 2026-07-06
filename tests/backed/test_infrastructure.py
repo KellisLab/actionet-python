@@ -81,57 +81,10 @@ class TestMatrixSourceInMemory:
             expected = np.count_nonzero(np.asarray(X), axis=0)
         np.testing.assert_array_equal(cc, expected)
 
-    def test_xt_dot(self, adata):
+    def test_feature_subset_inmemory_not_implemented(self, adata):
         src = MatrixSource(adata)
-        rng = np.random.default_rng(1)
-        right = rng.standard_normal((src.n_obs, 3))
-        result = src.xt_dot(right, chunk_size=10)
-
-        X = adata.X
-        if sp.issparse(X):
-            expected = np.asarray(X.T.dot(right))
-        else:
-            expected = X.T @ right
-        np.testing.assert_allclose(result, expected, rtol=1e-10)
-
-    def test_x_dot(self, adata):
-        src = MatrixSource(adata)
-        rng = np.random.default_rng(2)
-        right = rng.standard_normal((src.n_vars, 3))
-        result = src.x_dot(right, chunk_size=10)
-
-        X = adata.X
-        if sp.issparse(X):
-            expected = np.asarray(X.dot(right))
-        else:
-            expected = X @ right
-        np.testing.assert_allclose(result, expected, rtol=1e-10)
-
-    def test_global_min_nonneg(self, adata):
-        src = MatrixSource(adata)
-        gmin = src.global_min(chunk_size=8)
-        assert gmin == 0.0  # Poisson data is non-negative
-
-    def test_global_min_with_negatives(self):
-        X = np.array([[-1.5, 2.0], [0.0, 3.0]])
-        adata = ad.AnnData(X=X)
-        src = MatrixSource(adata)
-        assert src.global_min(chunk_size=1) == -1.5
-
-    def test_feature_subset(self, adata):
-        src = MatrixSource(adata)
-        idx = np.array([0, 5, 10])
-        sub = src.feature_subset(idx, chunk_size=8)
-        X = adata.X
-        if sp.issparse(X):
-            expected = np.asarray(X[:, idx].todense())
-        else:
-            expected = X[:, idx]
-        np.testing.assert_allclose(
-            np.asarray(sub.todense()) if sp.issparse(sub) else sub,
-            expected,
-            rtol=1e-10,
-        )
+        with pytest.raises(NotImplementedError):
+            src.feature_subset(np.array([0, 5, 10]), chunk_size=8)
 
     def test_row_sums_with_row_indices(self, adata):
         src = MatrixSource(adata)
@@ -175,28 +128,6 @@ class TestMatrixSourceBacked:
             src_mem.row_sums(chunk_size=8),
             rtol=1e-10,
         )
-
-    def test_backed_xt_dot(self, tmp_path):
-        mem = make_test_adata(n_cells=24, n_genes=16, sparse_fmt="csr", seed=5)
-        bk = open_backed(tmp_path, mem)
-
-        rng = np.random.default_rng(9)
-        right = rng.standard_normal((24, 3))
-
-        res_mem = MatrixSource(mem).xt_dot(right, chunk_size=8)
-        res_bk = MatrixSource(bk).xt_dot(right, chunk_size=8)
-        np.testing.assert_allclose(res_bk, res_mem, rtol=1e-8)
-
-    def test_backed_x_dot(self, tmp_path):
-        mem = make_test_adata(n_cells=24, n_genes=16, sparse_fmt="csr", seed=5)
-        bk = open_backed(tmp_path, mem)
-
-        rng = np.random.default_rng(10)
-        right = rng.standard_normal((16, 3))
-
-        res_mem = MatrixSource(mem).x_dot(right, chunk_size=8)
-        res_bk = MatrixSource(bk).x_dot(right, chunk_size=8)
-        np.testing.assert_allclose(res_bk, res_mem, rtol=1e-8)
 
 
 # ---------------------------------------------------------------------------

@@ -256,9 +256,6 @@ class CompressionPolicy:
             datasets=dict(raw.get("datasets", {}) or {}),
         )
 
-    def is_empty(self) -> bool:
-        return not self.datasets
-
     def dense_kwargs(self) -> Dict[str, Any]:
         """Return h5py create-dataset kwargs for a dense write.
 
@@ -275,7 +272,3 @@ class CompressionPolicy:
         ``name`` should be one of ``"data"``, ``"indices"``, ``"indptr"``.
         """
         return _spec_to_create_kwargs(self.datasets.get(name))
-
-    def to_dict(self) -> Dict[str, Any]:
-        """Legacy dict representation, useful for callers still expecting a dict."""
-        return {"is_sparse": self.is_sparse, "datasets": dict(self.datasets)}

@@ -548,8 +548,8 @@ class MatrixSource:
     ):
         """Extract a subset of columns (features), returning a full matrix.
 
-        The result is always in-memory; peak RAM is proportional to
-        ``n_selected_rows * len(feature_indices)``.
+        Backed-only fast path via the C++ operator. In-memory callers
+        should slice ``self.matrix`` directly instead.
 
         Parameters
         ----------
@@ -563,59 +563,16 @@ class MatrixSource:
         row_indices : array-like of int, optional
             If given, only these rows are extracted.
         """
+        if not self.is_backed:
+            raise NotImplementedError(
+                "MatrixSource.feature_subset is only implemented for backed sources; "
+                "for in-memory data, slice `source.matrix[:, indices]` directly."
+            )
+
         feature_indices = np.asarray(feature_indices, dtype=np.int64)
         if feature_indices.ndim != 1:
             raise ValueError("feature_indices must be a 1D sequence")
 
-        if self.is_backed:
-            return self._feature_subset_backed(
-                feature_indices,
-                chunk_size=chunk_size,
-                prefer_sparse=prefer_sparse if prefer_sparse is not None else self.is_sparse,
-                row_indices=row_indices,
-            )
-
-        blocks = []
-        sparse_seen = False
-        if row_indices is None:
-            iterator = (c.block for c in self.iter_row_chunks(chunk_size=chunk_size, col_indices=feature_indices))
-        else:
-            iterator = (
-                block for _, block in self.iter_selected_row_chunks(
-                    row_indices,
-                    chunk_size=chunk_size,
-                    col_indices=feature_indices,
-                )
-            )
-
-        for block in iterator:
-            sparse_seen = sparse_seen or sp.issparse(block)
-            blocks.append(block)
-
-        if len(blocks) == 0:
-            if prefer_sparse:
-                return sp.csr_matrix((0, feature_indices.size))
-            return np.zeros((0, feature_indices.size), dtype=np.float64)
-
-        if prefer_sparse is None:
-            prefer_sparse = sparse_seen
-
-        if prefer_sparse:
-            blocks_sp = [b if sp.issparse(b) else sp.csr_matrix(np.asarray(b)) for b in blocks]
-            return sp.vstack(blocks_sp, format="csr")
-
-        blocks_dense = [b.toarray() if sp.issparse(b) else np.asarray(b) for b in blocks]
-        return np.vstack(blocks_dense)
-
-    def _feature_subset_backed(
-        self,
-        feature_indices: np.ndarray,
-        *,
-        chunk_size: int,
-        prefer_sparse: bool,
-        row_indices: Optional[Sequence[int]],
-    ):
-        """Backed fast-path: extract columns via the C++ operator."""
         from . import _core
         from .backed_io import open_backed_operator_for
 
@@ -633,107 +590,8 @@ class MatrixSource:
                 op,
                 feature_indices,
                 row_indices=row_arr,
-                prefer_sparse=prefer_sparse,
+                prefer_sparse=prefer_sparse if prefer_sparse is not None else self.is_sparse,
             )
-
-    # ------------------------------------------------------------------
-    # Matrix--vector products
-    # ------------------------------------------------------------------
-
-    def xt_dot(self, right: np.ndarray, chunk_size: int = 4096) -> np.ndarray:
-        """Compute ``X.T @ right`` in streamed row chunks.
-
-        Parameters
-        ----------
-        right : ndarray, shape ``(n_obs, k)``
-            Dense right-hand side.
-        chunk_size : int
-            Rows per chunk.
-
-        Returns
-        -------
-        ndarray, shape ``(n_vars, k)``
-        """
-        right = np.asarray(right, dtype=np.float64)
-        if right.ndim != 2 or right.shape[0] != self.n_obs:
-            raise ValueError(
-                f"right must have shape (n_obs, k) where n_obs={self.n_obs}, got {right.shape}"
-            )
-
-        out = np.zeros((self.n_vars, right.shape[1]), dtype=np.float64)
-        for chunk in self.iter_row_chunks(chunk_size=chunk_size):
-            block = chunk.block
-            right_block = right[chunk.start:chunk.end, :]
-            if sp.issparse(block):
-                out += np.asarray(block.T.dot(right_block))
-            else:
-                out += np.asarray(block, dtype=np.float64).T @ right_block
-        return out
-
-    def x_dot(self, right: np.ndarray, chunk_size: int = 4096) -> np.ndarray:
-        """Compute ``X @ right`` in streamed row chunks.
-
-        Parameters
-        ----------
-        right : ndarray, shape ``(n_vars, k)``
-            Dense right-hand side.
-        chunk_size : int
-            Rows per chunk.
-
-        Returns
-        -------
-        ndarray, shape ``(n_obs, k)``
-        """
-        right = np.asarray(right, dtype=np.float64)
-        if right.ndim != 2 or right.shape[0] != self.n_vars:
-            raise ValueError(
-                f"right must have shape (n_vars, k) where n_vars={self.n_vars}, got {right.shape}"
-            )
-
-        out = np.zeros((self.n_obs, right.shape[1]), dtype=np.float64)
-        for chunk in self.iter_row_chunks(chunk_size=chunk_size):
-            block = chunk.block
-            if sp.issparse(block):
-                out[chunk.start:chunk.end, :] = np.asarray(block.dot(right))
-            else:
-                out[chunk.start:chunk.end, :] = np.asarray(block, dtype=np.float64) @ right
-        return out
-
-    # ------------------------------------------------------------------
-    # Scalar reductions
-    # ------------------------------------------------------------------
-
-    def global_min(self, chunk_size: int = 4096, row_indices: Optional[Sequence[int]] = None) -> float:
-        """Compute the global minimum element.
-
-        For sparse matrices, implicit (unstored) zeros are taken into
-        account: if all stored values are positive the minimum is ``0.0``,
-        not the smallest stored value.
-        """
-        min_val = np.inf
-        if row_indices is None:
-            iterator = (c.block for c in self.iter_row_chunks(chunk_size=chunk_size))
-        else:
-            iterator = (
-                block for _, block in self.iter_selected_row_chunks(
-                    row_indices,
-                    chunk_size=chunk_size,
-                )
-            )
-
-        for block in iterator:
-            if sp.issparse(block):
-                if block.nnz == 0:
-                    block_min = 0.0
-                else:
-                    block_min = min(0.0, float(block.data.min()))
-            else:
-                block_min = float(np.asarray(block).min())
-            min_val = min(min_val, block_min)
-
-        if not np.isfinite(min_val):
-            return 0.0
-        return float(min_val)
 
     # ------------------------------------------------------------------
     # Row-wise in-place transform

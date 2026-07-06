@@ -260,18 +260,6 @@ def aggregate_anndata(
 # ---------------------------------------------------------------------------
 
 
-def maybe_copy_adata(adata: AnnData, inplace: bool) -> AnnData:
-    """Return *adata* when ``inplace`` else a full ``.copy()`` clone.
-
-    For backed AnnData, ``.copy()`` is delegated to AnnData itself; note that
-    backed copies may require read-write mode — see
-    :func:`materialize_backed` for a fully in-memory alternative.
-    """
-    if inplace:
-        return adata
-    return adata.copy()
-
-
 def resolve_network(adata: AnnData, network_key: str):
     """Return ``adata.obsp[network_key]`` after validating presence.
 
