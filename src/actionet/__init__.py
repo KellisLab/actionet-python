@@ -17,13 +17,17 @@ except PackageNotFoundError:
 # Import will happen after building the C++ extension
 from .core import (
     run_action,
-    build_network,
-    compute_network_centrality,
-    compute_network_diffusion,
     layout_network,
 )
+from .network import (
+    build_network,
+    cluster_network,
+    compute_network_centrality,
+    compute_network_diffusion,
+    impute_features,
+)
 from .io.lazy_transform import LazyTransform, create_lazy_transform
-from .reduction import (
+from .decomposition import (
     reduce_kernel,
     reduce_kernel_from_svd,
     run_svd,
@@ -32,9 +36,6 @@ from .reduction import (
 from .specificity import (
     compute_feature_specificity,
     compute_archetype_feature_specificity,
-)
-from .clustering import (
-    cluster_network,
 )
 from .tools import (
     aggregate_anndata,
@@ -45,9 +46,6 @@ from .tools import (
     fit_guides_gmm,
     guide_call_gmm,
     sweep_guide_thresholds,
-)
-from .imputation import (
-    impute_features,
 )
 from .advanced import (
     run_archetypal_analysis,

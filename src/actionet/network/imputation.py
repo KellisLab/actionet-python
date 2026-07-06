@@ -5,15 +5,15 @@ import numpy as np
 import scipy.sparse as sp
 from anndata import AnnData
 import pandas as pd
-from . import _core
-from .tools.anndata import anndata_to_matrix
-from .io.matrix_source import MatrixSource
-from .io.operator import open_backed_operator_for
-from .io.lazy_transform import (
+from .. import _core
+from ..tools.anndata import anndata_to_matrix
+from ..io.matrix_source import MatrixSource
+from ..io.operator import open_backed_operator_for
+from ..io.lazy_transform import (
     LazyTransform,
     _validate_lazy_transform,
 )
-from .reduction import smooth_kernel
+from ..decomposition import smooth_kernel
 
 
 def impute_features(
@@ -113,7 +113,7 @@ def impute_features(
     actionet.specificity.compute_archetype_feature_specificity :
         Computes the per-archetype profiles required for ``method="archetypes"``.
     """
-    from ._feature_lookup import resolve_feature_space, resolve_requested_features
+    from .._feature_lookup import resolve_feature_space, resolve_requested_features
     space = resolve_feature_space(adata, features_use, context="impute_features")
     resolved = resolve_requested_features(features, space, context="impute_features")
 
@@ -152,7 +152,7 @@ def impute_features(
     # ------------------------------------------------------------------
     # Network-diffusion paths ("diffusion" and "pca")
     # ------------------------------------------------------------------
-    from .tools.anndata import norm_method_to_int, resolve_network
+    from ..tools.anndata import norm_method_to_int, resolve_network
     norm_method_code = norm_method_to_int(norm_method)
 
     resolve_network(adata, network_key)

@@ -8,7 +8,7 @@ from anndata import AnnData
 import numpy as np
 import scipy.sparse as sp
 
-from .io.persist import persist_updates
+from ..io.persist import persist_updates
 
 
 def cluster_network(
@@ -40,7 +40,7 @@ def cluster_network(
     if n_iterations == 0:
         raise ValueError("`n_iterations` cannot be 0. Use positive values or -1.")
 
-    from .tools.anndata import resolve_network
+    from ..tools.anndata import resolve_network
     adjacency = resolve_network(adata, network_key)
     if adjacency.shape != (adata.n_obs, adata.n_obs):
         raise ValueError(

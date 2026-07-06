@@ -6,10 +6,12 @@ from anndata import AnnData
 
 from .core import (
     run_action,
+    layout_network,
+)
+from .network import (
     build_network,
     compute_network_centrality,
     compute_network_diffusion,
-    layout_network,
 )
 from .tools import scale
 from .visualization import compute_node_colors
