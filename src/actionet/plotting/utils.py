@@ -181,16 +181,45 @@ def _rgb_to_hex(colors: np.ndarray) -> list[str]:
     return [f"#{r:02x}{g:02x}{b:02x}" for r, g, b in arr]
 
 
-def resolve_embedding(adata: AnnData, basis: str) -> np.ndarray:
-    """Return 2D coordinates from adata.obsm for the given basis."""
+def resolve_embedding(
+    adata: AnnData,
+    basis: str,
+    *,
+    n_dims: int = 2,
+    fallback_basis: Optional[str] = None,
+) -> np.ndarray:
+    """Return coordinates from ``adata.obsm`` for the given basis.
+
+    Parameters
+    ----------
+    adata
+        AnnData containing the embedding.
+    basis
+        Primary ``adata.obsm`` key.
+    n_dims
+        Number of leading columns to return (2 or 3).
+    fallback_basis
+        If provided and ``basis`` has fewer than ``n_dims`` columns, retry using
+        this key before raising. Used to transparently fall back from a 2D UMAP
+        embedding to a 3D one when the caller asks for 3D coords.
+    """
+    if n_dims not in (2, 3):
+        raise ValueError(f"n_dims must be 2 or 3, got {n_dims}.")
     if basis not in adata.obsm:
         raise ValueError(
             f"Embedding '{basis}' not found in adata.obsm. Available keys: {list(adata.obsm.keys())}"
         )
     coords = np.asarray(adata.obsm[basis])
-    if coords.shape[1] < 2:
-        raise ValueError(f"Embedding '{basis}' must have at least 2 columns.")
-    return coords[:, :2]
+    if coords.shape[1] < n_dims:
+        if fallback_basis is not None and fallback_basis in adata.obsm:
+            fallback = np.asarray(adata.obsm[fallback_basis])
+            if fallback.shape[1] >= n_dims:
+                return fallback[:, :n_dims]
+        raise ValueError(
+            f"Embedding '{basis}' must have at least {n_dims} columns."
+            + (f" Fallback '{fallback_basis}' also unavailable or too small." if fallback_basis else "")
+        )
+    return coords[:, :n_dims]
 
 
 def build_discrete_color_map(

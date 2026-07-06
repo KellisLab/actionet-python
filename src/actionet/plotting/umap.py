@@ -146,8 +146,11 @@ def _prepare_umap_context(
     trans_fac: float,
     trans_th: float,
     color_slot: Optional[str],
+    n_dims: Literal[2, 3] = 2,
+    fallback_basis: Optional[str] = None,
+    alpha_reduction: Optional[Literal["mean"]] = None,
 ) -> _PreparedUmapContext:
-    coords = resolve_embedding(adata, basis)
+    coords = resolve_embedding(adata, basis, n_dims=n_dims, fallback_basis=fallback_basis)
     values, kind, categories = _resolve_color_input(
         adata,
         color=color,
@@ -161,7 +164,11 @@ def _prepare_umap_context(
         trans_vals = resolve_numeric_vector(adata, trans_attr, "trans_attr")
         alpha_values = alpha_values * compute_transparency(trans_vals, trans_fac, trans_th)
     alpha_is_array = isinstance(alpha, (list, tuple, np.ndarray, pd.Series)) or trans_attr is not None
-    alpha_arg = None if alpha_is_array else float(alpha_values[0])
+    if alpha_reduction == "mean":
+        alpha_arg = float(np.mean(alpha_values)) if alpha_values.size else 1.0
+        alpha_is_array = False
+    else:
+        alpha_arg = None if alpha_is_array else float(alpha_values[0])
     width_px, height_px = _fig_size_to_px(fig_size, fig_dpi)
 
     return _PreparedUmapContext(
@@ -1017,61 +1024,52 @@ def plot_umap_interactive(
     except ImportError as exc:  # pragma: no cover - optional dependency
         raise ImportError("plotly is required for interactive UMAP plotting.") from exc
 
-    values, kind, categories = _resolve_color_input(
+    n_dims: Literal[2, 3] = 3 if plot_3d else 2
+    ctx = _prepare_umap_context(
         adata,
         color=color,
         color_source=color_source,
-        color_slot=color_slot,
         color_type=color_type,
+        basis=basis,
+        alpha=alpha,
+        fig_dpi=100.0,
+        fig_size=(0.0, 0.0),
+        trans_attr=trans_attr,
+        trans_fac=trans_fac,
+        trans_th=trans_th,
+        color_slot=color_slot,
+        n_dims=n_dims,
+        fallback_basis="umap_3d_actionet" if plot_3d else None,
+        alpha_reduction="mean",
     )
 
-    _warn_cmap_ignored(kind, cmap)
+    _warn_cmap_ignored(ctx.kind, cmap)
 
-    if basis not in adata.obsm:
-        raise ValueError(
-            f"Embedding '{basis}' not found in adata.obsm. Available keys: {list(adata.obsm.keys())}"
-        )
-    raw_coords = np.asarray(adata.obsm[basis])
-    if raw_coords.shape[1] < 2:
-        raise ValueError(f"Embedding '{basis}' must have at least 2 columns.")
+    scalar_alpha = ctx.alpha_arg if ctx.alpha_arg is not None else 1.0
 
     if plot_3d:
-        if raw_coords.shape[1] < 3:
-            fallback = "umap_3d_actionet"
-            if fallback in adata.obsm:
-                raw_coords = np.asarray(adata.obsm[fallback])
-            else:
-                raise ValueError(
-                    f"plot_3d=True but '{basis}' has fewer than 3 columns and "
-                    f"'umap_3d_actionet' was not found in adata.obsm."
-                )
-        coords = raw_coords[:, :3]
-        plot_df = pd.DataFrame({"x": coords[:, 0], "y": coords[:, 1], "z": coords[:, 2]})
+        plot_df = pd.DataFrame(
+            {"x": ctx.coords[:, 0], "y": ctx.coords[:, 1], "z": ctx.coords[:, 2]}
+        )
     else:
-        coords = raw_coords[:, :2]
-        plot_df = pd.DataFrame({"x": coords[:, 0], "y": coords[:, 1]})
-
-    scalar_alpha = float(alpha) if not isinstance(alpha, (list, tuple, np.ndarray, pd.Series)) else 1.0
-    if trans_attr is not None:
-        trans_vals = resolve_numeric_vector(adata, trans_attr, "trans_attr")
-        scalar_alpha = float(scalar_alpha) * float(np.mean(compute_transparency(trans_vals, trans_fac, trans_th)))
+        plot_df = pd.DataFrame({"x": ctx.coords[:, 0], "y": ctx.coords[:, 1]})
 
     color_args = {}
     category_orders_arg: dict = {}
-    if kind == "none":
+    if ctx.kind == "none":
         plot_df["color"] = "default"
         color_args["color_discrete_map"] = {"default": "#4c72b0"}
         color_key = "color"
-    elif kind == "rgb":
-        plot_df["color"] = _prepare_rgb_values(values)
+    elif ctx.kind == "rgb":
+        plot_df["color"] = _prepare_rgb_values(ctx.values)
         color_args["color_discrete_map"] = {
             value: value for value in plot_df["color"].unique().tolist()
         }
         color_key = "color"
-    elif kind == "categorical":
+    elif ctx.kind == "categorical":
         _, labels, categories_out, color_map = _prepare_categorical_payload(
-            values,
-            categories=categories,
+            ctx.values,
+            categories=ctx.categories,
             palette=palette,
             na_color=na_color,
         )
@@ -1083,7 +1081,7 @@ def plot_umap_interactive(
         category_orders_arg = {"color": [str(c) for c in categories_out]}
         color_key = "color"
     else:
-        values = _prepare_continuous_values(values, vmin=vmin, vmax=vmax)
+        values = _prepare_continuous_values(ctx.values, vmin=vmin, vmax=vmax)
         plot_df["value"] = values
         color_args["color_continuous_scale"] = normalize_cmap_spec(cmap)
         if vmin is not None or vmax is not None:
@@ -1093,11 +1091,10 @@ def plot_umap_interactive(
             )
         color_key = "value"
 
-    # Resolve hover text (after hide_na filtering to maintain index alignment)
     if hover_text is not None:
         if isinstance(hover_text, str):
             ht_values = adata.obs[hover_text].values
-            if hide_na and kind == "categorical":
+            if hide_na and ctx.kind == "categorical":
                 ht_values = ht_values[plot_df.index]
             plot_df["hover_text"] = ht_values
         else:
@@ -1106,11 +1103,11 @@ def plot_umap_interactive(
                 raise ValueError(
                     f"hover_text length ({len(ht)}) must match adata.n_obs ({adata.n_obs})."
                 )
-            if hide_na and kind == "categorical":
+            if hide_na and ctx.kind == "categorical":
                 ht = ht[plot_df.index]
             plot_df["hover_text"] = ht
     else:
-        if kind == "categorical":
+        if ctx.kind == "categorical":
             plot_df["hover_text"] = plot_df["color"]
         else:
             plot_df["hover_text"] = np.arange(1, len(plot_df) + 1)
