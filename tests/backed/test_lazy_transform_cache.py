@@ -328,7 +328,7 @@ def test_find_markers_lazy_transform_matches_logcounts_reference(tmp_path):
     the top-N marker sets must overlap well across every cluster.
     """
     import pandas as pd
-    from actionet.specificity import compute_feature_specificity  # noqa: F401 (smoke import)
+    from actionet.annotation import compute_feature_specificity  # noqa: F401 (smoke import)
 
     seed = 89
     n_cells, n_genes = 96, 72

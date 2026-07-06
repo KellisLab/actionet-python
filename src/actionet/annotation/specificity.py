@@ -12,12 +12,12 @@ import numpy as np
 import scipy.sparse as sp
 from anndata import AnnData
 
-from . import _core
-from .io.persist import persist_updates
-from .io.matrix_source import MatrixSource
-from .tools.anndata import anndata_to_matrix, as_plain_labels
-from .io.operator import open_backed_operator_for
-from .io.lazy_transform import (
+from .. import _core
+from ..io.persist import persist_updates
+from ..io.matrix_source import MatrixSource
+from ..tools.anndata import anndata_to_matrix, as_plain_labels
+from ..io.operator import open_backed_operator_for
+from ..io.lazy_transform import (
     LazyTransform,
     _resolve_lazy_backed_transform,
     _validate_lazy_transform,

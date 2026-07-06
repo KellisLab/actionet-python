@@ -133,7 +133,7 @@ class TestImputeFeaturesParity:
 @requires_ext
 def test_annotate_cells_backed_handles_retryable_open_conflict(tmp_path, monkeypatch):
     import actionet as an
-    import actionet.annotation as an_annotation
+    import actionet.annotation.annotation as an_annotation
     import actionet.io.operator as backed_io
     import actionet.io.lazy_transform as lazy_transform_mod
 

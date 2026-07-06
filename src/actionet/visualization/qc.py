@@ -73,7 +73,7 @@ def get_mito_feats(
 
     Examples
     --------
-    >>> from actionet.plotting.qc import get_mito_feats
+    >>> from actionet.visualization.qc import get_mito_feats
     >>> get_mito_feats()                          # human gene symbols
     >>> get_mito_feats("ensembl_id", "mouse")     # mouse Ensembl IDs
     >>> get_mito_feats(protein_coding=True)        # protein-coding only

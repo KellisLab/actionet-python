@@ -1,6 +1,10 @@
-"""Plotting module for ACTIONet."""
+"""Visualization subpackage: network layout and plotting."""
 
-from .feature_expression import plot_feature_expression, plot_feature_expression_raster
+from .feature_expression import (
+    plot_feature_expression,
+    plot_feature_expression_raster,
+)
+from .layout import compute_node_colors, layout_network
 from .qc import (
     get_feature_abundance,
     get_mito_feats,
@@ -12,8 +16,10 @@ from .qc import (
 from .umap import plot_umap, plot_umap_interactive, plot_umap_raster
 
 __all__ = [
+    "compute_node_colors",
     "get_feature_abundance",
     "get_mito_feats",
+    "layout_network",
     "plot_feature_expression",
     "plot_feature_expression_raster",
     "plot_mito_violin",

@@ -57,7 +57,7 @@ def small_adata():
 def _legacy_vision_inmemory(adata, markers, G, norm_method_code=2, alpha=0.85,
                              max_it=5, approx=True, n_threads=0):
     """Replicate the old code path using separate pybind calls."""
-    from actionet.annotation import _encode_markers, _sparse_row_sum_sq
+    from actionet.annotation.annotation import _encode_markers, _sparse_row_sum_sq
     from actionet._feature_lookup import resolve_feature_space
     from scipy.sparse import issparse
 
@@ -102,7 +102,7 @@ def _legacy_vision_inmemory(adata, markers, G, norm_method_code=2, alpha=0.85,
 def _legacy_actionet(adata, markers, G, norm_method_code=2, alpha=0.85,
                      max_it=5, approx=True, n_threads=0, ignore_baseline=False):
     """Replicate the old ACTIONet code path using separate pybind calls."""
-    from actionet.annotation import _encode_markers
+    from actionet.annotation.annotation import _encode_markers
     from actionet._feature_lookup import resolve_feature_space
     from scipy.sparse import issparse
 
@@ -352,7 +352,7 @@ class TestAnnotateCellsEndToEnd:
                                 use_enrichment=True, norm_method="pagerank")
         legacy_labels_idx = np.argmax(lp_leg, axis=1)
 
-        from actionet.annotation import _encode_markers
+        from actionet.annotation.annotation import _encode_markers
         from actionet._feature_lookup import resolve_feature_space
         space = resolve_feature_space(adata, None, context="test")
         _, celltype_names = _encode_markers(markers, space.labels)

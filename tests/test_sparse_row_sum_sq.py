@@ -4,7 +4,7 @@ import numpy as np
 import pytest
 import scipy.sparse as sp
 
-from actionet.annotation import _sparse_row_sum_sq
+from actionet.annotation.annotation import _sparse_row_sum_sq
 
 
 RTOL = 1e-8

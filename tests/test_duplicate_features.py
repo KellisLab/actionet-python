@@ -9,7 +9,7 @@ import scipy.sparse as sp
 import anndata as ad
 
 from actionet._feature_lookup import resolve_feature_space, resolve_requested_features
-from actionet.annotation import _encode_markers
+from actionet.annotation.annotation import _encode_markers
 
 
 class TestDuplicateVarNames:

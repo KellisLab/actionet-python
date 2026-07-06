@@ -8,6 +8,7 @@ import scipy.sparse as sp
 from scipy.io import mmwrite
 
 import actionet.preprocessing as prep
+from actionet.preprocessing import io as prep_io
 
 
 def _write_generic_inputs(
@@ -151,7 +152,7 @@ def test_import_anndata_generic_calls_mmread_with_spmatrix_true(tmp_path, monkey
         called["kwargs"] = dict(kwargs)
         return sp.coo_matrix(matrix)
 
-    monkeypatch.setattr(prep, "mmread", fake_mmread)
+    monkeypatch.setattr(prep_io, "mmread", fake_mmread)
 
     _ = prep.import_anndata_generic(
         str(tmp_path),

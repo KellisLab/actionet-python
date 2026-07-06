@@ -12,11 +12,11 @@ from .specificity import (
     _cluster_names_for_specificity_labels,
     compute_feature_specificity,
 )
-from .io.lazy_transform import LazyTransform, _validate_lazy_transform
-from .io.operator import open_backed_operator_for
-from . import _core
-from .io.matrix_source import MatrixSource
-from .tools.anndata import as_plain_labels
+from ..io.lazy_transform import LazyTransform, _validate_lazy_transform
+from ..io.operator import open_backed_operator_for
+from .. import _core
+from ..io.matrix_source import MatrixSource
+from ..tools.anndata import as_plain_labels
 
 
 def _graph_label_enrichment(G, enrichment_arr: np.ndarray, n_threads: int) -> np.ndarray:
@@ -172,7 +172,7 @@ def find_markers(
         labels_for_spec = labels_arr
         cluster_names = _cluster_names_for_specificity_labels(labels_arr)
 
-    from ._feature_lookup import resolve_feature_space
+    from .._feature_lookup import resolve_feature_space
 
     feature_labels = resolve_feature_space(adata, features_use).labels
 
@@ -383,7 +383,7 @@ def annotate_cells(
     # the cost to compute is cheaper than the cost to translate and pass by copy.
 
     # Get feature labels
-    from ._feature_lookup import resolve_feature_space
+    from .._feature_lookup import resolve_feature_space
     space = resolve_feature_space(adata, features_use, context="annotate_cells")
     feature_set = space.labels
 
@@ -394,7 +394,7 @@ def annotate_cells(
     _validate_lazy_transform(lazy_transform, layer=layer, source=source)
 
     # Get network graph
-    from .tools.anndata import norm_method_to_int, resolve_network
+    from ..tools.anndata import norm_method_to_int, resolve_network
 
     G = resolve_network(adata, network_key)
 
@@ -807,7 +807,7 @@ def annotate_clusters(
             )
 
     # Get feature labels
-    from ._feature_lookup import resolve_feature_space
+    from .._feature_lookup import resolve_feature_space
     space = resolve_feature_space(adata, features_use, context="annotate_clusters")
     feature_set = space.labels
 
@@ -891,7 +891,7 @@ def _encode_markers(
         X = csr_matrix((X != 0).astype(np.float32))
         label_names = [f"Label_{i}" for i in range(X.shape[1])]
     elif isinstance(markers, (pd.DataFrame, dict)):
-        from ._feature_lookup import build_first_occurrence_lookup
+        from .._feature_lookup import build_first_occurrence_lookup
 
         lookup = build_first_occurrence_lookup(feature_set)
 

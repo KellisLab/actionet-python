@@ -4,8 +4,10 @@ from typing import Optional, Literal
 import numpy as np
 from anndata import AnnData
 
-from .core import (
+from .action import (
     run_action,
+)
+from .visualization import (
     layout_network,
 )
 from .network import (

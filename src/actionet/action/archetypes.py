@@ -6,8 +6,8 @@ import pandas as pd
 import scipy.sparse as sp
 from anndata import AnnData
 
-from . import _core
-from .io.persist import persist_updates
+from .. import _core
+from ..io.persist import persist_updates
 
 
 def run_archetypal_analysis(
@@ -80,7 +80,7 @@ def decompose_action(
     Notes
     -----
     ``H_stacked`` is emitted here as ``T x n_cells`` for compatibility with
-    the C++ core.  The higher-level :func:`~actionet.core.run_action` wrapper
+    the C++ core.  The higher-level :func:`~actionet.action.run_action` wrapper
     exposes the transposed ``n_cells x archetypes`` orientation in
     ``adata.obsm``.
     """
@@ -310,7 +310,7 @@ def run_label_propagation(
     is_anndata = isinstance(X, AnnData)
 
     if is_anndata:
-        from .tools.anndata import resolve_network
+        from ..tools.anndata import resolve_network
         G = resolve_network(X, network_key)
     else:
         G = X
@@ -375,7 +375,7 @@ def compute_archetype_centrality(
     Updates adata with:
         - adata.obs[key_added]: Centrality values
     """
-    from .tools.anndata import resolve_network
+    from ..tools.anndata import resolve_network
     G = resolve_network(adata, network_key)
     conn = _core.compute_archetype_centrality(G, assignments.astype(np.int32))
 

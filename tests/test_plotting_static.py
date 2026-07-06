@@ -10,7 +10,7 @@ matplotlib = pytest.importorskip("matplotlib")
 
 from matplotlib.figure import Figure
 
-from actionet.plotting import plot_feature_expression_raster, plot_umap, plot_umap_raster
+from actionet.visualization import plot_feature_expression_raster, plot_umap, plot_umap_raster
 
 
 def _shared_keys(plot) -> set[str]:

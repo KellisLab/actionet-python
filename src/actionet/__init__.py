@@ -15,8 +15,10 @@ except PackageNotFoundError:
     __version__ = "unknown"
 
 # Import will happen after building the C++ extension
-from .core import (
+from .action import (
     run_action,
+)
+from .visualization import (
     layout_network,
 )
 from .network import (
@@ -33,7 +35,7 @@ from .decomposition import (
     run_svd,
     smooth_kernel,
 )
-from .specificity import (
+from .annotation import (
     compute_feature_specificity,
     compute_archetype_feature_specificity,
 )
@@ -47,7 +49,7 @@ from .tools import (
     guide_call_gmm,
     sweep_guide_thresholds,
 )
-from .advanced import (
+from .action import (
     run_archetypal_analysis,
     decompose_action,
     collect_archetypes,
@@ -64,8 +66,6 @@ from .annotation import (
 )
 from .visualization import (
     compute_node_colors,
-)
-from .plotting import (
     get_feature_abundance,
     get_mito_feats,
     plot_feature_expression,
