@@ -450,6 +450,97 @@ def _apply_log_transform(values: np.ndarray, log_trans: str) -> np.ndarray:
 
 
 # ---------------------------------------------------------------------------
+# Shared data computation (used by both lets-plot and raster entry points)
+# ---------------------------------------------------------------------------
+
+def _compute_violin_data(
+    adata: AnnData,
+    *,
+    features: Union[str, Sequence[str], None],
+    groupby: Optional[str],
+    features_use: Optional[str],
+    metric: Literal["counts", "fraction", "percent", "ratio"],
+    nonzero: bool,
+    log_trans: Literal["none", "log", "log2", "log10"],
+    layer: Optional[str],
+    lazy_transform: Optional["LazyTransform"],
+    groups_use: Optional[Sequence[str]],
+    chunk_size: int,
+    keys: Optional[Union[str, Sequence[Union[str, Sequence, np.ndarray, pd.Series]], np.ndarray, pd.Series]],
+    y_label: Optional[str],
+) -> Union[list[tuple[pd.Series, np.ndarray, list[str], str]], None]:
+    """Compute violin data, returning a list of (labels, values, categories, y_label) tuples.
+
+    Returns None when ``keys`` contains multiple entries (caller must recurse).
+    Otherwise returns a single-element list with the prepared tuple.
+    """
+    if keys is not None:
+        key_list = _normalize_keys(keys)
+        if len(key_list) > 1:
+            return None  # signal caller to recurse per-key
+
+        key = key_list[0]
+        per_cell = _resolve_values(adata, key)
+        per_cell = _apply_log_transform(per_cell, log_trans)
+        labels, categories = _resolve_group_labels(adata, groupby)
+
+        if groups_use is not None:
+            groups_use_set = set(str(g) for g in groups_use)
+            mask = labels.isin(groups_use_set)
+            labels = labels[mask]
+            per_cell = per_cell[mask.to_numpy()]
+            categories = [c for c in categories if c in groups_use_set]
+
+        eff_y = (key if isinstance(key, str) else "value") if y_label is None else y_label
+        return [(labels, per_cell, categories, eff_y)]
+
+    # On-the-fly computation path
+    eff_features: Union[str, Sequence[str]] = "all" if features is None else features
+
+    abundance = get_feature_abundance(
+        adata,
+        features=eff_features,
+        features_use=features_use,
+        nonzero=nonzero,
+        metric=metric,
+        layer=layer,
+        lazy_transform=lazy_transform,
+        groupby=groupby,
+        groups_use=groups_use,
+        chunk_size=chunk_size,
+    )
+
+    if y_label is None:
+        eff_y = f"{log_trans}({metric})" if log_trans != "none" else metric
+    else:
+        eff_y = y_label
+
+    if groupby is None:
+        all_values = _apply_log_transform(np.asarray(abundance, dtype=np.float64), log_trans)
+        labels = pd.Series(["all"] * adata.n_obs, dtype=str)
+        categories: list[str] = ["all"]
+        if groups_use is not None:
+            if "all" not in [str(g) for g in groups_use]:
+                labels = pd.Series([], dtype=str)
+                all_values = np.array([], dtype=np.float64)
+                categories = []
+        return [(labels, all_values, categories, eff_y)]
+
+    assert isinstance(abundance, dict)
+    categories = sort_categories(list(abundance.keys()))
+    all_labels: list[str] = []
+    all_values_list: list[np.ndarray] = []
+    for grp in categories:
+        vals = _apply_log_transform(np.asarray(abundance[grp], dtype=np.float64), log_trans)
+        all_labels.extend([grp] * len(vals))
+        all_values_list.append(vals)
+
+    labels_s = pd.Series(all_labels, dtype=str)
+    values_arr = np.concatenate(all_values_list) if all_values_list else np.array([], dtype=np.float64)
+    return [(labels_s, values_arr, categories, eff_y)]
+
+
+# ---------------------------------------------------------------------------
 # Main plotting function
 # ---------------------------------------------------------------------------
 
@@ -584,9 +675,6 @@ def plot_qc_violin(
 
     >>> act.plot_qc_violin(adata, keys=["n_counts", "pct_mito"], groupby="batch")
     """
-    # ------------------------------------------------------------------
-    # Dispatch: precomputed keys path
-    # ------------------------------------------------------------------
     if keys is not None:
         key_list = _normalize_keys(keys)
         if len(key_list) > 1:
@@ -609,105 +697,32 @@ def plot_qc_violin(
                 for k in key_list
             }
 
-        key = key_list[0]
-        per_cell = _resolve_values(adata, key)
-        per_cell = _apply_log_transform(per_cell, log_trans)
-        labels, categories = _resolve_group_labels(adata, groupby)
-
-        if groups_use is not None:
-            groups_use_set = set(str(g) for g in groups_use)
-            mask = labels.isin(groups_use_set)
-            labels = labels[mask]
-            per_cell = per_cell[mask.to_numpy()]
-            categories = [c for c in categories if c in groups_use_set]
-
-        if y_label is None:
-            y_label = key if isinstance(key, str) else "value"
-
-        return _build_violin_plot(
-            labels=labels,
-            values=per_cell,
-            categories=categories,
-            palette=palette,
-            title=title,
-            x_label=x_label,
-            y_label=y_label,
-            fig_size=fig_size,
-            fig_dpi=fig_dpi,
-            boxplot=boxplot,
-            legend=legend,
-        )
-
-    # ------------------------------------------------------------------
-    # Dispatch: on-the-fly computation path
-    # ------------------------------------------------------------------
-    eff_features: Union[str, Sequence[str]] = "all" if features is None else features
-
-    abundance = get_feature_abundance(
+    data = _compute_violin_data(
         adata,
-        features=eff_features,
+        features=features,
+        groupby=groupby,
         features_use=features_use,
-        nonzero=nonzero,
         metric=metric,
+        nonzero=nonzero,
+        log_trans=log_trans,
         layer=layer,
         lazy_transform=lazy_transform,
-        groupby=groupby,
         groups_use=groups_use,
         chunk_size=chunk_size,
+        keys=keys,
+        y_label=y_label,
     )
-
-    # Determine y-axis label
-    if y_label is None:
-        if log_trans != "none":
-            y_label = f"{log_trans}({metric})"
-        else:
-            y_label = metric
-
-    if groupby is None:
-        # abundance is a flat array; wrap into a single-group structure
-        all_values = _apply_log_transform(np.asarray(abundance, dtype=np.float64), log_trans)
-        labels = pd.Series(["all"] * adata.n_obs, dtype=str)
-        categories = ["all"]
-        if groups_use is not None:
-            if "all" not in [str(g) for g in groups_use]:
-                labels = pd.Series([], dtype=str)
-                all_values = np.array([], dtype=np.float64)
-                categories = []
-        return _build_violin_plot(
-            labels=labels,
-            values=all_values,
-            categories=categories,
-            palette=palette,
-            title=title,
-            x_label=x_label,
-            y_label=y_label,
-            fig_size=fig_size,
-            fig_dpi=fig_dpi,
-            boxplot=boxplot,
-            legend=legend,
-        )
-
-    # abundance is a dict; flatten into a long-form DataFrame
-    assert isinstance(abundance, dict)
-    categories = sort_categories(list(abundance.keys()))
-    all_labels: list[str] = []
-    all_values_list: list[np.ndarray] = []
-    for grp in categories:
-        vals = _apply_log_transform(np.asarray(abundance[grp], dtype=np.float64), log_trans)
-        all_labels.extend([grp] * len(vals))
-        all_values_list.append(vals)
-
-    labels_s = pd.Series(all_labels, dtype=str)
-    values_arr = np.concatenate(all_values_list) if all_values_list else np.array([], dtype=np.float64)
+    assert data is not None
+    labels, values, categories, eff_y = data[0]
 
     return _build_violin_plot(
-        labels=labels_s,
-        values=values_arr,
+        labels=labels,
+        values=values,
         categories=categories,
         palette=palette,
         title=title,
         x_label=x_label,
-        y_label=y_label,
+        y_label=eff_y,
         fig_size=fig_size,
         fig_dpi=fig_dpi,
         boxplot=boxplot,
@@ -1225,25 +1240,6 @@ def plot_qc_violin_raster(
 
     >>> act.plot_qc_violin_raster(adata, keys=["n_counts", "pct_mito"], groupby="batch")
     """
-    _build = lambda labels, values, categories, y_lbl: _build_violin_raster(  # noqa: E731
-        labels=labels,
-        values=values,
-        categories=categories,
-        palette=palette,
-        title=title,
-        x_label=x_label,
-        y_label=y_lbl,
-        fig_size=fig_size,
-        fig_dpi=fig_dpi,
-        boxplot=boxplot,
-        legend=legend,
-        kde_points=kde_points,
-        bw_method=bw_method,
-    )
-
-    # ------------------------------------------------------------------
-    # Dispatch: precomputed keys path
-    # ------------------------------------------------------------------
     if keys is not None:
         key_list = _normalize_keys(keys)
         if len(key_list) > 1:
@@ -1268,67 +1264,39 @@ def plot_qc_violin_raster(
                 for k in key_list
             }
 
-        key = key_list[0]
-        per_cell = _resolve_values(adata, key)
-        per_cell = _apply_log_transform(per_cell, log_trans)
-        labels, categories = _resolve_group_labels(adata, groupby)
-
-        if groups_use is not None:
-            groups_use_set = set(str(g) for g in groups_use)
-            mask = labels.isin(groups_use_set)
-            labels = labels[mask]
-            per_cell = per_cell[mask.to_numpy()]
-            categories = [c for c in categories if c in groups_use_set]
-
-        y_lbl = (key if isinstance(key, str) else "value") if y_label is None else y_label
-        return _build(labels, per_cell, categories, y_lbl)
-
-    # ------------------------------------------------------------------
-    # Dispatch: on-the-fly computation path
-    # ------------------------------------------------------------------
-    eff_features: Union[str, Sequence[str]] = "all" if features is None else features
-
-    abundance = get_feature_abundance(
+    data = _compute_violin_data(
         adata,
-        features=eff_features,
+        features=features,
+        groupby=groupby,
         features_use=features_use,
-        nonzero=nonzero,
         metric=metric,
+        nonzero=nonzero,
+        log_trans=log_trans,
         layer=layer,
         lazy_transform=lazy_transform,
-        groupby=groupby,
         groups_use=groups_use,
         chunk_size=chunk_size,
+        keys=keys,
+        y_label=y_label,
     )
+    assert data is not None
+    labels, values, categories, eff_y = data[0]
 
-    if y_label is None:
-        y_lbl = f"{log_trans}({metric})" if log_trans != "none" else metric
-    else:
-        y_lbl = y_label
-
-    if groupby is None:
-        all_values = _apply_log_transform(np.asarray(abundance, dtype=np.float64), log_trans)
-        labels = pd.Series(["all"] * adata.n_obs, dtype=str)
-        categories = ["all"]
-        if groups_use is not None:
-            if "all" not in [str(g) for g in groups_use]:
-                labels = pd.Series([], dtype=str)
-                all_values = np.array([], dtype=np.float64)
-                categories = []
-        return _build(labels, all_values, categories, y_lbl)
-
-    assert isinstance(abundance, dict)
-    categories = sort_categories(list(abundance.keys()))
-    all_labels: list[str] = []
-    all_values_list: list[np.ndarray] = []
-    for grp in categories:
-        vals = _apply_log_transform(np.asarray(abundance[grp], dtype=np.float64), log_trans)
-        all_labels.extend([grp] * len(vals))
-        all_values_list.append(vals)
-
-    labels_s = pd.Series(all_labels, dtype=str)
-    values_arr = np.concatenate(all_values_list) if all_values_list else np.array([], dtype=np.float64)
-    return _build(labels_s, values_arr, categories, y_lbl)
+    return _build_violin_raster(
+        labels=labels,
+        values=values,
+        categories=categories,
+        palette=palette,
+        title=title,
+        x_label=x_label,
+        y_label=eff_y,
+        fig_size=fig_size,
+        fig_dpi=fig_dpi,
+        boxplot=boxplot,
+        legend=legend,
+        kde_points=kde_points,
+        bw_method=bw_method,
+    )
 
 
 def plot_mito_violin_raster(
