@@ -36,13 +36,15 @@ from .specificity import (
 from .clustering import (
     cluster_network,
 )
-from .anndata_utils import (
-    anndata_to_matrix,
+from .tools import (
     aggregate_anndata,
-)
-from .batch_correction import (
-    correct_batch_effect,
+    anndata_to_matrix,
     correct_basal_expression,
+    correct_batch_effect,
+    derive_guide_thresholds,
+    fit_guides_gmm,
+    guide_call_gmm,
+    sweep_guide_thresholds,
 )
 from .imputation import (
     impute_features,
@@ -103,13 +105,6 @@ from .tools import (
     scale,
     aggregate_matrix,
     matrix_sums,
-)
-
-from .guide_calling import (
-    fit_guides_gmm,
-    derive_guide_thresholds,
-    sweep_guide_thresholds,
-    guide_call_gmm,
 )
 
 __all__ = [

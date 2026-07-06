@@ -10,7 +10,7 @@ import scipy.sparse as sp
 from anndata import AnnData
 
 from . import _core
-from .anndata_utils import anndata_to_matrix
+from .tools.anndata import anndata_to_matrix
 from .io.persist import persist_updates
 from .io.compression import (
     format_compression_summary,
@@ -580,7 +580,7 @@ def smooth_kernel(
     Or, if return_raw=True:
         - Dictionary with raw outputs from diffusion and SVD.
     """
-    from .anndata_utils import norm_method_to_int, resolve_network
+    from .tools.anndata import norm_method_to_int, resolve_network
     norm_method_code = norm_method_to_int(norm_method)
 
     resolve_network(adata, network_key)

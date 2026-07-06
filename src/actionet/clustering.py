@@ -40,7 +40,7 @@ def cluster_network(
     if n_iterations == 0:
         raise ValueError("`n_iterations` cannot be 0. Use positive values or -1.")
 
-    from .anndata_utils import resolve_network
+    from .tools.anndata import resolve_network
     adjacency = resolve_network(adata, network_key)
     if adjacency.shape != (adata.n_obs, adata.n_obs):
         raise ValueError(

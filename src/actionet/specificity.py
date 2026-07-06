@@ -15,7 +15,7 @@ from anndata import AnnData
 from . import _core
 from .io.persist import persist_updates
 from .io.matrix_source import MatrixSource
-from .anndata_utils import anndata_to_matrix, as_plain_labels
+from .tools.anndata import anndata_to_matrix, as_plain_labels
 from .io.operator import open_backed_operator_for
 from .io.lazy_transform import (
     LazyTransform,

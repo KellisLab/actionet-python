@@ -6,12 +6,12 @@ import scipy.sparse as sp
 from anndata import AnnData
 import pandas as pd
 
-from . import _core
-from .anndata_utils import anndata_to_matrix
-from .io.persist import persist_updates
-from .io.matrix_source import MatrixSource
-from .io.operator import open_backed_operator_for
-from .io.lazy_transform import (
+from .. import _core
+from .anndata import anndata_to_matrix
+from ..io.persist import persist_updates
+from ..io.matrix_source import MatrixSource
+from ..io.operator import open_backed_operator_for
+from ..io.lazy_transform import (
     LazyTransform,
     _lazy_params_for_metadata,
     _resolve_lazy_backed_transform,
@@ -245,7 +245,7 @@ def correct_basal_expression(
 
     old_S_r, old_U, old_A, old_B, old_sigma = _load_reduction_state(adata, reduction_key)
 
-    from ._feature_lookup import resolve_feature_space, resolve_requested_features
+    from .._feature_lookup import resolve_feature_space, resolve_requested_features
 
     space = resolve_feature_space(adata, features_use=None, context="correct_basal_expression")
     resolved = resolve_requested_features(

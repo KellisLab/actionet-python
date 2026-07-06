@@ -6,7 +6,7 @@ import scipy.sparse as sp
 from anndata import AnnData
 import pandas as pd
 from . import _core
-from .anndata_utils import anndata_to_matrix
+from .tools.anndata import anndata_to_matrix
 from .io.matrix_source import MatrixSource
 from .io.operator import open_backed_operator_for
 from .io.lazy_transform import (
@@ -152,7 +152,7 @@ def impute_features(
     # ------------------------------------------------------------------
     # Network-diffusion paths ("diffusion" and "pca")
     # ------------------------------------------------------------------
-    from .anndata_utils import norm_method_to_int, resolve_network
+    from .tools.anndata import norm_method_to_int, resolve_network
     norm_method_code = norm_method_to_int(norm_method)
 
     resolve_network(adata, network_key)

@@ -286,7 +286,7 @@ def compute_network_diffusion(
     is_anndata = isinstance(X, AnnData)
 
     if is_anndata:
-        from .anndata_utils import resolve_network
+        from .tools.anndata import resolve_network
         G = resolve_network(X, network_key)
     else:
         G = X
@@ -307,7 +307,7 @@ def compute_network_diffusion(
     elif not X0.flags["C_CONTIGUOUS"]:
         X0 = np.ascontiguousarray(X0)
 
-    from .anndata_utils import norm_method_to_int
+    from .tools.anndata import norm_method_to_int
 
     X_diffused = _core.compute_network_diffusion(
         G=G,
@@ -419,7 +419,7 @@ def compute_network_centrality(
     is_anndata = isinstance(X, AnnData)
 
     if is_anndata:
-        from .anndata_utils import resolve_network
+        from .tools.anndata import resolve_network
         G = resolve_network(X, network_key)
     else:
         G = X
@@ -651,7 +651,7 @@ def layout_network(
 
     if not inplace:
         adata = adata.copy()
-    from .anndata_utils import resolve_network
+    from .tools.anndata import resolve_network
     G = resolve_network(adata, network_key)
     
     # Handle initial_coords

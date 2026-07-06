@@ -15,10 +15,10 @@ import pandas as pd
 import scipy.sparse as sp
 from anndata import AnnData
 
-from . import _core
-from .io.matrix_source import MatrixSource
-from .anndata_utils import anndata_to_matrix
-from .io.operator import open_backed_operator_for
+from .. import _core
+from ..io.matrix_source import MatrixSource
+from .anndata import anndata_to_matrix
+from ..io.operator import open_backed_operator_for
 
 
 ArrayLike1D = Union[np.ndarray, Sequence[float]]

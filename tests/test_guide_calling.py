@@ -11,7 +11,7 @@ import anndata as ad
 try:
     import actionet as an
     from actionet import _core  # noqa: F401
-    import actionet.guide_calling as gc
+    import actionet.tools.guide_calling as gc
 
     _has_ext = True
 except Exception:

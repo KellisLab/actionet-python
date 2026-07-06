@@ -8,7 +8,7 @@ import numpy as np
 import pandas as pd
 from anndata import AnnData
 
-from ..anndata_utils import anndata_to_matrix
+from ..tools.anndata import anndata_to_matrix
 from ..imputation import impute_features
 from ..io.matrix_source import MatrixSource
 from ..io.operator import open_backed_operator_for

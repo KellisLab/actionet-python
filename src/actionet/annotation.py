@@ -16,7 +16,7 @@ from .io.lazy_transform import LazyTransform, _validate_lazy_transform
 from .io.operator import open_backed_operator_for
 from . import _core
 from .io.matrix_source import MatrixSource
-from .anndata_utils import as_plain_labels
+from .tools.anndata import as_plain_labels
 
 
 def _graph_label_enrichment(G, enrichment_arr: np.ndarray, n_threads: int) -> np.ndarray:
@@ -394,7 +394,7 @@ def annotate_cells(
     _validate_lazy_transform(lazy_transform, layer=layer, source=source)
 
     # Get network graph
-    from .anndata_utils import norm_method_to_int, resolve_network
+    from .tools.anndata import norm_method_to_int, resolve_network
 
     G = resolve_network(adata, network_key)
 
