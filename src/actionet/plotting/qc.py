@@ -437,6 +437,26 @@ def _normalize_keys(
     return list(keys)
 
 
+def _dispatch_multi_keys(
+    plot_fn,
+    adata: AnnData,
+    keys,
+    /,
+    **kwargs: Any,
+):
+    """If ``keys`` expands to more than one key, recurse per key and return a dict.
+
+    Returns ``None`` when there is nothing to dispatch (single-key case), so
+    the caller falls through to the normal single-plot code path.
+    """
+    if keys is None:
+        return None
+    key_list = _normalize_keys(keys)
+    if len(key_list) <= 1:
+        return None
+    return {k: plot_fn(adata, keys=k, **kwargs) for k in key_list}
+
+
 def _apply_log_transform(values: np.ndarray, log_trans: str) -> np.ndarray:
     if log_trans == "none":
         return values
@@ -677,27 +697,24 @@ def plot_qc_violin(
 
     >>> act.plot_qc_violin(adata, keys=["n_counts", "pct_mito"], groupby="batch")
     """
-    if keys is not None:
-        key_list = _normalize_keys(keys)
-        if len(key_list) > 1:
-            return {
-                k: plot_qc_violin(
-                    adata,
-                    keys=k,
-                    groupby=groupby,
-                    groups_use=groups_use,
-                    palette=palette,
-                    log_trans=log_trans,
-                    title=title,
-                    x_label=x_label,
-                    y_label=y_label,
-                    fig_size=fig_size,
-                    fig_dpi=fig_dpi,
-                    boxplot=boxplot,
-                    legend=legend,
-                )
-                for k in key_list
-            }
+    multi = _dispatch_multi_keys(
+        plot_qc_violin,
+        adata,
+        keys,
+        groupby=groupby,
+        groups_use=groups_use,
+        palette=palette,
+        log_trans=log_trans,
+        title=title,
+        x_label=x_label,
+        y_label=y_label,
+        fig_size=fig_size,
+        fig_dpi=fig_dpi,
+        boxplot=boxplot,
+        legend=legend,
+    )
+    if multi is not None:
+        return multi
 
     data = _compute_violin_data(
         adata,
@@ -804,6 +821,73 @@ def _build_violin_plot(
 # ---------------------------------------------------------------------------
 # Mitochondrial distribution plot (mirrors R plotMitoDist)
 # ---------------------------------------------------------------------------
+
+def _plot_mito_common(
+    backend,
+    *,
+    adata: AnnData,
+    groupby: Optional[str],
+    id_type: Literal["gene_name", "ensembl_id"],
+    species: Literal["hsapiens", "mmusculus", "human", "mouse"],
+    protein_coding: bool,
+    features_use: Optional[str],
+    metric: Literal["counts", "fraction", "percent", "ratio"],
+    log_trans: Literal["none", "log", "log2", "log10"],
+    layer: Optional[str],
+    lazy_transform: Optional["LazyTransform"],
+    groups_use: Optional[Sequence[str]],
+    chunk_size: int,
+    palette: Optional[Union[str, Sequence[str], dict]],
+    title: Optional[str],
+    x_label: Optional[str],
+    y_label: Optional[str],
+    fig_size: tuple[float, float],
+    fig_dpi: float,
+    boxplot: bool,
+    legend: bool,
+    **extra: Any,
+) -> Any:
+    """Resolve mito features + default title, then delegate to ``backend``.
+
+    Shared body of :func:`plot_mito_violin` (lets-plot) and
+    :func:`plot_mito_violin_raster` (matplotlib Agg).  ``extra`` carries
+    backend-only kwargs (currently ``kde_points`` / ``bw_method`` for the
+    raster variant).
+    """
+    mito_feats = get_mito_feats(id_type=id_type, species=species, protein_coding=protein_coding)
+
+    if not mito_feats:
+        raise ValueError(
+            f"No mitochondrial features found for species={species!r}, "
+            f"id_type={id_type!r}, protein_coding={protein_coding}."
+        )
+
+    if title is None:
+        title = f"Mitochondrial features ({metric})"
+
+    return backend(
+        adata,
+        features=mito_feats,
+        features_use=features_use,
+        groupby=groupby,
+        metric=metric,
+        nonzero=False,
+        log_trans=log_trans,
+        layer=layer,
+        lazy_transform=lazy_transform,
+        groups_use=groups_use,
+        chunk_size=chunk_size,
+        palette=palette,
+        title=title,
+        x_label=x_label,
+        y_label=y_label,
+        fig_size=fig_size,
+        fig_dpi=fig_dpi,
+        boxplot=boxplot,
+        legend=legend,
+        **extra,
+    )
+
 
 def plot_mito_violin(
     adata: AnnData,
@@ -924,24 +1008,15 @@ def plot_mito_violin(
     ...     protein_coding=True,
     ... )
     """
-    mito_feats = get_mito_feats(id_type=id_type, species=species, protein_coding=protein_coding)
-
-    if not mito_feats:
-        raise ValueError(
-            f"No mitochondrial features found for species={species!r}, "
-            f"id_type={id_type!r}, protein_coding={protein_coding}."
-        )
-
-    if title is None:
-        title = f"Mitochondrial features ({metric})"
-
-    return plot_qc_violin(
-        adata,
-        features=mito_feats,
-        features_use=features_use,
+    return _plot_mito_common(
+        plot_qc_violin,
+        adata=adata,
         groupby=groupby,
+        id_type=id_type,
+        species=species,
+        protein_coding=protein_coding,
+        features_use=features_use,
         metric=metric,
-        nonzero=False,
         log_trans=log_trans,
         layer=layer,
         lazy_transform=lazy_transform,
@@ -1242,29 +1317,26 @@ def plot_qc_violin_raster(
 
     >>> act.plot_qc_violin_raster(adata, keys=["n_counts", "pct_mito"], groupby="batch")
     """
-    if keys is not None:
-        key_list = _normalize_keys(keys)
-        if len(key_list) > 1:
-            return {
-                k: plot_qc_violin_raster(
-                    adata,
-                    keys=k,
-                    groupby=groupby,
-                    groups_use=groups_use,
-                    palette=palette,
-                    log_trans=log_trans,
-                    title=title,
-                    x_label=x_label,
-                    y_label=y_label,
-                    fig_size=fig_size,
-                    fig_dpi=fig_dpi,
-                    boxplot=boxplot,
-                    legend=legend,
-                    kde_points=kde_points,
-                    bw_method=bw_method,
-                )
-                for k in key_list
-            }
+    multi = _dispatch_multi_keys(
+        plot_qc_violin_raster,
+        adata,
+        keys,
+        groupby=groupby,
+        groups_use=groups_use,
+        palette=palette,
+        log_trans=log_trans,
+        title=title,
+        x_label=x_label,
+        y_label=y_label,
+        fig_size=fig_size,
+        fig_dpi=fig_dpi,
+        boxplot=boxplot,
+        legend=legend,
+        kde_points=kde_points,
+        bw_method=bw_method,
+    )
+    if multi is not None:
+        return multi
 
     data = _compute_violin_data(
         adata,
@@ -1391,24 +1463,15 @@ def plot_mito_violin_raster(
     --------
     >>> act.plot_mito_violin_raster(adata, groupby="cluster")
     """
-    mito_feats = get_mito_feats(id_type=id_type, species=species, protein_coding=protein_coding)
-
-    if not mito_feats:
-        raise ValueError(
-            f"No mitochondrial features found for species={species!r}, "
-            f"id_type={id_type!r}, protein_coding={protein_coding}."
-        )
-
-    if title is None:
-        title = f"Mitochondrial features ({metric})"
-
-    return plot_qc_violin_raster(
-        adata,
-        features=mito_feats,
-        features_use=features_use,
+    return _plot_mito_common(
+        plot_qc_violin_raster,
+        adata=adata,
         groupby=groupby,
+        id_type=id_type,
+        species=species,
+        protein_coding=protein_coding,
+        features_use=features_use,
         metric=metric,
-        nonzero=False,
         log_trans=log_trans,
         layer=layer,
         lazy_transform=lazy_transform,

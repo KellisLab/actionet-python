@@ -100,6 +100,95 @@ def _grid_shape(n_plots: int) -> tuple[int, int]:
     return nrow, ncol
 
 
+def _resolve_feature_profile(
+    adata: AnnData,
+    features: Union[str, Sequence[Union[str, Iterable[str]]]],
+    features_use: Optional[str],
+    method: Literal["diffusion", "pca", "archetypes", "none"],
+    alpha: float,
+    layer: Optional[str],
+    network_key: str,
+    sort_features: bool,
+    archetype_profile_key: str,
+    archetype_matrix_key: str,
+    n_threads: int,
+    backed_chunk_size: int,
+    lazy_transform: Optional[LazyTransform],
+) -> pd.DataFrame:
+    """Resolve the feature set and compute the per-cell expression profile.
+
+    Shared by :func:`plot_feature_expression` and
+    :func:`plot_feature_expression_raster`.  Returns a DataFrame of shape
+    ``(n_obs, len(matched_features))`` in the order that should drive
+    downstream plotting.  Raises ``ValueError`` when no features match.
+    """
+    requested = _flatten_features(features)
+    marker_set = _select_features(adata, requested, features_use, sort_features)
+    if len(marker_set) == 0:
+        raise ValueError("No features found in 'features_use'.")
+
+    use_raw = method == "none" or (alpha == 0 and method != "archetypes")
+
+    if use_raw:
+        expr_profile = _extract_expression(
+            adata, marker_set, features_use, layer,
+            lazy_transform=lazy_transform,
+            backed_chunk_size=backed_chunk_size,
+        )
+    else:
+        expr_profile = impute_features(
+            adata,
+            features=requested,
+            method=method,
+            features_use=features_use,
+            network_key=network_key,
+            layer=layer,
+            alpha=alpha,
+            n_threads=n_threads,
+            backed_chunk_size=backed_chunk_size,
+            lazy_transform=lazy_transform,
+            archetype_profile_key=archetype_profile_key,
+            archetype_matrix_key=archetype_matrix_key,
+        )
+        if sort_features:
+            expr_profile = expr_profile.loc[:, [f for f in marker_set if f in expr_profile.columns]]
+
+    return expr_profile
+
+
+def _render_feature_expression(
+    plot_fn,
+    adata: AnnData,
+    expr_profile: pd.DataFrame,
+    *,
+    cmap,
+    size: float,
+    trans_attr,
+    trans_fac: float,
+    trans_th: float,
+    basis: str,
+    legend: bool,
+) -> dict[str, Any]:
+    """Call ``plot_fn`` once per feature column and collect the outputs."""
+    out: dict[str, Any] = {}
+    for feat_name in expr_profile.columns:
+        values = expr_profile[feat_name].to_numpy()
+        out[feat_name] = plot_fn(
+            adata,
+            color=values,
+            color_source=None,
+            cmap=cmap,
+            size=size,
+            trans_attr=trans_attr,
+            trans_fac=trans_fac,
+            trans_th=trans_th,
+            basis=basis,
+            legend=legend,
+            title=feat_name,
+        )
+    return out
+
+
 def plot_feature_expression(
     adata: AnnData,
     features: Union[str, Sequence[Union[str, Iterable[str]]]],
@@ -196,53 +285,34 @@ def plot_feature_expression(
         A lets-plot object, a grid if ``single_plot`` is True, or a dict of plots.
     """
 
-    requested = _flatten_features(features)
-    marker_set = _select_features(adata, requested, features_use, sort_features)
-    if len(marker_set) == 0:
-        raise ValueError("No features found in 'features_use'.")
+    expr_profile = _resolve_feature_profile(
+        adata,
+        features=features,
+        features_use=features_use,
+        method=method,
+        alpha=alpha,
+        layer=layer,
+        network_key=network_key,
+        sort_features=sort_features,
+        archetype_profile_key=archetype_profile_key,
+        archetype_matrix_key=archetype_matrix_key,
+        n_threads=n_threads,
+        backed_chunk_size=backed_chunk_size,
+        lazy_transform=lazy_transform,
+    )
 
-    use_raw = method == "none" or (alpha == 0 and method != "archetypes")
-
-    if use_raw:
-        expr_profile = _extract_expression(
-            adata, marker_set, features_use, layer,
-            lazy_transform=lazy_transform,
-            backed_chunk_size=backed_chunk_size,
-        )
-    else:
-        expr_profile = impute_features(
-            adata,
-            features=requested,
-            method=method,
-            features_use=features_use,
-            network_key=network_key,
-            layer=layer,
-            alpha=alpha,
-            n_threads=n_threads,
-            backed_chunk_size=backed_chunk_size,
-            lazy_transform=lazy_transform,
-            archetype_profile_key=archetype_profile_key,
-            archetype_matrix_key=archetype_matrix_key,
-        )
-        if sort_features:
-            expr_profile = expr_profile.loc[:, [f for f in marker_set if f in expr_profile.columns]]
-
-    out = {}
-    for feat_name in expr_profile.columns:
-        values = expr_profile[feat_name].to_numpy()
-        out[feat_name] = plot_umap(
-            adata,
-            color=values,
-            color_source=None,
-            cmap=cmap,
-            size=size,
-            trans_attr=trans_attr,
-            trans_fac=trans_fac,
-            trans_th=trans_th,
-            basis=basis,
-            legend=legend,
-            title=feat_name,
-        )
+    out = _render_feature_expression(
+        plot_umap,
+        adata,
+        expr_profile,
+        cmap=cmap,
+        size=size,
+        trans_attr=trans_attr,
+        trans_fac=trans_fac,
+        trans_th=trans_th,
+        basis=basis,
+        legend=legend,
+    )
 
     if single_plot and len(out) > 1:
         try:
@@ -359,53 +429,34 @@ def plot_feature_expression_raster(
         corresponding raster plot returned by :func:`plot_umap_raster`.
     """
 
-    requested = _flatten_features(features)
-    marker_set = _select_features(adata, requested, features_use, sort_features)
-    if len(marker_set) == 0:
-        raise ValueError("No features found in 'features_use'.")
+    expr_profile = _resolve_feature_profile(
+        adata,
+        features=features,
+        features_use=features_use,
+        method=method,
+        alpha=alpha,
+        layer=layer,
+        network_key=network_key,
+        sort_features=sort_features,
+        archetype_profile_key=archetype_profile_key,
+        archetype_matrix_key=archetype_matrix_key,
+        n_threads=n_threads,
+        backed_chunk_size=backed_chunk_size,
+        lazy_transform=lazy_transform,
+    )
 
-    use_raw = method == "none" or (alpha == 0 and method != "archetypes")
-
-    if use_raw:
-        expr_profile = _extract_expression(
-            adata, marker_set, features_use, layer,
-            lazy_transform=lazy_transform,
-            backed_chunk_size=backed_chunk_size,
-        )
-    else:
-        expr_profile = impute_features(
-            adata,
-            features=requested,
-            method=method,
-            features_use=features_use,
-            network_key=network_key,
-            layer=layer,
-            alpha=alpha,
-            n_threads=n_threads,
-            backed_chunk_size=backed_chunk_size,
-            lazy_transform=lazy_transform,
-            archetype_profile_key=archetype_profile_key,
-            archetype_matrix_key=archetype_matrix_key,
-        )
-        if sort_features:
-            expr_profile = expr_profile.loc[:, [f for f in marker_set if f in expr_profile.columns]]
-
-    out = {}
-    for feat_name in expr_profile.columns:
-        values = expr_profile[feat_name].to_numpy()
-        out[feat_name] = plot_umap_raster(
-            adata,
-            color=values,
-            color_source=None,
-            cmap=cmap,
-            size=size,
-            trans_attr=trans_attr,
-            trans_fac=trans_fac,
-            trans_th=trans_th,
-            basis=basis,
-            legend=legend,
-            title=feat_name,
-        )
+    out = _render_feature_expression(
+        plot_umap_raster,
+        adata,
+        expr_profile,
+        cmap=cmap,
+        size=size,
+        trans_attr=trans_attr,
+        trans_fac=trans_fac,
+        trans_th=trans_th,
+        basis=basis,
+        legend=legend,
+    )
 
     if single_plot and len(out) > 1:
         try:
