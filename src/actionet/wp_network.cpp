@@ -108,14 +108,7 @@ py::array_t<int> compute_coreness(py::object G) {
         core_num = actionet::computeCoreness(G_sp);
     }
 
-    auto result = py::array_t<int>(core_num.n_elem);
-    auto buf = result.request();
-    int* ptr = static_cast<int*>(buf.ptr);
-    for (size_t i = 0; i < core_num.n_elem; ++i) {
-        ptr[i] = static_cast<int>(core_num(i));
-    }
-
-    return result;
+    return arma_uvec_to_numpy<int>(core_num);
 }
 
 py::array_t<double> compute_archetype_centrality(py::object G, py::array_t<int> sample_assignments) {

@@ -16,6 +16,19 @@ from .lazy_transform import LazyTransform, _validate_lazy_transform
 from .backed_io import open_backed_operator_for
 from . import _core
 from ._matrix_source import MatrixSource
+from .anndata_utils import as_plain_labels
+
+
+def _graph_label_enrichment(G, enrichment_arr: np.ndarray, n_threads: int) -> np.ndarray:
+    """Row-normalize ``G`` and return per-cell log p-values from positive marker stats.
+
+    Encapsulates the identical three-line block used by both the enrichment
+    and no-enrichment branches in ``annotate_cells`` to compute label log
+    p-values from a graph and cell x celltype marker-stat matrix.
+    """
+    Gn = _core.normalize_graph(G, norm_method=1).T
+    marker_stats_pos = np.maximum(enrichment_arr, 0)
+    return _core.compute_graph_label_enrichment(Gn, marker_stats_pos, n_threads)
 
 
 def _sparse_row_sum_sq(S) -> np.ndarray:
@@ -140,8 +153,7 @@ def find_markers(
     # Normalize to a plain object array so that every downstream Categorical()
     # call produces the same (lexicographic) category order, regardless of
     # whether the original column was a pandas Categorical with a custom order.
-    if hasattr(labels_arr, 'categories'):
-        labels_arr = np.asarray(labels_arr)
+    labels_arr = as_plain_labels(labels_arr)
 
     # Mask excluded observations in the label vector instead of subsetting
     # the AnnData.  The C++ specificity backend treats label=0 as
@@ -569,9 +581,7 @@ def annotate_cells(
         if _fused_log_pvals is not None:
             log_pvals = _fused_log_pvals
         else:
-            Gn = _core.normalize_graph(G, norm_method=1).T
-            marker_stats_pos = np.maximum(enrichment_arr, 0)
-            log_pvals = _core.compute_graph_label_enrichment(Gn, marker_stats_pos, n_threads)
+            log_pvals = _graph_label_enrichment(G, enrichment_arr, n_threads)
 
         labels_idx = np.argmax(log_pvals, axis=1)
         confidence = np.max(log_pvals, axis=1)
@@ -579,9 +589,7 @@ def annotate_cells(
         labels_idx = np.argmax(enrichment_arr, axis=1)
         confidence = np.max(enrichment_arr, axis=1)
         if return_log_pvals:
-            Gn = _core.normalize_graph(G, norm_method=1).T
-            marker_stats_pos = np.maximum(enrichment_arr, 0)
-            log_pvals = _core.compute_graph_label_enrichment(Gn, marker_stats_pos, n_threads)
+            log_pvals = _graph_label_enrichment(G, enrichment_arr, n_threads)
 
     labels = celltype_arr[labels_idx]
 
@@ -780,8 +788,7 @@ def annotate_clusters(
         cluster_feat_spec[cluster_feat_spec < 0] = 0
 
     # Normalize cluster labels to plain array to ensure consistent ordering.
-    if hasattr(cluster_labels, "categories"):
-        cluster_labels = np.asarray(cluster_labels)
+    cluster_labels = as_plain_labels(cluster_labels)
 
     # Match the same label ordering logic used by compute_feature_specificity.
     n_clusters = cluster_feat_spec.shape[1]

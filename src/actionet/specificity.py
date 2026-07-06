@@ -15,7 +15,7 @@ from anndata import AnnData
 from . import _core
 from ._backed_persist import persist_updates
 from ._matrix_source import MatrixSource
-from .anndata_utils import anndata_to_matrix
+from .anndata_utils import anndata_to_matrix, as_plain_labels
 from .backed_io import open_backed_operator_for
 from .lazy_transform import (
     LazyTransform,
@@ -232,8 +232,7 @@ def compute_feature_specificity(
     else:
         labels_arr = np.asarray(labels)
 
-    if hasattr(labels_arr, "categories"):
-        labels_arr = np.asarray(labels_arr)
+    labels_arr = as_plain_labels(labels_arr)
 
     labels_int = _encode_labels_for_specificity(labels_arr, n_obs=source.n_obs)
 

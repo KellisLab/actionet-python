@@ -13,26 +13,6 @@
 namespace py = pybind11;
 
 namespace {
-    py::array_t<int64_t> arma_uvec_to_numpy_int64(const arma::uvec& vec) {
-        py::array_t<int64_t> arr(vec.n_elem);
-        auto buf = arr.request();
-        auto* ptr = static_cast<int64_t*>(buf.ptr);
-        for (arma::uword i = 0; i < vec.n_elem; ++i) {
-            ptr[i] = static_cast<int64_t>(vec(i));
-        }
-        return arr;
-    }
-
-    py::array_t<int> arma_ivec_to_numpy_int(const arma::ivec& vec) {
-        py::array_t<int> arr(vec.n_elem);
-        auto buf = arr.request();
-        auto* ptr = static_cast<int*>(buf.ptr);
-        for (arma::uword i = 0; i < vec.n_elem; ++i) {
-            ptr[i] = static_cast<int>(vec(i));
-        }
-        return arr;
-    }
-
     /// Populate a GuideGMMFitParams struct from Python-side keyword arguments.
     actionet::GuideGMMFitParams make_guide_fit_params(
         int min_points,
@@ -68,8 +48,8 @@ namespace {
         out["means"] = arma_mat_to_numpy(fits.means);
         out["sigma"] = arma_vec_to_numpy(fits.sigma);
         out["log_likelihood"] = arma_vec_to_numpy(fits.log_likelihood);
-        out["n_points"] = arma_uvec_to_numpy_int64(fits.n_points);
-        out["status"] = arma_ivec_to_numpy_int(fits.status);
+        out["n_points"] = arma_uvec_to_numpy<int64_t>(fits.n_points);
+        out["status"] = arma_ivec_to_numpy<int>(fits.status);
 
         py::dict status_codes;
         status_codes["ok"] = static_cast<int>(actionet::GUIDE_GMM_OK);

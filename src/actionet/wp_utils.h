@@ -49,6 +49,35 @@ arma::vec numpy_to_arma_vec(py::array_t<double, py::array::c_style | py::array::
 // Convert Armadillo vector to NumPy array
 py::array_t<double> arma_vec_to_numpy(const arma::vec& vec);
 
+/// @brief Copy an Armadillo integer index vector (uword) into a NumPy array of
+/// dtype ``T``.  Each call site picks the Python-visible dtype (typically
+/// ``int`` for compactness or ``int64_t`` for full-range indices); the loop
+/// body is trivially the same.  Kept in the header so all wrapper TUs share
+/// a single implementation.
+template <typename T>
+py::array_t<T> arma_uvec_to_numpy(const arma::uvec& vec) {
+    py::array_t<T> arr(vec.n_elem);
+    auto buf = arr.request();
+    auto* ptr = static_cast<T*>(buf.ptr);
+    for (arma::uword i = 0; i < vec.n_elem; ++i) {
+        ptr[i] = static_cast<T>(vec(i));
+    }
+    return arr;
+}
+
+/// @brief Copy an Armadillo signed integer vector (sword / ivec) into a NumPy
+/// array of dtype ``T``.  Companion to ``arma_uvec_to_numpy``.
+template <typename T>
+py::array_t<T> arma_ivec_to_numpy(const arma::ivec& vec) {
+    py::array_t<T> arr(vec.n_elem);
+    auto buf = arr.request();
+    auto* ptr = static_cast<T*>(buf.ptr);
+    for (arma::uword i = 0; i < vec.n_elem; ++i) {
+        ptr[i] = static_cast<T>(vec(i));
+    }
+    return arr;
+}
+
 /// @brief Pack (S_r, sigma, U, A, B) into an arma::field<arma::mat> in Plan-02
 /// public layout: {S_r (cells x k), sigma, U (genes x k), A, B}.
 arma::field<arma::mat> pack_reduction_field(const arma::mat& S_r, const arma::vec& sigma,

@@ -32,6 +32,22 @@ from ._backed_persist import (
 from ._matrix_source import MatrixSource
 
 
+def _safe_row_scale(target_sum: float, row_sums: np.ndarray) -> np.ndarray:
+    """Return ``target_sum / row_sums`` with zero rows mapped to zero scale.
+
+    All five normalize paths in this module share the same divide-with-guard
+    pattern: rows whose sum is <= 0 get a scale of 0 (so their data survives
+    unchanged, effectively skipping normalization for those rows). Factoring
+    the idiom out keeps the arithmetic in one place.
+    """
+    return np.divide(
+        target_sum,
+        row_sums,
+        out=np.zeros_like(row_sums, dtype=np.float64),
+        where=row_sums > 0,
+    )
+
+
 def import_anndata_generic(
     input_path: str,
     mtx_file: str,
@@ -272,12 +288,7 @@ def _normalize_matrix_in_memory(
         X = matrix.tocsr(copy=True).astype(np.float64, copy=False)
 
         row_sums = np.asarray(X.sum(axis=1), dtype=np.float64).ravel()
-        scaling = np.divide(
-            target_sum,
-            row_sums,
-            out=np.zeros_like(row_sums, dtype=np.float64),
-            where=row_sums > 0,
-        )
+        scaling = _safe_row_scale(target_sum, row_sums)
 
         if X.nnz > 0:
             row_nnz = np.diff(X.indptr)
@@ -297,12 +308,7 @@ def _normalize_matrix_in_memory(
 
     arr = np.array(matrix, dtype=np.float64, copy=True)
     row_sums = arr.sum(axis=1)
-    scaling = np.divide(
-        target_sum,
-        row_sums,
-        out=np.zeros_like(row_sums, dtype=np.float64),
-        where=row_sums > 0,
-    )
+    scaling = _safe_row_scale(target_sum, row_sums)
 
     arr *= scaling[:, np.newaxis]
 
@@ -377,12 +383,7 @@ def _normalize_backed(
         return
 
     row_sums = source.row_sums(chunk_size=chunk_size)
-    scaling = np.divide(
-        target_sum,
-        row_sums,
-        out=np.zeros_like(row_sums, dtype=np.float64),
-        where=row_sums > 0,
-    )
+    scaling = _safe_row_scale(target_sum, row_sums)
     log_scale = None if not log_transform else (1.0 if log_base is None else 1.0 / np.log(log_base))
 
     def _normalize_block(block, start: int, end: int):
@@ -509,12 +510,7 @@ def _normalize_backed_streamed(
     This avoids the full-file copy and dtype recast of the legacy path.
     """
     row_sums = source.row_sums(chunk_size=chunk_size)
-    scaling = np.divide(
-        target_sum,
-        row_sums,
-        out=np.zeros_like(row_sums, dtype=np.float64),
-        where=row_sums > 0,
-    )
+    scaling = _safe_row_scale(target_sum, row_sums)
 
     log_scale = None
     if log_transform:
@@ -755,12 +751,7 @@ def _normalize_backed_csc_via_csr_rewrite(
 
     temp_name = f"__actionet_normalize_tmp_{target_name}"
     row_sums, row_nnz = _compute_backed_sparse_row_stats(source, chunk_size=chunk_size)
-    scaling = np.divide(
-        target_sum,
-        row_sums,
-        out=np.zeros_like(row_sums, dtype=np.float64),
-        where=row_sums > 0,
-    )
+    scaling = _safe_row_scale(target_sum, row_sums)
     log_scale = None if not log_transform else (1.0 if log_base is None else 1.0 / np.log(log_base))
 
     try:

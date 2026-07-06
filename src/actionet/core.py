@@ -307,6 +307,8 @@ def compute_network_diffusion(
     elif not X0.flags["C_CONTIGUOUS"]:
         X0 = np.ascontiguousarray(X0)
 
+    from .anndata_utils import norm_method_to_int
+
     X_diffused = _core.compute_network_diffusion(
         G=G,
         X0=X0,
@@ -314,7 +316,7 @@ def compute_network_diffusion(
         max_it=max_iter,
         thread_no=n_threads,
         approx=approx,
-        norm_method=2 if norm_method == "pagerank_sym" else 0,
+        norm_method=norm_method_to_int(norm_method),
         tol=tol,
     )
 

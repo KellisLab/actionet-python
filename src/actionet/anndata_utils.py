@@ -285,3 +285,18 @@ def norm_method_to_int(norm_method) -> int:
         return 2 if norm_method == "pagerank_sym" else 0
     return int(norm_method)
 
+
+def as_plain_labels(labels):
+    """Coerce a pandas Categorical / Series to a plain ndarray of its values.
+
+    A pandas ``Categorical`` (or any array-like exposing ``.categories``)
+    carries a category order that can differ from lexicographic. Downstream
+    code that re-builds a Categorical from the raw values needs the plain
+    values so the rebuilt Categorical uses a deterministic (lexicographic)
+    order. This helper is a no-op for objects that don't expose
+    ``.categories``.
+    """
+    if hasattr(labels, "categories"):
+        return np.asarray(labels)
+    return labels
+

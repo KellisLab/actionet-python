@@ -138,24 +138,12 @@ py::dict merge_archetypes(py::array_t<double> S_r, py::array_t<double> C_stacked
 
     py::dict out;
     // Return 0-indexed for Python
-    auto selected_arr = py::array_t<int>(results.selected_archetypes.n_elem);
-    auto selected_buf = selected_arr.request();
-    int* selected_ptr = static_cast<int*>(selected_buf.ptr);
-    for (size_t i = 0; i < results.selected_archetypes.n_elem; ++i) {
-        selected_ptr[i] = static_cast<int>(results.selected_archetypes(i));
-    }
-    out["selected_archetypes"] = selected_arr;
+    out["selected_archetypes"] = arma_uvec_to_numpy<int>(results.selected_archetypes);
 
     out["C_merged"] = arma_mat_to_numpy(results.C_merged);
     out["H_merged"] = arma_mat_to_numpy(results.H_merged);
 
-    auto assigned_arr = py::array_t<int>(results.assigned_archetypes.n_elem);
-    auto assigned_buf = assigned_arr.request();
-    int* assigned_ptr = static_cast<int*>(assigned_buf.ptr);
-    for (size_t i = 0; i < results.assigned_archetypes.n_elem; ++i) {
-        assigned_ptr[i] = static_cast<int>(results.assigned_archetypes(i));
-    }
-    out["assigned_archetypes"] = assigned_arr;
+    out["assigned_archetypes"] = arma_uvec_to_numpy<int>(results.assigned_archetypes);
 
     return out;
 }
@@ -244,16 +232,9 @@ py::dict run_spa(py::array_t<double> A, int k) {
         res = actionet::runSPA(A_mat, k);
     }
 
-    // Convert to 0-indexed for Python
-    auto cols_arr = py::array_t<int>(k);
-    auto cols_buf = cols_arr.request();
-    int* cols_ptr = static_cast<int*>(cols_buf.ptr);
-    for (int i = 0; i < k; i++) {
-        cols_ptr[i] = static_cast<int>(res.selected_cols(i));
-    }
-
     py::dict out;
-    out["selected_cols"] = cols_arr;
+    // Return 0-indexed for Python
+    out["selected_cols"] = arma_uvec_to_numpy<int>(res.selected_cols);
     out["norms"] = arma_vec_to_numpy(res.column_norms);
 
     return out;
