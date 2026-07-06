@@ -89,7 +89,7 @@ def _create_backed_operator(
     io_target_chunk_bytes: Optional[int] = None,
     n_threads: Optional[int] = None,
 ):
-    from . import _core
+    from .. import _core
 
     kwargs = {
         "file_path": file_path,
@@ -263,7 +263,7 @@ def open_backed_operator_for(
     Yields the backed operator handle for use inside a ``with`` block.
     """
     if lazy_transform is not None:
-        from ._matrix_source import MatrixSource
+        from .matrix_source import MatrixSource
         from .lazy_transform import _resolve_lazy_backed_transform
 
         if source is None:

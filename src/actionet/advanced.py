@@ -7,7 +7,7 @@ import scipy.sparse as sp
 from anndata import AnnData
 
 from . import _core
-from ._backed_persist import persist_updates
+from .io.persist import persist_updates
 
 
 def run_archetypal_analysis(

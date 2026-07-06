@@ -277,7 +277,7 @@ def matrix_sums(
     if axis not in (0, 1, None):
         raise ValueError("axis must be 0, 1, or None.")
 
-    from ._matrix_source import MatrixSource
+    from .io.matrix_source import MatrixSource
     source = MatrixSource(adata, layer=layer)
 
     if nonzero:

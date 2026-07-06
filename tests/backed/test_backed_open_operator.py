@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 try:
-    import actionet.backed_io as backed_io
+    import actionet.io.operator as backed_io
 
     _has_actionet = True
 except Exception:

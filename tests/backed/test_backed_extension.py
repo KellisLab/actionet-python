@@ -19,7 +19,7 @@ import warnings
 
 import actionet as an
 from actionet import _core
-from actionet._matrix_source import MatrixSource
+from actionet.io.matrix_source import MatrixSource
 
 from .conftest import make_test_adata, open_backed, MatrixLike
 

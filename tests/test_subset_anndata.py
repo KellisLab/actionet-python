@@ -13,7 +13,7 @@ import anndata as ad
 import os
 
 import actionet
-import actionet._backed_persist as _backed_persist
+import actionet.io.subset as _backed_persist
 
 
 # ---------------------------------------------------------------------------

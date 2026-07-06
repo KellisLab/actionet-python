@@ -22,7 +22,7 @@ from .core import (
     compute_network_diffusion,
     layout_network,
 )
-from .lazy_transform import LazyTransform, create_lazy_transform
+from .io.lazy_transform import LazyTransform, create_lazy_transform
 from .reduction import (
     reduce_kernel,
     reduce_kernel_from_svd,
@@ -92,13 +92,12 @@ from .preprocessing import (
     decompress_backed_storage,
 )
 
-from ._backed_persist import (
-    checkpoint_backed,
+from .io.persist import (
     get_auto_persist,
-    materialize_backed,
     set_auto_persist,
-    subset_backed_inplace,
 )
+from .io.checkpoint import checkpoint_backed
+from .io.subset import materialize_backed, subset_backed_inplace
 
 from .tools import (
     scale,

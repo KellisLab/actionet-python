@@ -7,11 +7,11 @@ import h5py
 import pandas as pd
 import pytest
 
-from actionet._backed_persist import (
-    checkpoint_backed,
+from actionet.io.persist import (
     is_backed_adata,
     persist_updates,
 )
+from actionet.io.checkpoint import checkpoint_backed
 
 from .conftest import make_test_adata, open_backed
 

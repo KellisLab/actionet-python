@@ -12,7 +12,7 @@ from pandas.api.types import is_string_dtype
 from scipy import sparse
 import warnings
 
-from .._backed_compression import write_sparse_csr_group_attrs
+from .compression import write_sparse_csr_group_attrs
 
 
 class ValidationError(Exception):

@@ -4,7 +4,7 @@ import numpy as np
 import pytest
 import actionet as an
 import actionet.core as actionet_core
-from actionet import backed_io
+from actionet.io import operator as backed_io
 
 from .conftest import make_test_adata, open_backed
 

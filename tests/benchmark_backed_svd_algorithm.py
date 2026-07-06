@@ -238,7 +238,7 @@ def _make_backed_copy(src_path: Path, work_dir: Path, label: str) -> Path:
 
 def _decompress_if_needed(adata: ad.AnnData) -> None:
     try:
-        from actionet._backed_compression import (
+        from actionet.io.compression import (
             get_storage_metadata_from_adata,
             is_compressed_storage,
         )

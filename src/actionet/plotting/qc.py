@@ -12,8 +12,8 @@ from anndata import AnnData
 from .utils import build_discrete_color_map, sort_categories
 
 if TYPE_CHECKING:
-    from .._matrix_source import MatrixSource
-    from ..lazy_transform import LazyTransform
+    from ..io.matrix_source import MatrixSource
+    from ..io.lazy_transform import LazyTransform
 
 
 # ---------------------------------------------------------------------------
@@ -250,8 +250,8 @@ def get_feature_abundance(
     ValueError
         On parameter conflicts or missing keys.
     """
-    from .._matrix_source import MatrixSource
-    from ..lazy_transform import _validate_lazy_transform, _resolve_lazy_backed_transform
+    from ..io.matrix_source import MatrixSource
+    from ..io.lazy_transform import _validate_lazy_transform, _resolve_lazy_backed_transform
 
     if features == "all" and metric != "counts":
         raise ValueError(

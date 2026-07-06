@@ -12,10 +12,10 @@ from .specificity import (
     _cluster_names_for_specificity_labels,
     compute_feature_specificity,
 )
-from .lazy_transform import LazyTransform, _validate_lazy_transform
-from .backed_io import open_backed_operator_for
+from .io.lazy_transform import LazyTransform, _validate_lazy_transform
+from .io.operator import open_backed_operator_for
 from . import _core
-from ._matrix_source import MatrixSource
+from .io.matrix_source import MatrixSource
 from .anndata_utils import as_plain_labels
 
 

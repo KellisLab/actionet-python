@@ -300,7 +300,7 @@ def test_backed_guide_call_handles_retryable_open_conflict(tmp_path, monkeypatch
     adata.write_h5ad(path)
     adata_backed = ad.read_h5ad(path, backed="r+")
 
-    import actionet.backed_io as backed_io
+    import actionet.io.operator as backed_io
 
     sentinel = object()
     create_calls = {"count": 0}

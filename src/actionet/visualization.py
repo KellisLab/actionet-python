@@ -6,7 +6,7 @@ from anndata import AnnData
 from scipy import sparse as sp
 
 from . import _core
-from ._backed_persist import persist_updates
+from .io.persist import persist_updates
 
 
 def compute_node_colors(

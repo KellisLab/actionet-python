@@ -10,9 +10,9 @@ from anndata import AnnData
 
 from ..anndata_utils import anndata_to_matrix
 from ..imputation import impute_features
-from .._matrix_source import MatrixSource
-from ..backed_io import open_backed_operator_for
-from ..lazy_transform import LazyTransform
+from ..io.matrix_source import MatrixSource
+from ..io.operator import open_backed_operator_for
+from ..io.lazy_transform import LazyTransform
 from .. import _core
 from .umap import (
     _prepare_umap_context,

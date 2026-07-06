@@ -11,8 +11,8 @@ import numpy as np
 import scipy.sparse as sp
 from anndata import AnnData
 
-from ._matrix_source import MatrixSource
-from .backed_io import _backed_group_path
+from .matrix_source import MatrixSource
+from .operator import _backed_group_path
 
 
 class LazyTransform:

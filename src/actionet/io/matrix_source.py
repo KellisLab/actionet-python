@@ -17,7 +17,7 @@ import numpy as np
 import scipy.sparse as sp
 from anndata import AnnData
 
-from ._backed_compression import sparse_group_format
+from .compression import sparse_group_format
 
 
 def _is_sparse_matrix_like(X: object) -> bool:
@@ -573,8 +573,8 @@ class MatrixSource:
         if feature_indices.ndim != 1:
             raise ValueError("feature_indices must be a 1D sequence")
 
-        from . import _core
-        from .backed_io import open_backed_operator_for
+        from .. import _core
+        from .operator import open_backed_operator_for
 
         with open_backed_operator_for(
             self.adata,

@@ -78,15 +78,15 @@ add_subdirectory("${LIBACTIONET_DIR}")
 
 # Define Python wrapper sources
 set(WRAPPER_SOURCES
-    src/actionet/_core.cpp
-    src/actionet/wp_utils.cpp
-    src/actionet/wp_action.cpp
-    src/actionet/wp_network.cpp
-    src/actionet/wp_annotation.cpp
-    src/actionet/wp_decomposition.cpp
-    src/actionet/wp_io.cpp
-    src/actionet/wp_tools.cpp
-    src/actionet/wp_visualization.cpp
+    src/actionet/bindings/_core.cpp
+    src/actionet/bindings/wp_utils.cpp
+    src/actionet/bindings/wp_action.cpp
+    src/actionet/bindings/wp_network.cpp
+    src/actionet/bindings/wp_annotation.cpp
+    src/actionet/bindings/wp_decomposition.cpp
+    src/actionet/bindings/wp_io.cpp
+    src/actionet/bindings/wp_tools.cpp
+    src/actionet/bindings/wp_visualization.cpp
 )
 
 # Create pybind11 extension module

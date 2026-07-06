@@ -134,8 +134,8 @@ class TestImputeFeaturesParity:
 def test_annotate_cells_backed_handles_retryable_open_conflict(tmp_path, monkeypatch):
     import actionet as an
     import actionet.annotation as an_annotation
-    import actionet.backed_io as backed_io
-    import actionet.lazy_transform as lazy_transform_mod
+    import actionet.io.operator as backed_io
+    import actionet.io.lazy_transform as lazy_transform_mod
 
     adata = make_test_adata(n_cells=32, n_genes=36, sparse_fmt="csr", seed=123)
     adata.obsp["actionet"] = sp.eye(adata.n_obs, format="csr")

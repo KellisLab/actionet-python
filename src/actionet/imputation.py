@@ -7,9 +7,9 @@ from anndata import AnnData
 import pandas as pd
 from . import _core
 from .anndata_utils import anndata_to_matrix
-from ._matrix_source import MatrixSource
-from .backed_io import open_backed_operator_for
-from .lazy_transform import (
+from .io.matrix_source import MatrixSource
+from .io.operator import open_backed_operator_for
+from .io.lazy_transform import (
     LazyTransform,
     _validate_lazy_transform,
 )

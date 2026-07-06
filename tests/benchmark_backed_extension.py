@@ -176,7 +176,7 @@ def run_workflow_in_process(
         import shutil
         shutil.copy2(str(src_path), str(backed_copy_path))
         adata = ad.read_h5ad(str(backed_copy_path), backed="r+")
-        from actionet._backed_compression import (
+        from actionet.io.compression import (
             get_storage_metadata_from_adata, is_compressed_storage,
         )
         if is_compressed_storage(get_storage_metadata_from_adata(adata)):
@@ -783,7 +783,7 @@ def run_reduction_sweep_in_process(
         backed_copy_path = work_dir / f"_red_{case_id}.h5ad"
         shutil.copy2(str(src_path), str(backed_copy_path))
         adata = ad.read_h5ad(str(backed_copy_path), backed="r+")
-        from actionet._backed_compression import (
+        from actionet.io.compression import (
             get_storage_metadata_from_adata, is_compressed_storage,
         )
         if is_compressed_storage(get_storage_metadata_from_adata(adata)):

@@ -15,12 +15,14 @@ from anndata import AnnData
 from scipy.io import mmread
 from scipy.sparse import csr_matrix, issparse
 
-from ._backed_compression import sparse_group_format
-from ._backed_persist import (
+from .io.compression import sparse_group_format
+from .io.persist import (
     is_backed_adata,
     is_writable_backed,
-    copy_h5_group,
     _refresh_backed_handle,
+)
+from .io.checkpoint import copy_h5_group
+from .io.subset import (
     _adaptive_sparse_chunk_size,
     _write_filtered_backed,
     _normalize_index_array,
@@ -29,7 +31,7 @@ from ._backed_persist import (
     materialize_backed,
     subset_backed_inplace,
 )
-from ._matrix_source import MatrixSource
+from .io.matrix_source import MatrixSource
 
 
 def _safe_row_scale(target_sum: float, row_sums: np.ndarray) -> np.ndarray:

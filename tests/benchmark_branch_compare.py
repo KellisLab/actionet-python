@@ -1258,7 +1258,7 @@ def internal_run_case(args: argparse.Namespace) -> int:
     import actionet as an
     import actionet.core as an_core
     from actionet.tools import scale as scale_coords
-    from actionet._backed_compression import get_storage_metadata_from_adata, is_compressed_storage
+    from actionet.io.compression import get_storage_metadata_from_adata, is_compressed_storage
 
     config_path = Path(args.config).resolve()
     with config_path.open("r", encoding="utf-8") as handle:

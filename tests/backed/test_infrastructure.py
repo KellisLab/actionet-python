@@ -6,8 +6,8 @@ import anndata as ad
 import pandas as pd
 import pytest
 
-from actionet._matrix_source import MatrixSource
-from actionet._backed_persist import (
+from actionet.io.matrix_source import MatrixSource
+from actionet.io.persist import (
     is_backed_adata,
     persist_updates,
     apply_inmemory_updates,
@@ -246,7 +246,7 @@ class TestBackedPersist:
 
     def test_persist_updates_backed_dataframe_rejected_in_obsp(self, tmp_path):
         """Passing a DataFrame to obsp should raise TypeError."""
-        from actionet.experimental._anndata_io import _write_matrix
+        from actionet.io.anndata_io import _write_matrix
         import h5py
 
         n = 6
@@ -266,23 +266,23 @@ class TestValidation:
     """Test _anndata_io validation accepts various input types."""
 
     def test_validate_obs_column_accepts_ndarray(self):
-        from actionet.experimental._anndata_io import _validate_obs_var_column
+        from actionet.io.anndata_io import _validate_obs_var_column
         arr = np.array([1.0, 2.0, 3.0])
         # Should not raise
         _validate_obs_var_column("test", arr, 3, "obs", verbose=False)
 
     def test_validate_obs_column_accepts_list(self):
-        from actionet.experimental._anndata_io import _validate_obs_var_column
+        from actionet.io.anndata_io import _validate_obs_var_column
         vals = [1, 2, 3]
         _validate_obs_var_column("test", vals, 3, "obs", verbose=False)
 
     def test_validate_obs_column_accepts_series(self):
-        from actionet.experimental._anndata_io import _validate_obs_var_column
+        from actionet.io.anndata_io import _validate_obs_var_column
         s = pd.Series([1, 2, 3])
         _validate_obs_var_column("test", s, 3, "obs", verbose=False)
 
     def test_validate_obs_column_length_mismatch(self):
-        from actionet.experimental._anndata_io import (
+        from actionet.io.anndata_io import (
             _validate_obs_var_column,
             ValidationError,
         )
@@ -290,17 +290,17 @@ class TestValidation:
             _validate_obs_var_column("test", np.array([1, 2]), 3, "obs", verbose=False)
 
     def test_validate_matrix_accepts_sparse(self):
-        from actionet.experimental._anndata_io import _validate_matrix
+        from actionet.io.anndata_io import _validate_matrix
         mat = sp.csr_matrix(np.eye(5))
         _validate_matrix("test", mat, 5, "obsm", "obs", verbose=False)
 
     def test_validate_matrix_accepts_dense(self):
-        from actionet.experimental._anndata_io import _validate_matrix
+        from actionet.io.anndata_io import _validate_matrix
         mat = np.eye(5)
         _validate_matrix("test", mat, 5, "obsm", "obs", verbose=False)
 
     def test_validate_matrix_rejects_wrong_dim(self):
-        from actionet.experimental._anndata_io import (
+        from actionet.io.anndata_io import (
             _validate_matrix,
             ValidationError,
         )
@@ -309,12 +309,12 @@ class TestValidation:
             _validate_matrix("test", mat, 3, "obsm", "obs", verbose=False)
 
     def test_validate_matrix_accepts_dataframe(self):
-        from actionet.experimental._anndata_io import _validate_matrix
+        from actionet.io.anndata_io import _validate_matrix
         df = pd.DataFrame({"a": [1.0, 2.0, 3.0], "b": [4.0, 5.0, 6.0]})
         _validate_matrix("test", df, 3, "obsm", "obs", verbose=False)
 
     def test_validate_matrix_dataframe_nan_names_column(self):
-        from actionet.experimental._anndata_io import (
+        from actionet.io.anndata_io import (
             _validate_matrix,
             ValidationError,
         )
@@ -323,7 +323,7 @@ class TestValidation:
             _validate_matrix("test", df, 3, "obsm", "obs", verbose=False)
 
     def test_validate_matrix_dataframe_shape_mismatch(self):
-        from actionet.experimental._anndata_io import (
+        from actionet.io.anndata_io import (
             _validate_matrix,
             ValidationError,
         )

@@ -13,11 +13,11 @@ import scipy.sparse as sp
 from anndata import AnnData
 
 from . import _core
-from ._backed_persist import persist_updates
-from ._matrix_source import MatrixSource
+from .io.persist import persist_updates
+from .io.matrix_source import MatrixSource
 from .anndata_utils import anndata_to_matrix, as_plain_labels
-from .backed_io import open_backed_operator_for
-from .lazy_transform import (
+from .io.operator import open_backed_operator_for
+from .io.lazy_transform import (
     LazyTransform,
     _resolve_lazy_backed_transform,
     _validate_lazy_transform,

@@ -10,7 +10,7 @@ import pandas as pd
 import anndata as ad
 import pytest
 
-from actionet._backed_persist import persist_updates, is_backed_adata
+from actionet.io.persist import persist_updates, is_backed_adata
 from .conftest import make_test_adata, open_backed
 
 

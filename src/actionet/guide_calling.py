@@ -16,9 +16,9 @@ import scipy.sparse as sp
 from anndata import AnnData
 
 from . import _core
-from ._matrix_source import MatrixSource
+from .io.matrix_source import MatrixSource
 from .anndata_utils import anndata_to_matrix
-from .backed_io import open_backed_operator_for
+from .io.operator import open_backed_operator_for
 
 
 ArrayLike1D = Union[np.ndarray, Sequence[float]]

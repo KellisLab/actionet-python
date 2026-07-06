@@ -8,7 +8,7 @@ from anndata import AnnData
 import numpy as np
 import scipy.sparse as sp
 
-from ._backed_persist import persist_updates
+from .io.persist import persist_updates
 
 
 def cluster_network(
