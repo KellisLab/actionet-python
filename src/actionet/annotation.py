@@ -1,5 +1,6 @@
 """Marker detection and annotation functions."""
 
+import warnings
 from typing import Optional, Union, Literal, Dict, List
 import numpy as np
 import pandas as pd
@@ -732,7 +733,6 @@ def annotate_clusters(
     # Check if we have pre-computed specificity or need to compute it
     if specificity_key is not None:
         if lazy_transform is not None:
-            import warnings
             warnings.warn(
                 "`lazy_transform` is ignored when `specificity_key` is provided "
                 "(feature specificity is read from adata.varm, not computed).",
@@ -955,6 +955,10 @@ def _encode_markers(
         raise ValueError("No markers in 'features_use'")
     if len(zero_cols) > 0:
         for idx in zero_cols:
-            print(f"Label '{label_names[idx]}' has no markers")
+            warnings.warn(
+                f"Label '{label_names[idx]}' has no markers",
+                UserWarning,
+                stacklevel=2,
+            )
 
     return X, label_names

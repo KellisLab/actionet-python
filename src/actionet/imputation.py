@@ -1,5 +1,6 @@
 """Gene expression imputation utilities."""
 
+import warnings
 from typing import Optional, Union, List, Literal
 import numpy as np
 import scipy.sparse as sp
@@ -139,10 +140,12 @@ def impute_features(
                 f"Archetype profiles '{archetype_profile_key}' not found in adata.varm. "
                 "Run compute_archetype_feature_specificity(adata) first."
             )
-        print(
+        warnings.warn(
             f"impute_features: method=archetypes | "
             f"profile=varm['{archetype_profile_key}'] | "
-            f"weights=obsm['{archetype_matrix_key}']"
+            f"weights=obsm['{archetype_matrix_key}']",
+            UserWarning,
+            stacklevel=2,
         )
         feat_profiles = adata.varm[archetype_profile_key]  # genes x archetypes
         Z = feat_profiles[feature_indices, :]               # matched_features x archetypes
@@ -158,10 +161,12 @@ def impute_features(
 
     resolve_network(adata, network_key)
 
-    print(
+    warnings.warn(
         f"impute_features: method={method} | "
         f"alpha={alpha} | network=obsp['{network_key}']"
-        + (f" | layer='{layer}'" if layer is not None else "")
+        + (f" | layer='{layer}'" if layer is not None else ""),
+        UserWarning,
+        stacklevel=2,
     )
 
     source = MatrixSource(adata, layer=layer)

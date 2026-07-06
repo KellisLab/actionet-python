@@ -160,7 +160,11 @@ def resolve_requested_features(
 
     if missing_names:
         ctx = f" ({context})" if context else ""
-        print(f"Features missing{ctx}: {', '.join(missing_names)}")
+        warnings.warn(
+            f"Features missing{ctx}: {', '.join(missing_names)}",
+            UserWarning,
+            stacklevel=2,
+        )
 
     if space.has_duplicates:
         hit_dups = [n for n in matched_names if n in space.duplicated_labels]
