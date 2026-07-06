@@ -40,8 +40,9 @@ def compute_node_colors(
     Returns
     -------
     AnnData or np.ndarray
-        If inplace=True, returns adata with colors added to obsm.
-        If inplace=False, returns (n_cells, 3) array of RGB colors.
+        If ``return_raw=False`` and *obj* is an AnnData, returns *obj* with
+        colors added under ``obsm[key_added]``.  Otherwise returns the
+        ``(n_cells, 3)`` array of RGB colors directly.
 
     Raises
     ------
@@ -73,7 +74,7 @@ def compute_node_colors(
         coordinates = obj.obsm[embedding_key]
     else:
         if isinstance(obj, sp.spmatrix):
-            coordinates = obj.todense()
+            coordinates = obj.toarray()
         else:
             coordinates = np.asarray(obj)
 

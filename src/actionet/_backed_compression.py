@@ -248,7 +248,12 @@ class CompressionPolicy:
 
     @classmethod
     def from_dict(cls, raw: Optional[Dict[str, Any]]) -> "CompressionPolicy":
-        """Build a policy from a legacy dict representation."""
+        """Build a policy from its dict representation.
+
+        Accepts the ``{"is_sparse": bool, "datasets": {...}}`` form used
+        by internal writer sites (see :func:`_as_compression_policy`).
+        Passing ``None`` or an empty dict yields :meth:`empty`.
+        """
         if not raw:
             return cls.empty()
         return cls(

@@ -76,6 +76,13 @@ def decompose_action(
         - H: List of H matrices for k=k_min to k_max
         - C_stacked: All C matrices column-stacked (n_cells x T)
         - H_stacked: All H matrices row-stacked (T x n_cells)
+
+    Notes
+    -----
+    ``H_stacked`` is emitted here as ``T x n_cells`` for compatibility with
+    the C++ core.  The higher-level :func:`~actionet.core.run_action` wrapper
+    exposes the transposed ``n_cells x archetypes`` orientation in
+    ``adata.obsm``.
     """
     return _core.decomp_action(S_r, k_min, k_max, max_iter, tolerance, n_threads)
 

@@ -350,6 +350,13 @@ def plot_feature_expression_raster(
     lazy_transform : LazyTransform, optional
         Pre-built lazy logcount transform for backed AnnData inputs.
         Create with :func:`~actionet.lazy_transform.create_lazy_transform`.
+
+    Returns
+    -------
+    matplotlib.figure.Figure or dict
+        A matplotlib ``Figure`` when ``single_plot=True`` (or when a single
+        feature is requested), otherwise a dict mapping feature name to the
+        corresponding raster plot returned by :func:`plot_umap_raster`.
     """
 
     requested = _flatten_features(features)

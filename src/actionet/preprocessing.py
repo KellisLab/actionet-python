@@ -1481,7 +1481,8 @@ def filter_anndata(
         Layer to compute statistics from.  ``None`` uses ``adata.X``.
     min_cells_per_feat : int or float or None, optional
         Minimum cells expressing a feature.  A ``float`` in ``(0, 1)``
-        is interpreted as a fraction of ``n_obs``.
+        is interpreted as a fraction of the current number of passing
+        cells (recomputed each iteration), not of the original ``n_obs``.
     min_feats_per_cell : int or None, optional
         Minimum features detected per cell.
     min_umis_per_cell : int or None, optional

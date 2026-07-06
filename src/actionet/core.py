@@ -39,6 +39,10 @@ def run_action(
         Maximum number of archetypes.
     reduction_key
         Key in adata.obsm containing reduced representation.
+    prenormalize
+        If True (default), L1-normalize the rows of ``adata.obsm[reduction_key]``
+        before decomposition. Disable only if the caller has already pre-scaled the
+        reduction.
     max_iter
         Maximum iterations for AA.
     tolerance
@@ -66,6 +70,12 @@ def run_action(
         Stacked archetype matrix (cells × archetypes).
     adata.obsm["H_merged"] : np.ndarray
         Merged archetype matrix (cells × archetypes, after merging similar archetypes).
+    adata.obsm["C_stacked"] : np.ndarray, optional
+        Stacked cell-archetype coefficient matrix (cells × archetypes).
+        Written only when ``return_c_matrices=True``.
+    adata.obsm["C_merged"] : np.ndarray, optional
+        Merged cell-archetype coefficient matrix (cells × archetypes).
+        Written only when ``return_c_matrices=True``.
     adata.obs["assigned_archetype"] : pd.Series or np.ndarray
         Cell-to-archetype assignments.
 

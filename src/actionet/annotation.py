@@ -58,7 +58,7 @@ def find_markers(
     layer: Optional[str] = None,
     n_threads: int = 0,
     result: Literal["table", "ranks", "scores"] = "table",
-    return_type: Literal["dataframe", "dict", ""] = "dataframe",
+    return_type: Literal["dataframe", "dict"] = "dataframe",
     backed_chunk_size: int = 4096,
     lazy_transform: Optional[LazyTransform] = None,
 ) -> Union[pd.DataFrame, Dict[str, np.ndarray]]:
@@ -292,7 +292,7 @@ def annotate_cells(
         - dict: Keys are cell types, values are lists of marker genes (with optional +/- suffix)
         - DataFrame: Wide format with columns as cell types, values as gene names (as returned by find_markers)
         - ndarray: Binary/weighted matrix (features × cell types)
-    method : {"vision", "actionet"}, optional (default: "actionet")
+    method : {"vision", "actionet"}, optional (default: "vision")
         Method for computing feature statistics.
     features_use : str, optional
         Column name in adata.var containing feature labels matching markers.
