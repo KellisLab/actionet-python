@@ -2,7 +2,7 @@
 
 Batch-effect correction and basal-expression correction routines.
 
-::: actionet.batch_correction
+::: actionet.tools.batch_correction
     options:
       members:
         - correct_batch_effect

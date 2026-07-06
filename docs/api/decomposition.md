@@ -1,8 +1,8 @@
-# Reduction
+# Decomposition
 
 Kernel reduction and SVD routines used to prepare data for ACTION.
 
-::: actionet.reduction
+::: actionet.decomposition
     options:
       members:
         - reduce_kernel

@@ -41,7 +41,7 @@ systematic cleanup to:
 │  Python API  (src/actionet/*.py)                             │
 │  User-facing functions, AnnData integration, orchestration   │
 ├──────────────────────────────────────────────────────────────┤
-│  pybind11 Wrappers  (src/actionet/wp_*.cpp + _core.cpp)      │
+│  pybind11 Wrappers  (src/actionet/bindings/*.cpp)            │
 │  Thin C++ → Python bridge; data conversion, lifetime mgmt    │
 ├──────────────────────────────────────────────────────────────┤
 │  libactionet C++ Core  (src/libactionet/)                    │
@@ -53,48 +53,40 @@ systematic cleanup to:
 
 ## Module Map — Python Package (`src/actionet/`)
 
-| Module | Lines | Role |
-|--------|------:|------|
-| `__init__.py` | 195 | Public API surface; re-exports from all modules |
-| `core.py` | 731 | Primary entry points: `run_action`, `build_network`, layout, centrality, diffusion |
-| `reduction.py` | 581 | SVD, kernel reduction, smoothing |
-| `advanced.py` | 430 | Archetypal analysis, simplex regression, SPA, label propagation |
-| `annotation.py` | 969 | Marker finding, cell/cluster annotation |
-| `specificity.py` | 443 | Feature specificity scores |
-| `clustering.py` | 232 | Network-based clustering |
-| `preprocessing.py` | 1582 | Import, filter, normalize, backed decompression |
-| `_backed_persist.py` | 1446 | Backed HDF5 checkpointing, subsetting, materialization |
-| `backed_io.py` | 336 | Backed I/O helpers |
-| `_backed_compression.py` | 165 | Compression utilities for backed storage |
-| `_matrix_source.py` | 774 | Unified matrix access abstraction (dense/sparse/backed) |
-| `lazy_transform.py` | 444 | Lazy matrix transform pipeline (deferred normalization, etc.) |
-| `batch_correction.py` | 319 | Batch effect and basal expression correction |
-| `imputation.py` | 231 | Network-based feature imputation |
-| `anndata_utils.py` | 334 | AnnData ↔ matrix conversions, result injection |
-| `tools.py` | 294 | Scale, aggregate, matrix sums |
-| `guide_calling.py` | 765 | Perturb-seq guide calling (GMM fitting, thresholds) |
-| `pipeline.py` | 285 | End-to-end `run_actionet` convenience pipeline |
-| `visualization.py` | 96 | Node color computation |
-| `_feature_lookup.py` | 162 | Feature name resolution |
-| **plotting/** | 3595 | Plotting subpackage (UMAP, QC, feature expression) |
-| `experimental/` | — | Experimental/unstable features (`_anndata_io.py`) |
-| `_data/` | — | Bundled data/resources |
+The package mirrors the `libactionet` C++ subpackage layout. Each subpackage
+below corresponds to a `libactionet/src/<name>/` directory.
+
+| Subpackage / File | Role |
+|-------------------|------|
+| `__init__.py` | Public API surface; re-exports from all subpackages |
+| `pipeline.py` | End-to-end `run_actionet` convenience pipeline |
+| `_feature_lookup.py` | Feature-name resolution (shared internal helper) |
+| **`action/`** | `run_action`, archetypal analysis, ACTION decomposition (`run_action.py`, `archetypes.py`) |
+| **`annotation/`** | Markers, cell/cluster annotation, feature specificity (`annotation.py`, `specificity.py`) |
+| **`bindings/`** | pybind11 wrappers (`wp_*.cpp`, `_core.cpp`, `wp_utils.{cpp,h}`) — built as `actionet._core` |
+| **`decomposition/`** | SVD algorithms + kernel reduction / smoothing (`svd.py`, `kernel.py`) |
+| **`io/`** | Backed HDF5 stack: matrix source, operator, lazy transform, persistence, checkpoint, subset |
+| **`network/`** | Network build, diffusion, centrality, clustering, imputation |
+| **`preprocessing/`** | Import, filter/subset, normalize, backed decompression (`io.py`, `filter.py`, `normalize.py`) |
+| **`tools/`** | Matrix utilities (`scale`, `aggregate`), AnnData helpers, batch correction, guide calling |
+| **`visualization/`** | Layout + node colors + all plotting variants (UMAP, QC, feature expression) — flat subpackage |
+| `_data/` | Bundled data / resources |
 
 ---
 
-## Module Map — pybind11 Wrappers (`src/actionet/wp_*.cpp`)
+## Module Map — pybind11 Wrappers (`src/actionet/bindings/`)
 
-| Wrapper File | Lines | C++ Module Bound |
-|--------------|------:|------------------|
-| `_core.cpp` | 28 | Module entry; dispatches to init_* functions |
-| `wp_action.cpp` | 367 | action (AA, ACTION decomp, reduce_kernel, SPA, simplex) |
-| `wp_decomposition.cpp` | 446 | decomposition (SVD algorithms, orthogonalization) |
-| `wp_network.cpp` | 169 | network (build, diffusion, measures, label propagation) |
-| `wp_annotation.cpp` | 497 | annotation (specificity, marker_stats) |
-| `wp_io.cpp` | 255 | io (backed HDF5 operators) |
-| `wp_tools.cpp` | 788 | tools (autocorrelation, enrichment, aggregation, xicor, MWM, guide calling) |
-| `wp_visualization.cpp` | 112 | visualization (layout, color map) |
-| `wp_utils.cpp` | 414 | Shared conversion utilities (arma ↔ numpy/scipy) |
+| Wrapper File | C++ Module Bound |
+|--------------|------------------|
+| `_core.cpp` | Module entry; dispatches to init_* functions |
+| `wp_action.cpp` | action (AA, ACTION decomp, reduce_kernel, SPA, simplex) |
+| `wp_decomposition.cpp` | decomposition (SVD algorithms, orthogonalization) |
+| `wp_network.cpp` | network (build, diffusion, measures, label propagation) |
+| `wp_annotation.cpp` | annotation (specificity, marker_stats) |
+| `wp_io.cpp` | io (backed HDF5 operators) |
+| `wp_tools.cpp` | tools (autocorrelation, enrichment, aggregation, xicor, MWM, guide calling) |
+| `wp_visualization.cpp` | visualization (layout, color map) |
+| `wp_utils.{cpp,h}` | Shared conversion utilities (arma ↔ numpy/scipy) |
 
 ---
 
@@ -196,20 +188,21 @@ Use the findings-first report template from the skill. Include:
 
 ## Suggested Audit Order
 
-Audit in dependency order (leaves first, roots last):
+Audit in dependency order (leaves first, roots last). Each row lists the
+mirrored Python subpackage alongside its libactionet counterpart.
 
 | Phase | Modules | Rationale |
 |-------|---------|-----------|
-| 1 | `utils_internal/` (C++) + `wp_utils.cpp` | Foundational helpers; used everywhere |
-| 2 | `decomposition/` (C++) + `wp_decomposition.cpp` + `reduction.py` | Core SVD; first GPU target |
-| 3 | `io/` (C++) + `wp_io.cpp` + `backed_io.py` + `_backed_persist.py` + `_matrix_source.py` + `_backed_compression.py` | Backed I/O stack; complex, large |
-| 4 | `action/` (C++) + `wp_action.cpp` + `core.py` + `advanced.py` | ACTION algorithm; second GPU target |
-| 5 | `network/` (C++) + `wp_network.cpp` + `core.py` (network parts) | Graph construction; third GPU target |
-| 6 | `annotation/` (C++) + `wp_annotation.cpp` + `annotation.py` + `specificity.py` | Annotation stack |
-| 7 | `tools/` (C++) + `wp_tools.cpp` + `tools.py` + `guide_calling.py` | Utility tools |
-| 8 | `visualization/` (C++) + `wp_visualization.cpp` + `visualization.py` + `plotting/` | Visualization + plotting |
-| 9 | `preprocessing.py` + `anndata_utils.py` + `lazy_transform.py` + `batch_correction.py` + `imputation.py` | Python-only orchestration |
-| 10 | `pipeline.py` + `clustering.py` + `__init__.py` | Top-level API surface |
+| 1 | `utils_internal/` (C++) + `bindings/wp_utils.cpp` | Foundational helpers; used everywhere |
+| 2 | `decomposition/` (C++) + `bindings/wp_decomposition.cpp` + Python `decomposition/` | Core SVD; first GPU target |
+| 3 | `io/` (C++) + `bindings/wp_io.cpp` + Python `io/` | Backed I/O stack; complex, large |
+| 4 | `action/` (C++) + `bindings/wp_action.cpp` + Python `action/` | ACTION algorithm; second GPU target |
+| 5 | `network/` (C++) + `bindings/wp_network.cpp` + Python `network/` | Graph construction; third GPU target |
+| 6 | `annotation/` (C++) + `bindings/wp_annotation.cpp` + Python `annotation/` | Annotation stack |
+| 7 | `tools/` (C++) + `bindings/wp_tools.cpp` + Python `tools/` | Utility tools + guide calling + batch correction |
+| 8 | `visualization/` (C++) + `bindings/wp_visualization.cpp` + Python `visualization/` | Visualization + plotting |
+| 9 | Python `preprocessing/` + `_feature_lookup.py` | Python-only orchestration |
+| 10 | `pipeline.py` + `__init__.py` | Top-level API surface |
 
 ---
 

@@ -223,13 +223,13 @@ def plot_feature_expression(
     features_use
         Column in ``adata.var`` to use for feature matching.
     method : {"diffusion", "pca", "archetypes", "none"}, default ``"diffusion"``
-        Imputation method passed to :func:`~actionet.imputation.impute_features`.
+        Imputation method passed to :func:`~actionet.network.impute_features`.
 
         - ``"diffusion"`` — network diffusion smoothing.
         - ``"pca"`` — PCA-based kernel smoothing.
         - ``"archetypes"`` — fast archetype interpolation; requires
           pre-computed profiles (run
-          :func:`~actionet.specificity.compute_archetype_feature_specificity`
+          :func:`~actionet.annotation.compute_archetype_feature_specificity`
           first).
         - ``"none"`` — raw expression, no imputation.
 
@@ -365,13 +365,13 @@ def plot_feature_expression_raster(
     features_use
         Column in ``adata.var`` to use for feature matching.
     method : {"diffusion", "pca", "archetypes", "none"}, default ``"diffusion"``
-        Imputation method passed to :func:`~actionet.imputation.impute_features`.
+        Imputation method passed to :func:`~actionet.network.impute_features`.
 
         - ``"diffusion"`` — network diffusion smoothing.
         - ``"pca"`` — PCA-based kernel smoothing.
         - ``"archetypes"`` — fast archetype interpolation; requires
           pre-computed profiles (run
-          :func:`~actionet.specificity.compute_archetype_feature_specificity`
+          :func:`~actionet.annotation.compute_archetype_feature_specificity`
           first).
         - ``"none"`` — raw expression, no imputation.
 

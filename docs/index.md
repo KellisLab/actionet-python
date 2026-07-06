@@ -52,8 +52,8 @@ For a picture of how the layers fit together, see [Architecture](architecture.md
 - New to ACTIONet? Start with **[Architecture](architecture.md)** for a 30-second
   mental model.
 - Running the full pipeline? See **[`run_actionet`](api/pipeline.md)**.
-- Building step-by-step? See **[Core](api/core.md)** and **[Reduction](api/reduction.md)**.
-- Plotting? See **[Plotting](api/plotting.md)**.
+- Building step-by-step? See **[Action](api/action.md)** and **[Decomposition](api/decomposition.md)**.
+- Plotting? See **[Visualization](api/visualization.md)**.
 
 ## Building the docs locally
 

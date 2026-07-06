@@ -84,19 +84,13 @@ nav:
   - API Reference:
       - Overview: api/index.md
       - Pipeline: api/pipeline.md
-      - Core: api/core.md
-      - Reduction: api/reduction.md
-      - Clustering: api/clustering.md
-      - Advanced: api/advanced.md
-      - Batch correction: api/batch_correction.md
-      - Imputation: api/imputation.md
-      - Specificity: api/specificity.md
+      - Action: api/action.md
+      - Decomposition: api/decomposition.md
+      - Network: api/network.md
       - Annotation: api/annotation.md
       - Preprocessing: api/preprocessing.md
-      - AnnData utils: api/anndata_utils.md
-      - Backed persistence: api/backed.md
       - Visualization: api/visualization.md
-      - Plotting: api/plotting.md
       - Tools: api/tools.md
+      - Batch correction: api/batch_correction.md
       - Guide calling: api/guide_calling.md
-      - Lazy transform: api/lazy_transform.md
+      - I/O and backed persistence: api/io.md

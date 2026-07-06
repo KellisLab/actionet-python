@@ -1,10 +1,13 @@
 """ACTIONet: Single-cell multi-resolution data analysis toolkit.
 
-Python bindings for the ACTIONet C++ backend (libactionet) via pybind11.
-Uses AnnData as the core data container.
+Python front-end for the ACTIONet C++ backend (libactionet) via pybind11.
+Uses AnnData as the primary data container.
 
 System build requirements: CMake >= 3.19, C++17 compiler, BLAS/LAPACK,
 HDF5 (C library), and OpenMP.
+
+The public API is defined by ``__all__`` below.  Everything else is
+implementation detail and may change without notice.
 """
 
 from importlib.metadata import version, PackageNotFoundError
@@ -14,13 +17,34 @@ try:
 except PackageNotFoundError:
     __version__ = "unknown"
 
-# Import will happen after building the C++ extension
 from .action import (
+    collect_archetypes,
+    compute_archetype_centrality,
+    decompose_action,
+    merge_archetypes,
     run_action,
+    run_archetypal_analysis,
+    run_label_propagation,
+    run_simplex_regression,
+    run_spa,
 )
-from .visualization import (
-    layout_network,
+from .annotation import (
+    annotate_cells,
+    annotate_clusters,
+    compute_archetype_feature_specificity,
+    compute_feature_specificity,
+    find_markers,
 )
+from .decomposition import (
+    reduce_kernel,
+    reduce_kernel_from_svd,
+    run_svd,
+    smooth_kernel,
+)
+from .io.checkpoint import checkpoint_backed
+from .io.lazy_transform import LazyTransform, create_lazy_transform
+from .io.persist import get_auto_persist, set_auto_persist
+from .io.subset import materialize_backed, subset_backed_inplace
 from .network import (
     build_network,
     cluster_network,
@@ -28,46 +52,34 @@ from .network import (
     compute_network_diffusion,
     impute_features,
 )
-from .io.lazy_transform import LazyTransform, create_lazy_transform
-from .decomposition import (
-    reduce_kernel,
-    reduce_kernel_from_svd,
-    run_svd,
-    smooth_kernel,
-)
-from .annotation import (
-    compute_feature_specificity,
-    compute_archetype_feature_specificity,
+from .pipeline import run_actionet
+from .preprocessing import (
+    apply_filter,
+    compute_filter_masks,
+    decompress_backed_storage,
+    filter_anndata,
+    import_anndata_generic,
+    normalize_anndata,
+    subset_anndata,
 )
 from .tools import (
     aggregate_anndata,
+    aggregate_matrix,
     anndata_to_matrix,
     correct_basal_expression,
     correct_batch_effect,
     derive_guide_thresholds,
     fit_guides_gmm,
     guide_call_gmm,
+    matrix_sums,
+    scale,
     sweep_guide_thresholds,
-)
-from .action import (
-    run_archetypal_analysis,
-    decompose_action,
-    collect_archetypes,
-    merge_archetypes,
-    run_simplex_regression,
-    run_spa,
-    run_label_propagation,
-    compute_archetype_centrality,
-)
-from .annotation import (
-    find_markers,
-    annotate_cells,
-    annotate_clusters,
 )
 from .visualization import (
     compute_node_colors,
     get_feature_abundance,
     get_mito_feats,
+    layout_network,
     plot_feature_expression,
     plot_feature_expression_raster,
     plot_mito_violin,
@@ -78,72 +90,63 @@ from .visualization import (
     plot_umap_interactive,
     plot_umap_raster,
 )
-from .pipeline import (
-    run_actionet,
-)
-
-from .preprocessing import (
-    import_anndata_generic,
-    filter_anndata,
-    compute_filter_masks,
-    apply_filter,
-    subset_anndata,
-    normalize_anndata,
-    decompress_backed_storage,
-)
-
-from .io.persist import (
-    get_auto_persist,
-    set_auto_persist,
-)
-from .io.checkpoint import checkpoint_backed
-from .io.subset import materialize_backed, subset_backed_inplace
-
-from .tools import (
-    scale,
-    aggregate_matrix,
-    matrix_sums,
-)
 
 __all__ = [
     "__version__",
-    # Core functions
-    "LazyTransform",
-    "create_lazy_transform",
+    # Pipeline
+    "run_actionet",
+    # Action (decomposition + archetypes)
+    "collect_archetypes",
+    "compute_archetype_centrality",
+    "decompose_action",
+    "merge_archetypes",
+    "run_action",
+    "run_archetypal_analysis",
+    "run_label_propagation",
+    "run_simplex_regression",
+    "run_spa",
+    # Annotation (markers + specificity)
+    "annotate_cells",
+    "annotate_clusters",
+    "compute_archetype_feature_specificity",
+    "compute_feature_specificity",
+    "find_markers",
+    # Decomposition (kernel + SVD)
     "reduce_kernel",
     "reduce_kernel_from_svd",
-    "run_action",
+    "run_svd",
+    "smooth_kernel",
+    # Network
     "build_network",
     "cluster_network",
     "compute_network_centrality",
     "compute_network_diffusion",
-    "compute_feature_specificity",
-    "compute_archetype_feature_specificity",
-    "layout_network",
-    "run_svd",
-    # Batch correction
-    "correct_batch_effect",
-    "correct_basal_expression",
-    # Imputation
     "impute_features",
-    "smooth_kernel",
-    # Advanced functions
-    "run_archetypal_analysis",
-    "decompose_action",
-    "collect_archetypes",
-    "merge_archetypes",
-    "run_simplex_regression",
-    "run_spa",
-    "run_label_propagation",
-    "compute_archetype_centrality",
-    # Annotation
-    "find_markers",
-    "annotate_cells",
-    "annotate_clusters",
-    # Visualization
+    # Preprocessing
+    "apply_filter",
+    "compute_filter_masks",
+    "decompress_backed_storage",
+    "filter_anndata",
+    "import_anndata_generic",
+    "normalize_anndata",
+    "subset_anndata",
+    # Tools (matrix utilities, batch correction, guide calling)
+    "aggregate_anndata",
+    "aggregate_matrix",
+    "anndata_to_matrix",
+    "correct_basal_expression",
+    "correct_batch_effect",
+    "derive_guide_thresholds",
+    "fit_guides_gmm",
+    "guide_call_gmm",
+    "matrix_sums",
+    "scale",
+    "sweep_guide_thresholds",
+    # Visualization (layout + plotting)
     "compute_node_colors",
     "get_feature_abundance",
     "get_mito_feats",
+    "layout_network",
     "plot_feature_expression",
     "plot_feature_expression_raster",
     "plot_mito_violin",
@@ -153,25 +156,10 @@ __all__ = [
     "plot_umap",
     "plot_umap_interactive",
     "plot_umap_raster",
-    # Pipeline
-    "run_actionet",
-    # Utilities
-    "anndata_to_matrix",
-    "aggregate_anndata",
-    "aggregate_matrix",
-    "matrix_sums",
-    "fit_guides_gmm",
-    "derive_guide_thresholds",
-    "sweep_guide_thresholds",
-    "guide_call_gmm",
-    "import_anndata_generic",
-    "filter_anndata",
-    "compute_filter_masks",
-    "apply_filter",
-    "subset_anndata",
-    "normalize_anndata",
-    "decompress_backed_storage",
+    # I/O (lazy transform + backed persistence)
+    "LazyTransform",
     "checkpoint_backed",
+    "create_lazy_transform",
     "get_auto_persist",
     "materialize_backed",
     "set_auto_persist",

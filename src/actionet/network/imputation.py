@@ -46,7 +46,7 @@ def impute_features(
     - ``"archetypes"`` — fast archetype interpolation: each cell's imputed
       expression is a weighted combination of per-archetype average profiles.
       Requires pre-computed profiles in ``adata.varm`` (see
-      :func:`~actionet.specificity.compute_archetype_feature_specificity`).
+      :func:`~actionet.annotation.compute_archetype_feature_specificity`).
 
     Parameters
     ----------
@@ -80,7 +80,7 @@ def impute_features(
     archetype_profile_key : str, default ``"archetype_feat_profile"``
         Key in ``adata.varm`` containing per-archetype average expression
         profiles (genes x archetypes).  Written by
-        :func:`~actionet.specificity.compute_archetype_feature_specificity`
+        :func:`~actionet.annotation.compute_archetype_feature_specificity`
         with the default ``key_added="archetype"``.
         Used only by ``method="archetypes"``.
     archetype_matrix_key : str, default ``"H_merged"``
@@ -110,7 +110,7 @@ def impute_features(
 
     See Also
     --------
-    actionet.specificity.compute_archetype_feature_specificity :
+    actionet.annotation.compute_archetype_feature_specificity :
         Computes the per-archetype profiles required for ``method="archetypes"``.
     """
     from .._feature_lookup import resolve_feature_space, resolve_requested_features
