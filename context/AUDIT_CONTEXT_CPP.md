@@ -343,7 +343,6 @@ C++ module together with its binding interfaces.
 ### Phase 7: `tools/`
 - `guide_calling.cpp` (970 lines): largest tool; GMM fitting, complex
 - Heterogeneous collection: autocorrelation, enrichment, MWM, xicor
-- `guide_calling.hpp` noted as "not in include/" in prior context — verify
 
 ### Phase 8: `visualization/`
 - uwot integration: `UmapFactory`, `UwotArgs`, `OptimizerArgs` (header-heavy)
