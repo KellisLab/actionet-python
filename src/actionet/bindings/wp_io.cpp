@@ -36,6 +36,28 @@ namespace {
         const auto* ptr = static_cast<const double*>(buf.ptr);
         return std::vector<double>(ptr, ptr + static_cast<size_t>(buf.shape[0]));
     }
+
+    // Copy a 1-D int64 numpy array into an arma::uvec.  Consolidates the
+    // ``col_indices``/``row_indices`` copy loops that were previously
+    // duplicated inline in ``backed_take_columns``.
+    arma::uvec int64_array_to_uvec(const py::array_t<int64_t>& arr) {
+        auto buf = arr.request();
+        if (buf.ndim != 1) {
+            throw std::runtime_error(
+                "expected a 1D int64 array for backed index conversion");
+        }
+        const auto n = static_cast<arma::uword>(buf.size);
+        arma::uvec out(n);
+        const auto* ptr = static_cast<const int64_t*>(buf.ptr);
+        for (size_t i = 0; i < static_cast<size_t>(n); ++i) {
+            if (ptr[i] < 0) {
+                throw std::runtime_error(
+                    "backed index arrays must be non-negative");
+            }
+            out(i) = static_cast<arma::uword>(ptr[i]);
+        }
+        return out;
+    }
 } // namespace
 
 std::shared_ptr<actionet::MatrixOperator> create_backed_operator(
@@ -185,24 +207,12 @@ void init_io(py::module_ &m) {
                   throw std::runtime_error("backed_take_columns: operator is null");
               }
 
-              // Convert col_indices.
-              auto col_buf = col_indices_arr.request();
-              arma::uvec col_indices(static_cast<arma::uword>(col_buf.size));
-              auto* col_ptr = static_cast<int64_t*>(col_buf.ptr);
-              for (size_t i = 0; i < static_cast<size_t>(col_buf.size); ++i) {
-                  col_indices(i) = static_cast<arma::uword>(col_ptr[i]);
-              }
+              arma::uvec col_indices = int64_array_to_uvec(col_indices_arr);
 
-              // Convert optional row_indices.
               arma::uvec row_indices;
               if (!row_indices_obj.is_none()) {
                   py::array_t<int64_t> row_arr = row_indices_obj.cast<py::array_t<int64_t>>();
-                  auto row_buf = row_arr.request();
-                  row_indices.set_size(static_cast<arma::uword>(row_buf.size));
-                  auto* row_ptr = static_cast<int64_t*>(row_buf.ptr);
-                  for (size_t i = 0; i < static_cast<size_t>(row_buf.size); ++i) {
-                      row_indices(i) = static_cast<arma::uword>(row_ptr[i]);
-                  }
+                  row_indices = int64_array_to_uvec(row_arr);
               }
 
               if (prefer_sparse) {
