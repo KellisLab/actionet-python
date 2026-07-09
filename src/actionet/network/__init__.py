@@ -1,9 +1,7 @@
 """Cell-cell interaction network — construction, diffusion, centrality,
 clustering, and diffusion-based imputation.
 
-Mirrors ``libactionet``'s C++ ``network/`` module and absorbs the two
-former top-level Python modules ``clustering.py`` and ``imputation.py``
-that were network-first in their behavior.
+Python mirror of ``libactionet``'s C++ ``network/`` module.
 """
 
 from .build import build_network

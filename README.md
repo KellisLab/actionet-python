@@ -236,7 +236,7 @@ an.plot_qc_violin(
 ### Preprocessing
 
 ```python
-an.normalize_anndata(adata, target_sum=1e4, pseudocount=0.5, log_base=None)
+an.normalize_anndata(adata, target_sum=1e4, pseudocount=1.0, log_base=None)
 ```
 Normalize and log-transform count data. Stores normalized counts in `adata.layers['logcounts']`.
 
@@ -346,12 +346,6 @@ an.impute_features(adata, features=['GENE1', 'GENE2'],
 Impute gene expression using network diffusion.
 
 ```python
-an.impute_features_from_archetypes(adata, features=['GENE1', 'GENE2'],
-                          H_key='H_merged')
-```
-Impute expression from archetype profiles.
-
-```python
 an.smooth_kernel(adata, reduction_key='action',
                  smoothed_key='action_smoothed', alpha=0.85)
 ```
@@ -408,14 +402,13 @@ ACTIONet stores results in standard AnnData slots:
 | `runACTION()` | `an.run_action()` | ACTION decomposition |
 | `buildNetwork()` | `an.build_network()` | Network construction |
 | `computeNetworkDiffusion()` | `an.compute_network_diffusion()` | Network smoothing |
-| `compute_archetype_feature_specificity()` | `an.compute_feature_specificity()` | Marker genes |
+| `compute_archetype_feature_specificity()` | `an.compute_feature_specificity()` | Marker genes (label-based) |
 | `compute_archetype_feature_specificity()` | `an.compute_archetype_feature_specificity()` | Per-archetype specificity |
 | `layoutNetwork()` | `an.layout_network()` | UMAP/t-SNE layout |
 | `runSVD()` | `an.run_svd()` | SVD decomposition |
 | `orthogonalizeBatchEffect()` | `an.correct_batch_effect()` | Batch correction |
 | `orthogonalizeBasal()` | `an.correct_basal_expression()` | Basal correction |
 | `imputeFeatures()` | `an.impute_features()` | Network diffusion imputation |
-| `imputeFromArchetypes()` | `an.impute_features_from_archetypes()` | Archetype-based imputation |
 | `smoothKernel()` | `an.smooth_kernel()` | Kernel smoothing |
 | `findMarkers()` | `an.find_markers()` | Marker detection |
 | `annotateCells()` | `an.annotate_cells()` | Cell annotation |

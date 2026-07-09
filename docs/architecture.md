@@ -59,9 +59,10 @@ ecosystem.
 ## Backed / out-of-core mode
 
 For datasets that don't fit in RAM, several routines support **backed** mode
-via HDF5 streaming. See [Backed persistence](api/backed.md) and
-[Lazy transform](api/lazy_transform.md) for the Python surface, and the
-`libactionet` docs for the underlying streaming operators.
+via HDF5 streaming. See [I/O and backed persistence](api/io.md) for the Python
+surface (`LazyTransform`, `checkpoint_backed`, `materialize_backed`,
+`subset_backed_inplace`, and auto-persist controls), and the `libactionet` docs
+for the underlying streaming operators.
 
 ## GPU
 

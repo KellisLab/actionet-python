@@ -8,8 +8,10 @@ of ACTIONet:
   :func:`matrix_sums`.
 - :mod:`anndata` — :func:`anndata_to_matrix`, :func:`resolve_network`,
   :func:`norm_method_to_int`, :func:`as_plain_labels`.
-- :mod:`guide_calling` — CRISPR guide RNA assignment.
-- :mod:`batch_correction` — Harmony / MNN batch correction.
+- :mod:`guide_calling` — fit-first per-guide 2-component GMM guide-RNA
+  calling for perturb-seq (cells x guides).
+- :mod:`batch_correction` — orthogonalization-based batch-effect and
+  basal-expression correction on ACTIONet reductions.
 """
 
 from .aggregate import aggregate_anndata, aggregate_matrix, matrix_sums
