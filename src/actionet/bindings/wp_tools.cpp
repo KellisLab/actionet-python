@@ -337,6 +337,19 @@ py::object normalize_graph(py::object G, int norm_method = 0) {
     return arma_sparse_to_scipy(G_sp);
 }
 
+// Fused normalize + pre-normalization column-sums extraction. Test-support
+// binding for the two-arg overload; primary in-tree consumer is
+// prepareGraph_() in network_diffusion.cpp (called directly at the C++ layer).
+py::tuple normalize_graph_with_col_sums(py::object G, int norm_method = 0) {
+    arma::sp_mat G_sp = scipy_to_arma_sparse(G);
+    arma::vec col_sums;
+    {
+        py::gil_scoped_release release;
+        actionet::normalizeGraph(G_sp, norm_method, col_sums);
+    }
+    return py::make_tuple(arma_sparse_to_scipy(G_sp), arma_vec_to_numpy(col_sums));
+}
+
 // mwm =================================================================================================================
 
 py::array_t<double> mwm_hungarian(py::array_t<double> G) {
@@ -671,6 +684,11 @@ void init_tools(py::module_ &m) {
           py::arg("X"), py::arg("v"), py::arg("dim") = 0);
 
     m.def("normalize_graph", &normalize_graph, "Normalize graph",
+          py::arg("G"), py::arg("norm_method") = 0);
+
+    m.def("normalize_graph_with_col_sums", &normalize_graph_with_col_sums,
+          "Normalize graph in-place, also returning pre-normalization column sums. "
+          "Returns (G_normalized, col_sums).",
           py::arg("G"), py::arg("norm_method") = 0);
 
     // mwm
