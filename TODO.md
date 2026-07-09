@@ -1,4 +1,5 @@
 ## Primary
+* Delete PRIMME sources, headers, vendored tree, CMake wiring, `ALG_PRIMME`, and remaining test/wrapper references once the follow-up SVD/GPU plan stabilizes (see `context/DECISIONS.md` "SVD algorithm strategy" and `plans/primme_removal_and_64bit_irlb_*.plan.md`).
 * Consolidate plotting paths with render backend (lets_plot or matplotlib)
 * NaN and Inf support for _anndata_io
 * Recreate LazyTransform from uns

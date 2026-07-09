@@ -87,6 +87,32 @@ This document records **deliberate architectural and operational decisions** for
 
 ---
 
+## SVD algorithm strategy
+
+### Public SVD surface: IRLB, Halko, Feng (PRIMME removed)
+
+**Decision:**
+
+- The public Python SVD API exposes three algorithms: `"irlb"`, `"halko"`, and `"feng"`.
+- `"auto"` selects IRLB for in-memory sparse inputs, Halko for in-memory dense inputs, and Halko for backed (HDF5-streamed) operator inputs.
+- `"primme"` has been removed from the public Python API, from `_SVD_ALGORITHM_TO_ID`, and from every auto-selection heuristic.
+- The C++ `ALG_PRIMME` enum, `svd_primme.{cpp,hpp}`, `runSVD_PRIMME_Operator`, and the vendored `src/libactionet/src/extern/primme/` tree remain compiled behind the existing R-build guard for one release cycle. No Python entry point can reach them. Deletion is tracked in `TODO.md`.
+- The `MatrixOperator::prefer_block_solver_for_irlb()` hint and its two backed overrides have been removed. Backed operators requesting `svd_algorithm="irlb"` now unconditionally use the honest `svdIRLB(MatrixOperator&, ...)` overload; there is no hidden dispatch to PRIMME.
+
+**Rationale:**
+
+- Sparse `nnz > 2^31 - 1` no longer requires PRIMME. `libactionet` force-defines `ARMA_64BIT_WORD`, so `arma::sp_mat` handles 64-bit index arrays directly and IRLB's sparse product path goes through 64-bit-clean Armadillo operators.
+- The backed `IRLB -> PRIMME` fast path was a design leak: users who explicitly requested `"irlb"` on backed inputs silently ran PRIMME's block Lanczos SVD, doubling the maintenance surface and violating the algorithm contract exposed to callers.
+- PRIMME's cuBLAS path is a poor fit for the planned GPU work (confirmed by the scrapped July 2026 attempt documented in `plans/GPU_INTEGRATION.md`).
+- The C++/R-side quarantine gives one release cycle of revert safety without complicating the Python surface.
+
+**Related:**
+
+- `plans/primme_removal_and_64bit_irlb_*.plan.md` for the implementation plan.
+- `plans/SVD_STRATEGY_REDESIGN_v2.md` for the follow-up direction (shared product-backend abstraction, GPU strategy).
+
+---
+
 ## Backed SVD algorithm default
 
 ### Backed operator path: Halko as default
@@ -94,7 +120,7 @@ This document records **deliberate architectural and operational decisions** for
 **Decision:**
 
 - For backed (HDF5-streamed) operator SVD, `auto` selects **Halko**.
-- IRLB is available as an explicit backed option (pass `svd_algorithm="irlb"`) but is not the auto-selected default.
+- IRLB is available as an explicit backed option (pass `svd_algorithm="irlb"`) and now runs the honest `svdIRLB(MatrixOperator&, ...)` overload with no hidden PRIMME fallback.
 
 **Rationale:**
 

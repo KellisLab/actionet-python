@@ -64,8 +64,8 @@ def reduce_kernel(
         Base key under which to store results in ``adata.obsm``, ``adata.varm``,
         and ``adata.uns``.
     svd_algorithm : str or None
-        SVD algorithm: ``"auto"``, ``"irlb"``, ``"halko"``, ``"feng"``, or
-        ``"primme"``.  ``"auto"`` selects based on matrix properties.
+        SVD algorithm: ``"auto"``, ``"irlb"``, ``"halko"``, or ``"feng"``.
+        ``"auto"`` selects based on matrix properties.
     max_iter : int
         Maximum iterations for iterative SVD solvers (0 = solver default).
     seed : int
