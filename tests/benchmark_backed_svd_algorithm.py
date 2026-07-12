@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""benchmark_backed_svd_algorithm.py — Backed SVD algorithm comparison: Halko vs IRLB.
+"""benchmark_backed_svd_algorithm.py — Backed SVD algorithm comparison: Halko vs IRLB vs Feng.
 
-Benchmarks run_svd() with algorithm='halko' and algorithm='irlb' on backed
+Benchmarks run_svd() with algorithm='halko', 'irlb', and 'feng' on backed
 (HDF5-streamed) AnnData objects across dataset size tiers.
 
 Metrics collected per trial:
@@ -45,7 +45,18 @@ import scipy.sparse as sp
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DATA_DIR = REPO_ROOT / "data"
-BENCHMARK_DATA_DIR = Path("/data/actionet_benchmark")
+
+# Resolve benchmark data dir with the same fallback chain as benchmark_support.py:
+# 1) ACTIONET_BENCHMARK_DATA_DIR env override
+# 2) /data/actionet_benchmark if present
+# 3) <repo>/data/actionet_benchmark (default local workspace location)
+_BENCHMARK_DATA_DIR_ENV = os.environ.get("ACTIONET_BENCHMARK_DATA_DIR", "").strip()
+if _BENCHMARK_DATA_DIR_ENV:
+    BENCHMARK_DATA_DIR = Path(_BENCHMARK_DATA_DIR_ENV)
+elif Path("/data/actionet_benchmark").exists():
+    BENCHMARK_DATA_DIR = Path("/data/actionet_benchmark")
+else:
+    BENCHMARK_DATA_DIR = REPO_ROOT / "data" / "actionet_benchmark"
 
 PYTHON_EXE = str(REPO_ROOT / ".venv" / "bin" / "python")
 if not Path(PYTHON_EXE).exists():
@@ -56,7 +67,7 @@ os.environ["HDF5_USE_FILE_LOCKING"] = "FALSE"
 TIERS = [25_000, 50_000, 100_000, 150_000, 200_000]
 TIER_LABELS = {t: f"{t // 1000}k" for t in TIERS}
 
-ALGORITHMS = ["halko", "irlb"]
+ALGORITHMS = ["halko", "irlb", "feng"]
 DEFAULT_N_COMPONENTS = 30
 DEFAULT_CHUNK_SIZE = 4096
 DEFAULT_TRIALS = 2
@@ -565,19 +576,21 @@ def generate_report(output_dir: Path, jsonl_path: Path) -> None:
         .sort_values(["n_obs", "algorithm"])
     )
 
-    # Speed ratio: irlb_wall / halko_wall per dataset
+    # Speed ratio vs Halko for each non-halko algorithm
     pivot_wall = ok.groupby(["dataset", "algorithm"])["wall_s"].mean().unstack("algorithm")
-    if "irlb" in pivot_wall.columns and "halko" in pivot_wall.columns:
-        pivot_wall["irlb_vs_halko"] = pivot_wall["irlb"] / pivot_wall["halko"]
+    if "halko" in pivot_wall.columns:
+        for alg in [c for c in pivot_wall.columns if c != "halko"]:
+            pivot_wall[f"{alg}_vs_halko"] = pivot_wall[alg] / pivot_wall["halko"]
 
-    # Memory ratio
+    # Memory ratio vs Halko for each non-halko algorithm
     pivot_mem = ok.groupby(["dataset", "algorithm"])["peak_rss_mb"].mean().unstack("algorithm")
-    if "irlb" in pivot_mem.columns and "halko" in pivot_mem.columns:
-        pivot_mem["irlb_vs_halko"] = pivot_mem["irlb"] / pivot_mem["halko"]
+    if "halko" in pivot_mem.columns:
+        for alg in [c for c in pivot_mem.columns if c != "halko"]:
+            pivot_mem[f"{alg}_vs_halko"] = pivot_mem[alg] / pivot_mem["halko"]
 
     report_path = output_dir / "svd_algorithm_benchmark.md"
     lines = [
-        "# Backed SVD Algorithm Benchmark: Halko vs IRLB",
+        "# Backed SVD Algorithm Benchmark: Halko vs IRLB vs Feng",
         "",
         f"Generated: {time.strftime('%Y-%m-%d %H:%M:%S')}",
         "",
@@ -606,59 +619,105 @@ def generate_report(output_dir: Path, jsonl_path: Path) -> None:
     lines.append(pivot_mem.to_markdown())
     lines.append("")
 
-    # Accuracy section
-    acc = ok[ok["algorithm"] == "irlb"][["dataset", "n_obs", "sigma_corr", "reconstruction_err"]]
+    # Accuracy section — compare every non-halko algorithm to the halko reference
+    acc = ok[ok["algorithm"] != "halko"][
+        ["dataset", "n_obs", "algorithm", "sigma_corr", "reconstruction_err"]
+    ]
     if not acc.empty:
         lines += [
-            "## Accuracy (IRLB vs Halko reference)",
+            "## Accuracy (vs Halko reference)",
             "",
-            "> `sigma_corr`: Pearson correlation of singular values between IRLB and Halko.",
+            "> `sigma_corr`: Pearson correlation of singular values between the algorithm and Halko.",
             "> `reconstruction_err`: relative Frobenius error ||A_probe - U D V'||_F / ||A_probe||_F",
             "> estimated on a random 500-row probe of the normalised matrix.",
             "",
         ]
-        acc_agg = acc.groupby(["dataset", "n_obs"])[["sigma_corr", "reconstruction_err"]].mean().reset_index()
+        acc_agg = (
+            acc.groupby(["dataset", "n_obs", "algorithm"])[["sigma_corr", "reconstruction_err"]]
+            .mean()
+            .reset_index()
+            .sort_values(["n_obs", "algorithm"])
+        )
         lines.append(acc_agg.to_markdown(index=False))
         lines.append("")
 
     # Recommendation
     lines += ["## Recommendation", ""]
     try:
-        if "irlb" in pivot_wall.columns and "halko" in pivot_wall.columns:
-            med_ratio = float(pivot_wall["irlb_vs_halko"].dropna().median())
-            med_corr = float(
-                ok[ok["algorithm"] == "irlb"]["sigma_corr"].dropna().median()
+        wall_medians: Dict[str, float] = {}
+        corr_medians: Dict[str, float] = {}
+        for alg in ok["algorithm"].unique():
+            wall_medians[alg] = float(
+                ok[ok["algorithm"] == alg]["wall_s"].dropna().median()
             )
-            if med_ratio < 0.85 and med_corr > 0.9999:
-                rec = (
-                    f"**Change default to IRLB.** "
-                    f"IRLB is {1/med_ratio:.2f}x faster than Halko (median ratio {med_ratio:.2f}) "
-                    f"with near-identical accuracy (sigma_corr median={med_corr:.6f})."
+            if alg == "halko":
+                corr_medians[alg] = float("inf")  # halko is the reference
+            else:
+                corr_medians[alg] = float(
+                    ok[ok["algorithm"] == alg]["sigma_corr"].dropna().median()
                 )
-            elif med_ratio < 1.10 and med_corr > 0.9999:
+
+        # Accuracy filter: sigma_corr > 0.9999 vs halko reference.
+        acc_threshold = 0.9999
+        candidates = {
+            alg: wall for alg, wall in wall_medians.items()
+            if alg == "halko" or corr_medians.get(alg, 0.0) > acc_threshold
+        }
+        if candidates:
+            winner = min(candidates, key=candidates.get)
+            halko_wall = wall_medians.get("halko", float("nan"))
+            winner_wall = candidates[winner]
+
+            def _fmt_alg(alg: str) -> str:
+                if alg == "halko":
+                    return "Halko"
+                if alg == "irlb":
+                    return "IRLB"
+                if alg == "feng":
+                    return "Feng"
+                return alg
+
+            if winner == "halko":
                 rec = (
-                    f"**Keep Halko as default.** "
-                    f"IRLB speed is comparable (ratio {med_ratio:.2f}) but offers no clear "
-                    f"advantage. Halko has a fixed and predictable matvec count regardless of "
-                    f"matrix conditioning, making its I/O cost easier to reason about at scale."
-                )
-            elif med_ratio >= 1.10:
-                rec = (
-                    f"**Keep Halko as default.** "
-                    f"IRLB is {med_ratio:.2f}x slower than Halko (median). "
-                    f"The additional matvec passes imposed by iterative refinement hurt "
-                    f"backed I/O throughput more than they help accuracy."
+                    f"**Keep Halko as default.** Halko has the lowest median wall time "
+                    f"({halko_wall:.2f}s) among accuracy-qualifying candidates."
                 )
             else:
-                rec = (
-                    f"**Inconclusive.** "
-                    f"IRLB speed ratio={med_ratio:.2f}, sigma_corr={med_corr:.6f}. "
-                    f"Manual inspection of the full table is recommended."
-                )
+                ratio = winner_wall / halko_wall if halko_wall > 0 else float("nan")
+                if ratio < 0.90:
+                    rec = (
+                        f"**Change default to {_fmt_alg(winner)}.** "
+                        f"{_fmt_alg(winner)} is {1/ratio:.2f}x faster than Halko "
+                        f"(median wall ratio {ratio:.2f}) with sigma_corr median "
+                        f"{corr_medians[winner]:.6f} >= {acc_threshold}."
+                    )
+                else:
+                    rec = (
+                        f"**Keep Halko as default.** {_fmt_alg(winner)} is only "
+                        f"{1/ratio:.2f}x faster than Halko (median wall ratio {ratio:.2f}); "
+                        f"the >=10% wall-time advantage rule is not met. "
+                        f"Halko's fixed matvec count (2*(iters+1) passes) gives a "
+                        f"more predictable I/O cost model at scale."
+                    )
             lines.append(rec)
             lines.append("")
-    except Exception:
-        pass
+
+            # Full leaderboard
+            lines.append("### Median wall time by algorithm")
+            lines.append("")
+            leaderboard = pd.DataFrame({
+                "algorithm": list(wall_medians.keys()),
+                "median_wall_s": list(wall_medians.values()),
+                "median_sigma_corr_vs_halko": [
+                    corr_medians[a] if corr_medians[a] != float("inf") else float("nan")
+                    for a in wall_medians.keys()
+                ],
+            }).sort_values("median_wall_s").reset_index(drop=True)
+            lines.append(leaderboard.to_markdown(index=False))
+            lines.append("")
+    except Exception as exc:
+        lines.append(f"(Recommendation generation failed: {exc})")
+        lines.append("")
 
     with open(report_path, "w", encoding="utf-8") as fh:
         fh.write("\n".join(lines) + "\n")
@@ -669,9 +728,11 @@ def generate_report(output_dir: Path, jsonl_path: Path) -> None:
     print("SVD ALGORITHM BENCHMARK SUMMARY", flush=True)
     print("="*70, flush=True)
     print(summary.to_string(index=False), flush=True)
-    if "irlb_vs_halko" in pivot_wall.columns:
-        print("\nSpeed ratio (IRLB wall / Halko wall) — <1.0 means IRLB is faster:", flush=True)
-        print(pivot_wall[["halko", "irlb", "irlb_vs_halko"]].to_string(), flush=True)
+    ratio_cols = [c for c in pivot_wall.columns if isinstance(c, str) and c.endswith("_vs_halko")]
+    if ratio_cols:
+        display_cols = [c for c in ["halko", "irlb", "feng"] if c in pivot_wall.columns] + ratio_cols
+        print("\nSpeed ratio (alg wall / Halko wall) — <1.0 means alg is faster than Halko:", flush=True)
+        print(pivot_wall[display_cols].to_string(), flush=True)
     print("="*70, flush=True)
 
 
@@ -733,8 +794,8 @@ def run_benchmark(
                     continue
 
                 print(f"\n  Running: {tier_label} {algorithm} trial={trial}", flush=True)
-                # For halko, sigma_corr is NaN (it is its own reference); pass ref anyway for consistency
-                ref = ref_sigma if algorithm == "irlb" else None
+                # Halko is its own reference (sigma_corr=NaN); others compare against it.
+                ref = ref_sigma if algorithm != "halko" else None
                 status = dispatch_child(
                     tier_label=tier_label,
                     algorithm=algorithm,
@@ -759,7 +820,7 @@ def run_benchmark(
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Benchmark backed SVD: Halko vs IRLB",
+        description="Benchmark backed SVD: Halko vs IRLB vs Feng",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument(
@@ -788,7 +849,7 @@ def main() -> None:
         run_id = time.strftime("svd_alg_%Y%m%d_%H%M%S")
         output_dir = REPO_ROOT / "tests" / "benchmark_results" / run_id
 
-    print(f"Backed SVD Algorithm Benchmark: Halko vs IRLB", flush=True)
+    print(f"Backed SVD Algorithm Benchmark: Halko vs IRLB vs Feng", flush=True)
     print(f"Tiers     : {args.tiers}", flush=True)
     print(f"Components: {args.n_components}", flush=True)
     print(f"Chunk size: {args.chunk_size}", flush=True)

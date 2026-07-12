@@ -121,20 +121,48 @@ This document records **deliberate architectural and operational decisions** for
 
 - For backed (HDF5-streamed) operator SVD, `auto` selects **Halko**.
 - IRLB is available as an explicit backed option (pass `svd_algorithm="irlb"`) and now runs the honest `svdIRLB(MatrixOperator&, ...)` overload with no hidden PRIMME fallback.
+- Feng is available as an explicit backed option (`svd_algorithm="feng"`); it is competitive with Halko and may become the auto-default in the future if the crossover observed at 200k cells widens with scale.
 
 **Rationale:**
 
 - Halko's matvec count is fixed at `2*(iters+1)` passes regardless of matrix conditioning, giving a predictable NNZ-proportional I/O cost model.
-- IRLB's convergence-driven iteration count adds variance to I/O load that complicates scaling predictions for atlas-size datasets.
-- Both algorithms share the same C++ `MatrixOperator` backend and are correctness-equivalent.
+- IRLB's convergence-driven iteration count adds variance to I/O load that complicates scaling predictions for atlas-size datasets. Empirically, backed IRLB is 6.5-7.3x slower than Halko across every tier we benchmarked (25k-200k cells).
+- Feng tracks Halko to within ~5% median wall time at tiers <=150k and beats Halko by ~13% at 200k, but the crossover point does not clear our 10% wall-time threshold for switching a documented default.
+- All three algorithms are correctness-equivalent (`sigma_corr >= 0.999998` on the benchmark set).
 
 **Benchmark reference:**
 
-- `tests/benchmark_backed_svd_algorithm.py` — focused Halko vs IRLB benchmark on backed data across cell-count tiers.
+- `tests/benchmark_backed_svd_algorithm.py` — three-way Halko vs IRLB vs Feng benchmark on backed data across cell-count tiers.
 - The benchmark measures wall time, peak RSS, I/O bytes read, singular value correlation (accuracy), and reconstruction error.
-- Run and update `docs/svd_algorithm_benchmark.md` with empirical results before re-litigating this decision.
+- Results and the full auto-selection table are in `docs/svd_algorithm_benchmark.md`.
+- Reference run: 25k, 50k, 100k, 150k, 200k cell tiers, 2 trials per configuration, `n_components=30`.
 
-**Status:** Pending empirical benchmark run. Default confirmed as Halko pending results.
+**Status:** Confirmed. Halko is the auto-default for all backed inputs.
+
+---
+
+## In-memory SVD algorithm defaults
+
+### Sparse in-memory: IRLB. Dense in-memory: Halko
+
+**Decision:**
+
+- For **sparse** in-memory inputs, `auto` selects **IRLB**.
+- For **dense** in-memory inputs, `auto` selects **Halko**.
+- Feng is available as an explicit choice for both storage forms but is never auto-selected.
+
+**Rationale:**
+
+- **Sparse:** IRLB is 3-6x faster than Halko or Feng across the 25k-200k cell tier range on real single-cell matrices. Sparse `nnz` is already 64-bit clean under `ARMA_64BIT_WORD`, so IRLB carries no residual size limitation vs the randomized methods.
+- **Dense:** Halko narrowly beats Feng (~5% median wall time) and beats IRLB by roughly 2x at every tier. Feng is a viable second option but does not dislodge Halko as the default.
+- All three algorithms produce singular values with `sigma_corr >= 0.999998` across the benchmark set.
+
+**Benchmark reference:**
+
+- `tests/benchmark_svd_inmemory_defaults.py` — three-way sparse and dense benchmark across `{25k, 50k, 100k, 150k, 200k}` (dense capped at 100k to fit typical single-node RAM).
+- Full results, ratio tables, and reproduction commands: `docs/svd_algorithm_benchmark.md`.
+
+**Status:** Confirmed. The auto-selection heuristics in `_select_svd_algorithm_inmemory` match the benchmark winners with no further changes required.
 
 ---
 
