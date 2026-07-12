@@ -1,6 +1,8 @@
 # SVD Strategy Redesign
 
-Status: draft, 2026-07-09.
+Status: historical draft, 2026-07-09. Partially executed and partially
+superseded by `GPU_BACKED_SVD_AGENT_LAUNCHPAD.md`. Use the launchpad for new
+GPU-backed SVD implementation work.
 
 ## Summary
 
@@ -303,7 +305,11 @@ and RAFT as an optional reference/benchmark spike.
 
 ## Objective 5: Public API and Policy
 
-Use the already planned Python-facing backend controls:
+Historical proposal. The exact Python-facing backend kwarg names and defaults
+are no longer settled by this document. Use `GPU_INTEGRATION.md` and
+`GPU_BACKED_SVD_AGENT_LAUNCHPAD.md` for the current policy.
+
+The earlier proposed controls were:
 
 - `compute_backend: "auto" | "cpu" | "gpu"`
 - `device_id: int`

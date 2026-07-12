@@ -152,6 +152,7 @@ py::dict merge_archetypes(py::array_t<double> S_r, py::array_t<double> C_stacked
 
 py::dict reduce_kernel_sparse(py::object S, int k = 50, int svd_alg = 0,
                                int max_it = 0, int seed = 0, bool verbose = true) {
+    validate_python_svd_algorithm(svd_alg, "reduce_kernel_sparse");
     arma::sp_mat S_sp = scipy_to_arma_sparse(S);
     arma::field<arma::mat> res;
     {
@@ -163,6 +164,7 @@ py::dict reduce_kernel_sparse(py::object S, int k = 50, int svd_alg = 0,
 
 py::dict reduce_kernel_dense(py::array_t<double> S, int k = 50, int svd_alg = 0,
                               int max_it = 0, int seed = 0, bool verbose = true) {
+    validate_python_svd_algorithm(svd_alg, "reduce_kernel_dense");
     arma::mat S_mat = numpy_to_arma_mat(S);
     arma::field<arma::mat> res;
     {

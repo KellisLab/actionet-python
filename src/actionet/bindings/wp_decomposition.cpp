@@ -244,6 +244,7 @@ py::dict perturbed_svd(py::array_t<double> u, py::array_t<double> d, py::array_t
 
 py::dict run_svd_sparse(py::object A, int k = 30, int max_it = 0, int seed = 0,
                         int algorithm = 0, bool verbose = true) {
+    validate_python_svd_algorithm(algorithm, "run_svd_sparse");
     arma::sp_mat A_sp = scipy_to_arma_sparse(A);
     arma::field<arma::mat> res;
     {
@@ -260,6 +261,7 @@ py::dict run_svd_sparse(py::object A, int k = 30, int max_it = 0, int seed = 0,
 
 py::dict run_svd_dense(py::object A, int k = 30, int max_it = 0, int seed = 0,
                        int algorithm = 0, bool verbose = true) {
+    validate_python_svd_algorithm(algorithm, "run_svd_dense");
     arma::mat A_mat = numpy_to_arma_mat(A);
     arma::field<arma::mat> res;
     {

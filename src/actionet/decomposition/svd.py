@@ -35,6 +35,7 @@ _SVD_ALGORITHM_TO_ID = {
     "halko": 1,
 }
 _SVD_ID_TO_ALGORITHM = {v: k for k, v in _SVD_ALGORITHM_TO_ID.items()}
+_SVD_BACKEND_CPU = "cpu"
 
 
 def _normalize_algorithm(algorithm: Optional[str], *, context: str) -> str:
@@ -259,6 +260,7 @@ def run_svd(
             backed_chunk_size=backed_chunk_size,
         )
         selected_algorithm = _select_svd_algorithm_backed(algorithm_name, verbose)
+        algorithm_id = selected_algorithm
         io_target_chunk_bytes = _chunk_target_bytes(backed_target_chunk_mb)
 
         temp_path: Optional[str] = None
@@ -302,5 +304,17 @@ def run_svd(
 
     if return_operator_compatible:
         result = {"u": result["u"], "d": result["d"], "v": result["v"]}
+    else:
+        result = dict(result)
+        result.update(
+            {
+                "svd_algorithm": algorithm_id,
+                "svd_algorithm_name": _SVD_ID_TO_ALGORITHM.get(
+                    algorithm_id, f"unknown({algorithm_id})"
+                ),
+                "svd_backend_requested": _SVD_BACKEND_CPU,
+                "svd_backend_resolved": _SVD_BACKEND_CPU,
+            }
+        )
 
     return result

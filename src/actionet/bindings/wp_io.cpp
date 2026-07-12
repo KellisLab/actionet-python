@@ -89,6 +89,7 @@ py::dict run_svd_backed_operator(std::shared_ptr<actionet::MatrixOperator> op,
     if (!op) {
         throw std::runtime_error("run_svd_backed_operator: operator is null");
     }
+    validate_python_svd_algorithm(algorithm, "run_svd_backed_operator");
     actionet::SVDResult res;
     {
         py::gil_scoped_release release;
@@ -103,6 +104,7 @@ py::dict reduce_kernel_backed_operator(std::shared_ptr<actionet::MatrixOperator>
     if (!op) {
         throw std::runtime_error("reduce_kernel_backed_operator: operator is null");
     }
+    validate_python_svd_algorithm(svd_alg, "reduce_kernel_backed_operator");
     actionet::KernelReductionResult res;
     {
         py::gil_scoped_release release;

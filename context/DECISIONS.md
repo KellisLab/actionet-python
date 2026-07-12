@@ -99,6 +99,7 @@ This document records **deliberate architectural and operational decisions** for
 - `"feng"` has been removed from the public Python API and from `_SVD_ALGORITHM_TO_ID`. Requesting it raises `ValueError` from `_normalize_algorithm` listing the allowed set `{auto, halko, irlb}`.
 - The C++ `ALG_PRIMME` enum, `svd_primme.{cpp,hpp}`, `runSVD_PRIMME_Operator`, and the vendored `src/libactionet/src/extern/primme/` tree remain compiled behind the existing R-build guard for one release cycle. No Python entry point can reach them. Deletion is tracked in `TODO.md`.
 - The C++ `ALG_FENG` enum, `svd_feng.{cpp,hpp}`, and the R wrapper's `algorithm=2` binding remain compiled and reachable from R for one release cycle so the Python retirement can be reverted in a single commit if a downstream consumer regresses. No Python entry point can reach them. Deletion is tracked in `TODO.md`.
+- Python pybind `_core` SVD entry points validate raw algorithm IDs and reject anything other than IRLB (`0`) or Halko (`1`), so private `_core` calls cannot bypass the public wrapper policy.
 - The `MatrixOperator::prefer_block_solver_for_irlb()` hint and its two backed overrides have been removed. Backed operators requesting `svd_algorithm="irlb"` now unconditionally use the honest `svdIRLB(MatrixOperator&, ...)` overload; there is no hidden dispatch to PRIMME.
 
 **Rationale:**

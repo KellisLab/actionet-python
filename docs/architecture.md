@@ -67,7 +67,9 @@ for the underlying streaming operators.
 ## GPU
 
 GPU support is planned but not yet implemented. See
-[`context/GPU_INTEGRATION.md`](https://github.com/KellisLab/actionet-python/blob/dev/context/GPU_INTEGRATION.md)
-for the Python-side roadmap and
-[`libactionet/context/GPU_BACKEND_PLAN.md`](https://github.com/KellisLab/libactionet/blob/dev/context/GPU_BACKEND_PLAN.md)
-for the C++/build-side plan and the post-mortem of the scrapped first attempt.
+[`plans/GPU_INTEGRATION.md`](https://github.com/KellisLab/actionet-python/blob/dev/plans/GPU_INTEGRATION.md)
+for the Python-side roadmap,
+[`plans/GPU_BACKED_SVD_AGENT_LAUNCHPAD.md`](https://github.com/KellisLab/actionet-python/blob/dev/plans/GPU_BACKED_SVD_AGENT_LAUNCHPAD.md)
+for the GPU-backed SVD launchpad, and
+[`src/libactionet/plans/GPU_BACKEND_PLAN.md`](https://github.com/KellisLab/actionet-python/blob/dev/src/libactionet/plans/GPU_BACKEND_PLAN.md)
+for the C++/build-side plan.

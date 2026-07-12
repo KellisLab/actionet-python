@@ -23,6 +23,7 @@ from ..io.operator import open_backed_operator_for
 from ..io.persist import persist_updates
 from ..tools.anndata import anndata_to_matrix
 from .svd import (
+    _SVD_BACKEND_CPU,
     _SVD_ID_TO_ALGORITHM,
     _chunk_target_bytes,
     _maybe_decompress_backed_path,
@@ -189,6 +190,8 @@ def reduce_kernel(
         "n_components": n_components,
         "svd_algorithm": svd_algorithm_id,
         "svd_algorithm_name": _SVD_ID_TO_ALGORITHM.get(svd_algorithm_id, f"unknown({svd_algorithm_id})"),
+        "svd_backend_requested": _SVD_BACKEND_CPU,
+        "svd_backend_resolved": _SVD_BACKEND_CPU,
         "used_precomputed_svd": precomputed_svd is not None,
         "operator_mode": use_operator,
     }

@@ -1,6 +1,11 @@
 
 ## GPU backend (Python surface)
 
+> Historical note. This file records decisions from the scrapped PRIMME-based
+> GPU attempt and is not an implementation launchpad. Current GPU-backed SVD
+> work should follow `GPU_INTEGRATION.md` and
+> `GPU_BACKED_SVD_AGENT_LAUNCHPAD.md`.
+
 See [`GPU_INTEGRATION.md`](GPU_INTEGRATION.md) for the full Python
 roadmap and
 [`../src/libactionet/context/DECISIONS.md`](../src/libactionet/context/DECISIONS.md)

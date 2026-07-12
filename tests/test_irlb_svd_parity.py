@@ -26,6 +26,7 @@ import pytest
 import scipy.sparse as sp
 
 import actionet as an
+from actionet import _core
 
 
 # Tolerance settings for comparing DIFFERENT algorithms (IRLB vs Halko)
@@ -573,6 +574,58 @@ def test_reduce_kernel_rejects_feng():
     adata = ad.AnnData(X=X)
     with pytest.raises(ValueError, match=r"Invalid algorithm"):
         an.reduce_kernel(adata, n_components=4, svd_algorithm="feng", verbose=False)
+
+
+@pytest.mark.parametrize("algorithm_id", [2, 3])
+def test_core_run_svd_rejects_retired_algorithm_ids(algorithm_id):
+    """Private `_core.run_svd_*` calls must not bypass Python SVD policy."""
+    X_sparse = _create_test_matrix(
+        n_obs=32, n_vars=24, density=0.3, as_sparse=True, random_state=2
+    ).tocsr()
+    X_dense = X_sparse.toarray()
+
+    with pytest.raises(RuntimeError, match=r"unsupported SVD algorithm id"):
+        _core.run_svd_sparse(X_sparse, 4, 0, 0, algorithm_id, False)
+
+    with pytest.raises(RuntimeError, match=r"unsupported SVD algorithm id"):
+        _core.run_svd_dense(X_dense, 4, 0, 0, algorithm_id, False)
+
+
+@pytest.mark.parametrize("algorithm_id", [2, 3])
+def test_core_reduce_kernel_rejects_retired_algorithm_ids(algorithm_id):
+    """Private `_core.reduce_kernel_*` calls must also reject retired SVD IDs."""
+    X_sparse = _create_test_matrix(
+        n_obs=32, n_vars=24, density=0.3, as_sparse=True, random_state=3
+    ).tocsr()
+    X_dense = X_sparse.toarray()
+
+    with pytest.raises(RuntimeError, match=r"unsupported SVD algorithm id"):
+        _core.reduce_kernel_sparse(X_sparse, 4, algorithm_id, 0, 0, False)
+
+    with pytest.raises(RuntimeError, match=r"unsupported SVD algorithm id"):
+        _core.reduce_kernel_dense(X_dense, 4, algorithm_id, 0, 0, False)
+
+
+@pytest.mark.parametrize("algorithm_id", [2, 3])
+def test_core_backed_operator_rejects_retired_algorithm_ids(tmp_path, algorithm_id):
+    """Backed `_core` SVD entry points expose only IRLB/Halko to Python."""
+    X_sparse = _create_test_matrix(
+        n_obs=32, n_vars=24, density=0.3, as_sparse=True, random_state=4
+    ).tocsr()
+    adata_backed, h5ad_path = _create_backed_anndata(
+        X_sparse, tmp_path, prefix=f"core_retired_{algorithm_id}"
+    )
+
+    try:
+        op = _core.create_backed_operator(str(h5ad_path), "/X", 16)
+
+        with pytest.raises(RuntimeError, match=r"unsupported SVD algorithm id"):
+            _core.run_svd_backed_operator(op, 4, 0, 0, algorithm_id, False)
+
+        with pytest.raises(RuntimeError, match=r"unsupported SVD algorithm id"):
+            _core.reduce_kernel_backed_operator(op, 4, algorithm_id, 0, 0, False)
+    finally:
+        adata_backed.file.close()
 
 
 def test_irlb_sparse_accepts_int64_indices():
