@@ -65,7 +65,10 @@ def reduce_kernel(
         and ``adata.uns``.
     svd_algorithm : str or None
         SVD algorithm: ``"auto"``, ``"irlb"``, ``"halko"``, or ``"feng"``.
-        ``"auto"`` selects based on matrix properties.
+        ``"auto"`` selects based on matrix properties and storage mode
+        (sparse in-memory → IRLB; dense in-memory and all backed inputs →
+        Halko). Sparse inputs with ``nnz > 2^31 - 1`` are supported directly
+        by IRLB; per-axis row/column counts must fit in ``INT_MAX``.
     max_iter : int
         Maximum iterations for iterative SVD solvers (0 = solver default).
     seed : int

@@ -241,7 +241,7 @@ cost trade-off and validate the `ef=500` baseline.
 
 - Halko (5 power iterations), `n_components=30`. Fixed pass count ensures
   I/O cost is proportional to NNZ, giving a clean signal for the backed vs.
-  in-memory comparison and a smooth power-law scaling model. PRIMME's
+  in-memory comparison and a smooth power-law scaling model. IRLB's
   adaptive convergence would introduce iteration-count variance that
   contaminates the storage-layer overhead measurement.
 - In-memory vs. backed-decompressed on all tiers.

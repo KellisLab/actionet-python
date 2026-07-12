@@ -270,7 +270,7 @@ def test_take_columns_sparse_duplicates(tmp_path, _matrices, fmt, shape, tid, rs
 
 
 # ---------------------------------------------------------------------------
-# SVD parity — exercises matvec/rmatvec/matmat/rmatmat end-to-end via PRIMME.
+# SVD parity — exercises matvec/rmatvec/matmat/rmatmat end-to-end via Halko.
 # Compares singular values (sign/rotation invariant, so only sigma is checked).
 # ---------------------------------------------------------------------------
 

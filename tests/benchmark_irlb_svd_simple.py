@@ -2,7 +2,7 @@
 """benchmark_irlb_svd_simple.py - Simple benchmark for all IRLB SVD variants.
 
 Benchmarks all SVD implementations (sparse, dense, in-memory, disk-backed)
-across all supported algorithms (IRLB, Halko, Feng, PRIMME).
+across all supported algorithms (IRLB, Halko, Feng).
 
 Usage:
     python tests/benchmark_irlb_svd_simple.py [--size small|medium|large] [--output results.csv]
@@ -38,7 +38,7 @@ class BenchmarkResult:
     """Single benchmark result."""
     matrix_type: str      # sparse/dense
     storage_mode: str     # inmemory/backed
-    algorithm: str        # irlb/halko/feng/primme
+    algorithm: str        # irlb/halko/feng
     n_obs: int
     n_vars: int
     n_components: int
@@ -193,7 +193,7 @@ def run_benchmarks(
 ) -> pd.DataFrame:
     """Run comprehensive benchmark suite."""
     if algorithms is None:
-        algorithms = ["irlb", "halko", "feng", "primme"]
+        algorithms = ["irlb", "halko", "feng"]
 
     preset = SIZE_PRESETS[size]
     n_obs = preset["n_obs"]
@@ -331,7 +331,7 @@ def main():
         "--algorithms",
         nargs="+",
         default=["irlb", "halko"],
-        choices=["irlb", "halko", "feng", "primme"],
+        choices=["irlb", "halko", "feng"],
         help="Algorithms to benchmark",
     )
     parser.add_argument(

@@ -12,7 +12,7 @@ Covers:
   - In-memory dense (numpy array)
   - Disk-backed sparse (HDF5)
   - Disk-backed dense (HDF5)
-  - All supported algorithms: IRLB, Halko, Feng, PRIMME
+  - All supported algorithms: IRLB, Halko, Feng
 """
 
 import os
@@ -165,7 +165,7 @@ def _compare_svd_results(
 # Test Cases: In-Memory
 # ============================================================================
 
-@pytest.mark.parametrize("algorithm", ["irlb", "halko", "feng", "primme"])
+@pytest.mark.parametrize("algorithm", ["irlb", "halko", "feng"])
 def test_inmemory_sparse_svd_algorithms(algorithm):
     """Test in-memory sparse SVD for all algorithms."""
     n_components = 10
@@ -184,7 +184,7 @@ def test_inmemory_sparse_svd_algorithms(algorithm):
     _validate_svd_result(result, X_sparse, n_components)
 
 
-@pytest.mark.parametrize("algorithm", ["irlb", "halko", "feng", "primme"])
+@pytest.mark.parametrize("algorithm", ["irlb", "halko", "feng"])
 def test_inmemory_dense_svd_algorithms(algorithm):
     """Test in-memory dense SVD for all algorithms."""
     n_components = 10
@@ -245,7 +245,7 @@ def test_inmemory_dense_parity_irlb_vs_halko():
 # Test Cases: Disk-Backed
 # ============================================================================
 
-@pytest.mark.parametrize("algorithm", ["irlb", "halko", "feng", "primme"])
+@pytest.mark.parametrize("algorithm", ["irlb", "halko", "feng"])
 def test_backed_sparse_svd_algorithms(algorithm, tmp_path):
     """Test backed sparse SVD for all algorithms."""
     os.environ["HDF5_USE_FILE_LOCKING"] = "FALSE"
@@ -275,7 +275,7 @@ def test_backed_sparse_svd_algorithms(algorithm, tmp_path):
             h5ad_path.unlink()
 
 
-@pytest.mark.parametrize("algorithm", ["irlb", "halko", "feng", "primme"])
+@pytest.mark.parametrize("algorithm", ["irlb", "halko", "feng"])
 def test_backed_dense_svd_algorithms(algorithm, tmp_path):
     """Test backed dense SVD for all algorithms."""
     os.environ["HDF5_USE_FILE_LOCKING"] = "FALSE"
@@ -519,6 +519,69 @@ def test_all_combinations_consistency(tmp_path):
             _compare_svd_results(results[key_a], results[key_b], key_a, key_b)
 
     print(f"\nAll {len(results)} combinations validated successfully!")
+
+
+# ============================================================================
+# Regression tests: PRIMME removal and 64-bit sparse support (Phases 1 & 2)
+# ============================================================================
+
+
+@pytest.mark.parametrize("algorithm", ["primme", "PRIMME", "Primme"])
+def test_primme_algorithm_rejected(algorithm):
+    """Requesting the removed `primme` algorithm must raise ValueError.
+
+    PRIMME was removed from the public Python SVD API. The C++ sources
+    remain compiled for one release cycle but are unreachable from Python
+    (see context/DECISIONS.md - "SVD algorithm strategy"). Any request for
+    "primme" (in any casing) must fail during `_normalize_algorithm`.
+    """
+    X = _create_test_matrix(n_obs=32, n_vars=24, density=0.3, as_sparse=True, random_state=0)
+    with pytest.raises(ValueError, match=r"Invalid algorithm"):
+        an.run_svd(X, n_components=4, algorithm=algorithm, verbose=False)
+
+
+def test_reduce_kernel_rejects_primme():
+    """`reduce_kernel` must also refuse `svd_algorithm="primme"`."""
+    X = _create_test_matrix(n_obs=32, n_vars=24, density=0.3, as_sparse=True, random_state=1)
+    adata = ad.AnnData(X=X)
+    with pytest.raises(ValueError, match=r"Invalid algorithm"):
+        an.reduce_kernel(adata, n_components=4, svd_algorithm="primme", verbose=False)
+
+
+def test_irlb_sparse_accepts_int64_indices():
+    """IRLB on scipy CSR with int64 `indices`/`indptr` completes correctly.
+
+    Phase 2 documents that sparse ``nnz > 2^31 - 1`` is supported end-to-end.
+    Materializing such a matrix in CI is impractical, but the plumbing that
+    would enable it is: ``scipy_to_arma_sparse`` reads ``indices``/``indptr``
+    as ``py::ssize_t`` (int64), and Armadillo's ``sp_mat`` uses 64-bit
+    ``uword`` under ``ARMA_64BIT_WORD``. This test exercises the plumbing at
+    a small scale by forcing a scipy CSR to use int64 index arrays and
+    verifying IRLB produces the same singular values as the int32-indexed
+    equivalent.
+
+    scipy downcasts index arrays to int32 whenever the shape/nnz allow it,
+    so we assign int64 arrays post-construction to preserve them.
+    """
+    X32 = _create_test_matrix(
+        n_obs=200, n_vars=120, density=0.15, as_sparse=True, random_state=7
+    )
+    X32 = sp.csr_matrix(X32).astype(np.float64)
+    assert X32.indices.dtype == np.int32
+    assert X32.indptr.dtype == np.int32
+
+    X64 = sp.csr_matrix(X32, copy=True)
+    X64.indices = X32.indices.astype(np.int64, copy=True)
+    X64.indptr = X32.indptr.astype(np.int64, copy=True)
+    assert X64.indices.dtype == np.int64
+    assert X64.indptr.dtype == np.int64
+
+    n_components = 10
+    result32 = an.run_svd(X32, n_components=n_components, algorithm="irlb", seed=42, verbose=False)
+    result64 = an.run_svd(X64, n_components=n_components, algorithm="irlb", seed=42, verbose=False)
+
+    np.testing.assert_allclose(result32["d"], result64["d"], rtol=1e-10, atol=1e-12)
+    _validate_svd_result(result64, X64, n_components)
 
 
 if __name__ == "__main__":

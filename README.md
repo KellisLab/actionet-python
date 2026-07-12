@@ -265,10 +265,10 @@ Default behavior is fit-first: fit once, then derive/sweep thresholds post-hoc w
 ```python
 an.reduce_kernel(adata, n_components=50, layer=None, key_added='action')
 ```
-Compute reduced kernel matrix using SVD. **Automatically selects the optimal SVD algorithm** based on matrix properties (sparse vs dense, size, sparsity) with negligible overhead (~1-2 microseconds).
+Compute reduced kernel matrix using SVD. **Automatically selects the optimal SVD algorithm** based on matrix properties (sparse vs dense, storage mode) with negligible overhead (~1-2 microseconds).
 
 New in OOM v1:
-- Backed sparse AnnData `.X` is executed through an out-of-memory operator path (Halko by default; IRLB, PRIMME, and Feng also supported).
+- Backed sparse AnnData `.X` is executed through an out-of-memory operator path (Halko by default; IRLB and Feng also supported).
 - You can reuse an external SVD via `precomputed_svd`:
   `an.reduce_kernel(adata, precomputed_svd=an.run_svd(adata.X, n_components=50))`
 - Explicit helper for this workflow: `an.reduce_kernel_from_svd(...)`.
@@ -278,10 +278,11 @@ New in OOM v1:
   (`0` = auto, `1` = serial debug path).
 
 Available algorithms:
-- **IRLB** (default for in-memory sparse): Implicitly Restarted Lanczos Bidiagonalization
-- **Halko** (default for dense and backed): Randomized SVD (fastest for dense; predictable I/O cost for backed)
-- **PRIMME** (auto-selected for large in-memory sparse): Memory-efficient for huge sparse matrices
-- **Feng**: Alternative randomized method
+- **IRLB** (default for in-memory sparse): Implicitly Restarted Lanczos Bidiagonalization. Supports sparse `nnz > 2^31 - 1` directly (64-bit clean via Armadillo's `ARMA_64BIT_WORD`).
+- **Halko** (default for dense and backed): Randomized SVD (fastest for dense; predictable `2*(iters+1)` matvec count gives NNZ-proportional I/O cost for backed inputs).
+- **Feng**: Randomized SVD via eigendecomposition of `A^T A`. Available as an explicit alternative.
+
+Per-axis row/column counts must fit in `INT_MAX` (~2.1B) for all algorithms; requests exceeding this raise a clear error from the SVD entry point.
 
 ### ACTION Decomposition
 

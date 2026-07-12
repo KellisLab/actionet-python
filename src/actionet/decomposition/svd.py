@@ -77,9 +77,16 @@ def _select_svd_algorithm_inmemory(S: Any, algorithm: str, verbose: bool = True)
 
 
 def _select_svd_algorithm_backed(algorithm: str, verbose: bool = True) -> int:
+    """Auto-select an SVD algorithm for a backed (HDF5-streamed) matrix.
+
+    For backed inputs, Halko is the unconditional auto-default. Halko's
+    fixed matvec count (``2*(iters+1)`` passes) gives a predictable
+    NNZ-proportional I/O cost model, which is preferable to IRLB's
+    convergence-driven iteration count for atlas-scale streaming. See
+    ``context/DECISIONS.md`` ("Backed SVD algorithm default"). IRLB and
+    Feng remain available as explicit backed choices via ``algorithm=``.
+    """
     if algorithm == "auto":
-        # For backed (operator) mode, Halko is unconditionally selected as the
-        # default. See context/DECISIONS.md ("Backed SVD algorithm default").
         if verbose:
             print("Detected backed matrix: selecting Halko operator path")
         return _SVD_ALGORITHM_TO_ID["halko"]

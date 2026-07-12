@@ -73,13 +73,12 @@ MIN_LABEL_CELLS = 50
 MIN_LABELS_FOR_ANNOTATION = 2
 
 N_THREADS = 44
-# Halko (randomised power iteration) is used throughout the benchmark instead of
-# PRIMME. For scale evaluation the critical property is that matvec count is fixed
-# at 2*(iters+1) passes regardless of matrix conditioning, giving a clean
-# NNZ-proportional I/O cost model. PRIMME's adaptive convergence introduces
-# iteration-count variance that contaminates the backed-vs-in-memory signal and
-# makes the scaling curve non-monotone. Use "primme" only if the goal is to
-# benchmark production-workflow wall time rather than storage-layer overhead.
+# Halko (randomised power iteration) is used throughout the benchmark. For
+# scale evaluation the critical property is that matvec count is fixed at
+# 2*(iters+1) passes regardless of matrix conditioning, giving a clean
+# NNZ-proportional I/O cost model. IRLB's adaptive convergence would
+# introduce iteration-count variance that contaminates the backed-vs-in-memory
+# signal and makes the scaling curve non-monotone.
 SVD_ALGORITHM = "halko"
 N_COMPONENTS = 30
 
