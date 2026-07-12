@@ -12,7 +12,7 @@ Covers:
   - In-memory dense (numpy array)
   - Disk-backed sparse (HDF5)
   - Disk-backed dense (HDF5)
-  - All supported algorithms: IRLB, Halko, Feng
+  - All supported algorithms: IRLB, Halko
 """
 
 import os
@@ -165,7 +165,7 @@ def _compare_svd_results(
 # Test Cases: In-Memory
 # ============================================================================
 
-@pytest.mark.parametrize("algorithm", ["irlb", "halko", "feng"])
+@pytest.mark.parametrize("algorithm", ["irlb", "halko"])
 def test_inmemory_sparse_svd_algorithms(algorithm):
     """Test in-memory sparse SVD for all algorithms."""
     n_components = 10
@@ -184,7 +184,7 @@ def test_inmemory_sparse_svd_algorithms(algorithm):
     _validate_svd_result(result, X_sparse, n_components)
 
 
-@pytest.mark.parametrize("algorithm", ["irlb", "halko", "feng"])
+@pytest.mark.parametrize("algorithm", ["irlb", "halko"])
 def test_inmemory_dense_svd_algorithms(algorithm):
     """Test in-memory dense SVD for all algorithms."""
     n_components = 10
@@ -245,7 +245,7 @@ def test_inmemory_dense_parity_irlb_vs_halko():
 # Test Cases: Disk-Backed
 # ============================================================================
 
-@pytest.mark.parametrize("algorithm", ["irlb", "halko", "feng"])
+@pytest.mark.parametrize("algorithm", ["irlb", "halko"])
 def test_backed_sparse_svd_algorithms(algorithm, tmp_path):
     """Test backed sparse SVD for all algorithms."""
     os.environ["HDF5_USE_FILE_LOCKING"] = "FALSE"
@@ -275,7 +275,7 @@ def test_backed_sparse_svd_algorithms(algorithm, tmp_path):
             h5ad_path.unlink()
 
 
-@pytest.mark.parametrize("algorithm", ["irlb", "halko", "feng"])
+@pytest.mark.parametrize("algorithm", ["irlb", "halko"])
 def test_backed_dense_svd_algorithms(algorithm, tmp_path):
     """Test backed dense SVD for all algorithms."""
     os.environ["HDF5_USE_FILE_LOCKING"] = "FALSE"
@@ -546,6 +546,33 @@ def test_reduce_kernel_rejects_primme():
     adata = ad.AnnData(X=X)
     with pytest.raises(ValueError, match=r"Invalid algorithm"):
         an.reduce_kernel(adata, n_components=4, svd_algorithm="primme", verbose=False)
+
+
+@pytest.mark.parametrize("algorithm", ["feng", "FENG", "Feng"])
+def test_feng_algorithm_rejected(algorithm):
+    """Requesting the removed `feng` algorithm must raise ValueError.
+
+    Feng was retired from the public Python SVD API. The C++ sources remain
+    compiled for one release cycle but are unreachable from Python (see
+    context/DECISIONS.md - "SVD algorithm strategy update: Feng retired
+    from public API"). Any request for "feng" (in any casing) must fail
+    during `_normalize_algorithm` with a message listing the allowed set
+    ``{auto, halko, irlb}``.
+    """
+    X = _create_test_matrix(n_obs=32, n_vars=24, density=0.3, as_sparse=True, random_state=0)
+    with pytest.raises(ValueError, match=r"Invalid algorithm") as excinfo:
+        an.run_svd(X, n_components=4, algorithm=algorithm, verbose=False)
+    message = str(excinfo.value)
+    for name in ("auto", "halko", "irlb"):
+        assert name in message, f"Expected {name!r} in allowed set of error message: {message}"
+
+
+def test_reduce_kernel_rejects_feng():
+    """`reduce_kernel` must also refuse `svd_algorithm="feng"`."""
+    X = _create_test_matrix(n_obs=32, n_vars=24, density=0.3, as_sparse=True, random_state=1)
+    adata = ad.AnnData(X=X)
+    with pytest.raises(ValueError, match=r"Invalid algorithm"):
+        an.reduce_kernel(adata, n_components=4, svd_algorithm="feng", verbose=False)
 
 
 def test_irlb_sparse_accepts_int64_indices():

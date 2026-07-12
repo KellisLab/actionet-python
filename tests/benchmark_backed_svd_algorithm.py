@@ -1,8 +1,14 @@
 #!/usr/bin/env python3
-"""benchmark_backed_svd_algorithm.py — Backed SVD algorithm comparison: Halko vs IRLB vs Feng.
+"""benchmark_backed_svd_algorithm.py — Backed SVD algorithm comparison: Halko vs IRLB.
 
-Benchmarks run_svd() with algorithm='halko', 'irlb', and 'feng' on backed
+Benchmarks run_svd() with algorithm='halko' and 'irlb' on backed
 (HDF5-streamed) AnnData objects across dataset size tiers.
+
+Feng was retired from the public Python API (see context/DECISIONS.md -
+"SVD algorithm strategy update: Feng retired from public API"). This
+benchmark drops Feng from its default algorithm list. Pass
+``--include-retired`` to re-run Feng against the retained C++ path for
+one-off historical reproduction of the pre-removal results.
 
 Metrics collected per trial:
   - wall_s          : wall-clock seconds
@@ -67,7 +73,8 @@ os.environ["HDF5_USE_FILE_LOCKING"] = "FALSE"
 TIERS = [25_000, 50_000, 100_000, 150_000, 200_000]
 TIER_LABELS = {t: f"{t // 1000}k" for t in TIERS}
 
-ALGORITHMS = ["halko", "irlb", "feng"]
+ALGORITHMS = ["halko", "irlb"]
+RETIRED_ALGORITHMS = ["feng"]
 DEFAULT_N_COMPONENTS = 30
 DEFAULT_CHUNK_SIZE = 4096
 DEFAULT_TRIALS = 2
@@ -590,7 +597,7 @@ def generate_report(output_dir: Path, jsonl_path: Path) -> None:
 
     report_path = output_dir / "svd_algorithm_benchmark.md"
     lines = [
-        "# Backed SVD Algorithm Benchmark: Halko vs IRLB vs Feng",
+        "# Backed SVD Algorithm Benchmark: Halko vs IRLB",
         "",
         f"Generated: {time.strftime('%Y-%m-%d %H:%M:%S')}",
         "",
@@ -747,7 +754,10 @@ def run_benchmark(
     trials: int,
     output_dir: Path,
     resume: bool,
+    algorithms: Optional[List[str]] = None,
 ) -> None:
+    if algorithms is None:
+        algorithms = list(ALGORITHMS)
     output_dir.mkdir(parents=True, exist_ok=True)
     work_dir = output_dir / "work"
     work_dir.mkdir(exist_ok=True)
@@ -786,7 +796,7 @@ def run_benchmark(
         if ref_sigma is None:
             print(f"  WARNING: could not collect halko reference sigma for {tier_label}.", flush=True)
 
-        for algorithm in ALGORITHMS:
+        for algorithm in algorithms:
             for trial in range(1, trials + 1):
                 key = (tier_label, algorithm, trial)
                 if resume and key in completed:
@@ -820,7 +830,7 @@ def run_benchmark(
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Benchmark backed SVD: Halko vs IRLB vs Feng",
+        description="Benchmark backed SVD: Halko vs IRLB",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument(
@@ -837,6 +847,16 @@ def parse_args() -> argparse.Namespace:
                         help="Output directory (default: tests/benchmark_results/svd_alg_<timestamp>)")
     parser.add_argument("--resume", action="store_true",
                         help="Skip cases already completed in an existing output dir")
+    parser.add_argument(
+        "--include-retired", action="store_true",
+        help=(
+            "Also benchmark algorithms that were retired from the public API "
+            f"(currently: {RETIRED_ALGORITHMS}). The corresponding C++ paths "
+            "are still compiled for one release cycle; this flag preserves "
+            "reproducibility of the pre-retirement snapshot in "
+            "docs/svd_algorithm_benchmark.md."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -849,11 +869,17 @@ def main() -> None:
         run_id = time.strftime("svd_alg_%Y%m%d_%H%M%S")
         output_dir = REPO_ROOT / "tests" / "benchmark_results" / run_id
 
-    print(f"Backed SVD Algorithm Benchmark: Halko vs IRLB vs Feng", flush=True)
+    algorithms = list(ALGORITHMS)
+    if args.include_retired:
+        algorithms.extend(a for a in RETIRED_ALGORITHMS if a not in algorithms)
+
+    banner_algs = " vs ".join(a.capitalize() for a in algorithms)
+    print(f"Backed SVD Algorithm Benchmark: {banner_algs}", flush=True)
     print(f"Tiers     : {args.tiers}", flush=True)
     print(f"Components: {args.n_components}", flush=True)
     print(f"Chunk size: {args.chunk_size}", flush=True)
     print(f"Trials    : {args.trials}", flush=True)
+    print(f"Algorithms: {algorithms}", flush=True)
     print(f"Output    : {output_dir}", flush=True)
     print(flush=True)
 
@@ -864,6 +890,7 @@ def main() -> None:
         trials=args.trials,
         output_dir=output_dir,
         resume=args.resume,
+        algorithms=algorithms,
     )
 
 

@@ -64,7 +64,7 @@ def reduce_kernel(
         Base key under which to store results in ``adata.obsm``, ``adata.varm``,
         and ``adata.uns``.
     svd_algorithm : str or None
-        SVD algorithm: ``"auto"``, ``"irlb"``, ``"halko"``, or ``"feng"``.
+        SVD algorithm: ``"auto"``, ``"irlb"``, or ``"halko"``.
         ``"auto"`` selects based on matrix properties and storage mode
         (sparse in-memory → IRLB; dense in-memory and all backed inputs →
         Halko). Sparse inputs with ``nnz > 2^31 - 1`` are supported directly

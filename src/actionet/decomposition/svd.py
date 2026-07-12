@@ -33,7 +33,6 @@ from ..io.operator import open_backed_operator_for
 _SVD_ALGORITHM_TO_ID = {
     "irlb": 0,
     "halko": 1,
-    "feng": 2,
 }
 _SVD_ID_TO_ALGORITHM = {v: k for k, v in _SVD_ALGORITHM_TO_ID.items()}
 
@@ -55,24 +54,19 @@ def _select_svd_algorithm_inmemory(S: Any, algorithm: str, verbose: bool = True)
 
     Defaults:
 
-    - Sparse inputs -> IRLB. Empirically 3-6x faster than Halko or Feng on
-      real single-cell matrices at 25k-200k cells with sigma_corr >= 0.999998
+    - Sparse inputs -> IRLB. Empirically 3-6x faster than Halko on real
+      single-cell matrices at 25k-200k cells with sigma_corr >= 0.999998
       relative to the reference solver. See
       ``tests/benchmark_svd_inmemory_defaults.py`` and the report at
       ``docs/svd_algorithm_benchmark.md``.
-    - Dense inputs -> Halko. Halko narrowly beats Feng (~5% median wall time)
-      and is roughly 2x faster than IRLB on dense input at every tier
-      benchmarked. Same benchmark reference as above.
+    - Dense inputs -> Halko. Halko is roughly 2x faster than IRLB on dense
+      input at every tier benchmarked. Same benchmark reference as above.
 
     Sparse ``nnz`` is 64-bit clean because ``libactionet`` force-defines
     ``ARMA_64BIT_WORD``, so IRLB handles matrices with more than 2^31 non-zero
     entries directly. The remaining hard limit is per-axis: matrix row and
     column counts must fit in ``INT_MAX`` (~2.1B). Inputs that exceed that
     limit will fail inside the C++ SVD entry points with a clear error.
-
-    Feng is available as an explicit choice via ``algorithm="feng"`` but is
-    never auto-selected: sparse Feng is dominated by IRLB, and dense Feng is
-    marginally slower than Halko.
     """
     if algorithm != "auto":
         return _SVD_ALGORITHM_TO_ID[algorithm]
@@ -96,31 +90,26 @@ def _select_svd_algorithm_backed(algorithm: str, verbose: bool = True) -> int:
     For backed inputs, Halko is the unconditional auto-default. Empirical
     evidence across 25k-200k cell tiers shows:
 
-    - Halko and Feng are within ~5% median wall time of each other across
-      tiers <=150k, with Feng edging Halko out by ~13% at 200k
+    - IRLB is 6.5-7.3x slower than Halko on backed data at every tier
       (``tests/benchmark_backed_svd_algorithm.py``).
-    - IRLB is 6.5-7.3x slower than Halko/Feng on backed data at every tier.
-    - All three algorithms produce singular values with correlation
-      >= 0.999998 relative to Halko.
+    - Both algorithms produce singular values with correlation >= 0.999998
+      relative to Halko.
 
     Halko is preferred as the default because its fixed matvec count
     (``2*(iters+1)`` passes) gives a predictable NNZ-proportional I/O cost
     model, which is easier to reason about for atlas-scale streaming than
-    IRLB's convergence-driven iteration count. Feng is a viable alternative
-    at very large scales but Halko's advantage on the current benchmark set
-    does not clear the 10% wall-time threshold for switching. See
-    ``context/DECISIONS.md`` ("Backed SVD algorithm default") and
-    ``docs/svd_algorithm_benchmark.md``. IRLB and Feng remain available as
-    explicit backed choices via ``algorithm=``.
+    IRLB's convergence-driven iteration count. See ``context/DECISIONS.md``
+    ("Backed SVD algorithm default") and ``docs/svd_algorithm_benchmark.md``.
+    IRLB remains available as an explicit backed choice via ``algorithm=``.
     """
     if algorithm == "auto":
         if verbose:
             print("Detected backed matrix: selecting Halko operator path")
         return _SVD_ALGORITHM_TO_ID["halko"]
 
-    if algorithm not in {"halko", "irlb", "feng"}:
+    if algorithm not in {"halko", "irlb"}:
         raise ValueError(
-            "Backed matrices support only 'auto', 'halko', 'irlb', or 'feng'"
+            "Backed matrices support only 'auto', 'halko', or 'irlb'"
         )
     return _SVD_ALGORITHM_TO_ID[algorithm]
 
@@ -211,7 +200,7 @@ def run_svd(
     n_components : int
         Number of singular values/vectors to compute.
     algorithm : str or None
-        SVD algorithm: ``"auto"``, ``"irlb"``, ``"halko"``, or ``"feng"``.
+        SVD algorithm: ``"auto"``, ``"irlb"``, or ``"halko"``.
         ``"auto"`` selects based on matrix properties and storage mode.
         Sparse inputs with ``nnz > 2^31 - 1`` are supported directly by IRLB;
         per-axis row/column counts must still fit in ``INT_MAX``.

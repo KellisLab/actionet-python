@@ -89,14 +89,16 @@ This document records **deliberate architectural and operational decisions** for
 
 ## SVD algorithm strategy
 
-### Public SVD surface: IRLB, Halko, Feng (PRIMME removed)
+### Public SVD surface: IRLB, Halko (PRIMME removed; Feng retired)
 
 **Decision:**
 
-- The public Python SVD API exposes three algorithms: `"irlb"`, `"halko"`, and `"feng"`.
+- The public Python SVD API exposes two algorithms: `"irlb"` and `"halko"`.
 - `"auto"` selects IRLB for in-memory sparse inputs, Halko for in-memory dense inputs, and Halko for backed (HDF5-streamed) operator inputs.
 - `"primme"` has been removed from the public Python API, from `_SVD_ALGORITHM_TO_ID`, and from every auto-selection heuristic.
+- `"feng"` has been removed from the public Python API and from `_SVD_ALGORITHM_TO_ID`. Requesting it raises `ValueError` from `_normalize_algorithm` listing the allowed set `{auto, halko, irlb}`.
 - The C++ `ALG_PRIMME` enum, `svd_primme.{cpp,hpp}`, `runSVD_PRIMME_Operator`, and the vendored `src/libactionet/src/extern/primme/` tree remain compiled behind the existing R-build guard for one release cycle. No Python entry point can reach them. Deletion is tracked in `TODO.md`.
+- The C++ `ALG_FENG` enum, `svd_feng.{cpp,hpp}`, and the R wrapper's `algorithm=2` binding remain compiled and reachable from R for one release cycle so the Python retirement can be reverted in a single commit if a downstream consumer regresses. No Python entry point can reach them. Deletion is tracked in `TODO.md`.
 - The `MatrixOperator::prefer_block_solver_for_irlb()` hint and its two backed overrides have been removed. Backed operators requesting `svd_algorithm="irlb"` now unconditionally use the honest `svdIRLB(MatrixOperator&, ...)` overload; there is no hidden dispatch to PRIMME.
 
 **Rationale:**
@@ -104,12 +106,15 @@ This document records **deliberate architectural and operational decisions** for
 - Sparse `nnz > 2^31 - 1` no longer requires PRIMME. `libactionet` force-defines `ARMA_64BIT_WORD`, so `arma::sp_mat` handles 64-bit index arrays directly and IRLB's sparse product path goes through 64-bit-clean Armadillo operators.
 - The backed `IRLB -> PRIMME` fast path was a design leak: users who explicitly requested `"irlb"` on backed inputs silently ran PRIMME's block Lanczos SVD, doubling the maintenance surface and violating the algorithm contract exposed to callers.
 - PRIMME's cuBLAS path is a poor fit for the planned GPU work (confirmed by the scrapped July 2026 attempt documented in `plans/GPU_INTEGRATION.md`).
-- The C++/R-side quarantine gives one release cycle of revert safety without complicating the Python surface.
+- Feng was never auto-selected and never wins a default on the benchmark set: 3.8-6.7x slower than IRLB on sparse in-memory, 5-9% slower than Halko on dense in-memory, and within ~5% of Halko on backed data at <=150k cells (13% faster only at 200k, below the repo's 10% wall-time threshold for switching a default). It is numerically indistinguishable from Halko (`sigma_corr >= 0.999998`) and belongs to the same randomized-power-iteration category. Halko is strictly the recommended randomized option; IRLB serves the deterministic/iterative need. Feng added no distinct capability while duplicating Halko's category. Retiring it aligns the public surface with the "one randomized SVD family" direction recorded in `plans/SVD_STRATEGY_REDESIGN_v2.md`.
+- The C++/R-side quarantines give one release cycle of revert safety without complicating the Python surface.
 
 **Related:**
 
-- `plans/primme_removal_and_64bit_irlb_*.plan.md` for the implementation plan.
+- `plans/primme_removal_and_64bit_irlb_*.plan.md` for the PRIMME implementation plan.
+- `plans/feng_svd_removal_*.plan.md` for the Feng retirement plan.
 - `plans/SVD_STRATEGY_REDESIGN_v2.md` for the follow-up direction (shared product-backend abstraction, GPU strategy).
+- `docs/svd_algorithm_benchmark.md` for the empirical evidence justifying the Feng retirement.
 
 ---
 
@@ -121,18 +126,18 @@ This document records **deliberate architectural and operational decisions** for
 
 - For backed (HDF5-streamed) operator SVD, `auto` selects **Halko**.
 - IRLB is available as an explicit backed option (pass `svd_algorithm="irlb"`) and now runs the honest `svdIRLB(MatrixOperator&, ...)` overload with no hidden PRIMME fallback.
-- Feng is available as an explicit backed option (`svd_algorithm="feng"`); it is competitive with Halko and may become the auto-default in the future if the crossover observed at 200k cells widens with scale.
+- Feng is no longer part of the public Python API (see "SVD algorithm strategy" above); the benchmark evidence that informed its retirement remains available.
 
 **Rationale:**
 
 - Halko's matvec count is fixed at `2*(iters+1)` passes regardless of matrix conditioning, giving a predictable NNZ-proportional I/O cost model.
 - IRLB's convergence-driven iteration count adds variance to I/O load that complicates scaling predictions for atlas-size datasets. Empirically, backed IRLB is 6.5-7.3x slower than Halko across every tier we benchmarked (25k-200k cells).
-- Feng tracks Halko to within ~5% median wall time at tiers <=150k and beats Halko by ~13% at 200k, but the crossover point does not clear our 10% wall-time threshold for switching a documented default.
-- All three algorithms are correctness-equivalent (`sigma_corr >= 0.999998` on the benchmark set).
+- Feng tracked Halko to within ~5% median wall time at tiers <=150k and beat Halko by ~13% at 200k, but the crossover point did not clear our 10% wall-time threshold for switching a documented default and it belonged to the same randomized-power-iteration category as Halko without adding a distinct capability.
+- All three algorithms produced correctness-equivalent results (`sigma_corr >= 0.999998`) on the backed benchmark set at the time of Feng's retirement.
 
 **Benchmark reference:**
 
-- `tests/benchmark_backed_svd_algorithm.py` — three-way Halko vs IRLB vs Feng benchmark on backed data across cell-count tiers.
+- `tests/benchmark_backed_svd_algorithm.py` — Halko vs IRLB benchmark on backed data across cell-count tiers. Pass `--include-retired` to also run Feng against the still-compiled C++ path for one-off reproduction of the pre-retirement snapshot.
 - The benchmark measures wall time, peak RSS, I/O bytes read, singular value correlation (accuracy), and reconstruction error.
 - Results and the full auto-selection table are in `docs/svd_algorithm_benchmark.md`.
 - Reference run: 25k, 50k, 100k, 150k, 200k cell tiers, 2 trials per configuration, `n_components=30`.
@@ -149,17 +154,17 @@ This document records **deliberate architectural and operational decisions** for
 
 - For **sparse** in-memory inputs, `auto` selects **IRLB**.
 - For **dense** in-memory inputs, `auto` selects **Halko**.
-- Feng is available as an explicit choice for both storage forms but is never auto-selected.
+- Feng is no longer part of the public Python API (see "SVD algorithm strategy" above); the benchmark evidence that informed its retirement remains available.
 
 **Rationale:**
 
 - **Sparse:** IRLB is 3-6x faster than Halko or Feng across the 25k-200k cell tier range on real single-cell matrices. Sparse `nnz` is already 64-bit clean under `ARMA_64BIT_WORD`, so IRLB carries no residual size limitation vs the randomized methods.
-- **Dense:** Halko narrowly beats Feng (~5% median wall time) and beats IRLB by roughly 2x at every tier. Feng is a viable second option but does not dislodge Halko as the default.
-- All three algorithms produce singular values with `sigma_corr >= 0.999998` across the benchmark set.
+- **Dense:** Halko narrowly beats Feng (~5% median wall time) and beats IRLB by roughly 2x at every tier. Feng never dislodged Halko as a default; retirement follows.
+- All three algorithms produced correctness-equivalent results (`sigma_corr >= 0.999998`) across the in-memory benchmark set at the time of Feng's retirement.
 
 **Benchmark reference:**
 
-- `tests/benchmark_svd_inmemory_defaults.py` — three-way sparse and dense benchmark across `{25k, 50k, 100k, 150k, 200k}` (dense capped at 100k to fit typical single-node RAM).
+- `tests/benchmark_svd_inmemory_defaults.py` — sparse and dense IRLB-vs-Halko benchmark across `{25k, 50k, 100k, 150k, 200k}` (dense capped at 100k to fit typical single-node RAM). Pass `--include-retired` to also run Feng against the still-compiled C++ path for one-off reproduction of the pre-retirement snapshot.
 - Full results, ratio tables, and reproduction commands: `docs/svd_algorithm_benchmark.md`.
 
 **Status:** Confirmed. The auto-selection heuristics in `_select_svd_algorithm_inmemory` match the benchmark winners with no further changes required.

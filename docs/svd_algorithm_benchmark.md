@@ -1,12 +1,21 @@
 # SVD algorithm benchmark
 
+> **Feng is no longer part of the public Python SVD API.** The tables and
+> discussion of Feng in this document are retained as the empirical basis
+> for the retirement decision (see
+> [`context/DECISIONS.md`](../context/DECISIONS.md), "SVD algorithm
+> strategy") and to keep the in-memory and backed defaults' rationale
+> reproducible. The Feng C++ paths remain compiled for one release cycle
+> and can be re-run from the benchmark harnesses with `--include-retired`;
+> `run_svd(..., algorithm="feng")` raises `ValueError`.
+
 Empirical basis for the SVD auto-selection routing in
 [`_select_svd_algorithm_inmemory`](../src/actionet/decomposition/svd.py) and
 [`_select_svd_algorithm_backed`](../src/actionet/decomposition/svd.py). Two
 benchmark harnesses feed this document:
 
 - [`tests/benchmark_svd_inmemory_defaults.py`](../tests/benchmark_svd_inmemory_defaults.py)
-  — sparse and dense in-memory paths across IRLB, Halko, and Feng.
+  — sparse and dense in-memory paths across IRLB, Halko, and (historically) Feng.
 - [`tests/benchmark_backed_svd_algorithm.py`](../tests/benchmark_backed_svd_algorithm.py)
   — the same three algorithms on backed (HDF5-streamed) input.
 

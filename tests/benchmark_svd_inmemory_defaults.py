@@ -1,11 +1,17 @@
 #!/usr/bin/env python3
 """benchmark_svd_inmemory_defaults.py -- In-memory SVD algorithm comparison.
 
-Benchmarks run_svd() with algorithm in {irlb, halko, feng} across the two
+Benchmarks run_svd() with algorithm in {irlb, halko} across the two
 in-memory storage forms (sparse CSR and dense float64) using the same
 tier-subset datasets the backed benchmark consumes. Purpose: settle the
 sparse-in-mem and dense-in-mem defaults in
 `actionet.decomposition.svd._select_svd_algorithm_inmemory`.
+
+Feng was retired from the public Python API (see context/DECISIONS.md -
+"SVD algorithm strategy update: Feng retired from public API"). This
+benchmark drops Feng from its default algorithm list. Pass
+``--include-retired`` to re-run Feng against the retained C++ path for
+one-off historical reproduction of the pre-removal results.
 
 Metrics per (dataset, storage_form, algorithm, trial):
   - wall_s              : wall-clock seconds
@@ -67,7 +73,8 @@ if not Path(PYTHON_EXE).exists():
 os.environ["HDF5_USE_FILE_LOCKING"] = "FALSE"
 
 DEFAULT_TIERS = ["25k", "50k", "100k", "150k", "200k"]
-ALGORITHMS = ["irlb", "halko", "feng"]
+ALGORITHMS = ["irlb", "halko"]
+RETIRED_ALGORITHMS = ["feng"]
 STORAGE_FORMS = ["sparse", "dense"]
 DEFAULT_N_COMPONENTS = 30
 DEFAULT_TRIALS = 2
@@ -581,7 +588,7 @@ def generate_report(output_dir: Path, jsonl_path: Path) -> None:
 
     report_path = output_dir / "svd_inmemory_benchmark.md"
     lines = [
-        "# In-Memory SVD Algorithm Benchmark: IRLB vs Halko vs Feng",
+        "# In-Memory SVD Algorithm Benchmark: IRLB vs Halko",
         "",
         f"Generated: {time.strftime('%Y-%m-%d %H:%M:%S')}",
         "",
@@ -649,7 +656,6 @@ def generate_report(output_dir: Path, jsonl_path: Path) -> None:
     # Recommendations per storage form
     lines += ["## Recommendations", ""]
     current_defaults = {"sparse": "irlb", "dense": "halko"}
-    proposed_defaults = {"sparse": "irlb", "dense": "feng"}
     acc_threshold = 0.9999
 
     for storage in STORAGE_FORMS:
@@ -675,7 +681,6 @@ def generate_report(output_dir: Path, jsonl_path: Path) -> None:
         }
 
         cur = current_defaults[storage]
-        proposed = proposed_defaults[storage]
 
         if not candidates:
             rec = f"**{storage.title()}: inconclusive** -- no algorithm passed the accuracy filter."
@@ -694,10 +699,9 @@ def generate_report(output_dir: Path, jsonl_path: Path) -> None:
             else:
                 wall_gain = 1.0 - (winner_wall / cur_wall) if cur_wall > 0 else 0.0
                 rss_ratio = (winner_rss / cur_rss) if cur_rss > 0 else float("nan")
-                marker_proposed = " (matches user-proposed routing)" if winner == proposed else ""
                 if wall_gain >= 0.10:
                     rec = (
-                        f"**{storage.title()}: change default to {winner.upper()}{marker_proposed}.** "
+                        f"**{storage.title()}: change default to {winner.upper()}.** "
                         f"Winner median wall={winner_wall:.3f}s vs current {cur.upper()} "
                         f"median wall={cur_wall:.3f}s ({wall_gain*100:.1f}% faster). "
                         f"Peak RSS ratio winner/current = {rss_ratio:.2f}. "
@@ -743,7 +747,10 @@ def run_benchmark(
     skip_dense_above: Optional[str],
     output_dir: Path,
     resume: bool,
+    algorithms: Optional[List[str]] = None,
 ) -> None:
+    if algorithms is None:
+        algorithms = list(ALGORITHMS)
     output_dir.mkdir(parents=True, exist_ok=True)
     jsonl_path = output_dir / "raw_results.jsonl"
     scratch_dir = output_dir / "scratch"
@@ -797,7 +804,7 @@ def run_benchmark(
                     flush=True,
                 )
 
-            for algorithm in ALGORITHMS:
+            for algorithm in algorithms:
                 for trial in range(1, trials + 1):
                     key = (tier_label, storage_form, algorithm, trial)
                     if resume and key in completed:
@@ -839,7 +846,7 @@ def run_benchmark(
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Benchmark in-memory SVD: IRLB vs Halko vs Feng (sparse and dense)",
+        description="Benchmark in-memory SVD: IRLB vs Halko (sparse and dense)",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument(
@@ -870,6 +877,16 @@ def parse_args() -> argparse.Namespace:
         "--resume", action="store_true",
         help="Skip cases already completed in an existing output dir",
     )
+    parser.add_argument(
+        "--include-retired", action="store_true",
+        help=(
+            "Also benchmark algorithms that were retired from the public API "
+            f"(currently: {RETIRED_ALGORITHMS}). The corresponding C++ paths "
+            "are still compiled for one release cycle; this flag preserves "
+            "reproducibility of the pre-retirement snapshot in "
+            "docs/svd_algorithm_benchmark.md."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -886,10 +903,16 @@ def main() -> None:
     if skip_dense_above == "":
         skip_dense_above = None
 
-    print("In-Memory SVD Algorithm Benchmark: IRLB vs Halko vs Feng", flush=True)
+    algorithms = list(ALGORITHMS)
+    if args.include_retired:
+        algorithms.extend(a for a in RETIRED_ALGORITHMS if a not in algorithms)
+
+    banner_algs = " vs ".join(a.upper() for a in algorithms)
+    print(f"In-Memory SVD Algorithm Benchmark: {banner_algs}", flush=True)
     print(f"Tiers            : {args.tiers}", flush=True)
     print(f"Components       : {args.n_components}", flush=True)
     print(f"Trials           : {args.trials}", flush=True)
+    print(f"Algorithms       : {algorithms}", flush=True)
     print(f"Skip dense above : {skip_dense_above}", flush=True)
     print(f"Output           : {output_dir}", flush=True)
     print(flush=True)
@@ -901,6 +924,7 @@ def main() -> None:
         skip_dense_above=skip_dense_above,
         output_dir=output_dir,
         resume=args.resume,
+        algorithms=algorithms,
     )
 
 
