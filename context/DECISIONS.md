@@ -112,9 +112,9 @@ This document records **deliberate architectural and operational decisions** for
 
 **Related:**
 
-- `plans/primme_removal_and_64bit_irlb_*.plan.md` for the PRIMME implementation plan.
-- `plans/feng_svd_removal_*.plan.md` for the Feng retirement plan.
-- `plans/SVD_STRATEGY_REDESIGN_v2.md` for the follow-up direction (shared product-backend abstraction, GPU strategy).
+- `plans/GPU_BACKED_SVD_AGENT_LAUNCHPAD.md` for the active GPU-backed SVD implementation context.
+- `plans/GPU_INTEGRATION.md` for the Python-facing GPU roadmap.
+- `src/libactionet/plans/GPU_BACKEND_PLAN.md` for C++/build-side GPU constraints.
 - `docs/svd_algorithm_benchmark.md` for the empirical evidence justifying the Feng retirement.
 
 ---
@@ -169,6 +169,52 @@ This document records **deliberate architectural and operational decisions** for
 - Full results, ratio tables, and reproduction commands: `docs/svd_algorithm_benchmark.md`.
 
 **Status:** Confirmed. The auto-selection heuristics in `_select_svd_algorithm_inmemory` match the benchmark winners with no further changes required.
+
+---
+
+## GPU backend scope and platform
+
+### NVIDIA CUDA backend: Python-first, SVD-first
+
+**Decision:**
+
+- GPU support is an optional execution backend, not a new public SVD algorithm.
+- The first GPU target is Halko-style randomized SVD for dense/sparse and
+  in-memory/backed inputs.
+- Disk-backed GPU SVD is a first-class v1 requirement; do not implement GPU SVD
+  by calling CPU `MatrixOperator::matmat` and copying the result to device.
+- Native CUDA toolkit primitives are the default implementation direction.
+  RAFT/RAPIDS may be evaluated only as an optional spike after the product and
+  streaming boundaries exist.
+- PRIMME and Feng are not GPU routes.
+
+**Platform contract:**
+
+- Linux x86_64 with NVIDIA GPUs is the production/runtime target.
+- Windows 11 + WSL2 with NVIDIA GPUs is the developer hardware validation
+  target.
+- CUDA 12.2 is the minimum toolkit target. CUDA 11.x is out of scope.
+- Supported hardware starts at SM 8.0 / Ampere. Pre-Ampere GPUs are out of
+  scope.
+- macOS remains CPU-only. Native Windows outside WSL2 is out of scope.
+- GPU support is disabled by default and must not change CPU-only builds.
+- R-facing GPU API work is deferred; Python is the first supported front-end.
+
+**Rationale:**
+
+- The scrapped PRIMME/cuBLAS attempt showed that GPU support needs explicit
+  host/device ownership, streaming boundaries, runtime canaries, and hardware
+  validation.
+- CUDA 12.2 and Ampere+ keep the target aligned with current HPC and WSL2
+  development hardware without adding a legacy CUDA 11.x support burden.
+- Keeping backend policy separate from algorithm choice preserves the simplified
+  SVD public surface.
+
+**Related:**
+
+- `plans/GPU_BACKED_SVD_AGENT_LAUNCHPAD.md`
+- `plans/GPU_INTEGRATION.md`
+- `src/libactionet/plans/GPU_BACKEND_PLAN.md`
 
 ---
 

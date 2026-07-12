@@ -184,7 +184,9 @@ With Intel MKL, you should see:
 
 ### GPU support (planned, not yet implemented)
 
-An NVIDIA CUDA backend for SVD and network construction is on the roadmap but **not currently implemented on `dev`.** A prior attempt (`dev-gpu-v2` branch, scrapped July 2026) added CMake and Python plumbing but crashed on first hardware sign-off; the code was removed for a clean re-attempt on real hardware. `pip install .` currently produces a CPU-only build.
+An NVIDIA CUDA backend for SVD is on the roadmap but **not currently implemented on `dev`.** A prior attempt (`dev-gpu-v2` branch, scrapped July 2026) added CMake and Python plumbing but crashed on first hardware sign-off; the code was removed for a clean re-attempt on real hardware. `pip install .` currently produces a CPU-only build.
+
+The v1 GPU target is Linux x86_64 / WSL2 with NVIDIA Ampere+ hardware (SM 8.0+) and CUDA 12.2+. macOS remains CPU-only, native Windows is out of scope, and R-facing GPU APIs are deferred.
 
 The environment file `environment-gpu.yml` and the `--gpu` / `LIBACTIONET_ENABLE_NVIDIA_GPU=ON` scaffolding in `install_optimized.sh` are retained for the future re-attempt but have no runtime effect today. The current roadmap lives in [`plans/GPU_INTEGRATION.md`](plans/GPU_INTEGRATION.md) (Python surface), [`plans/GPU_BACKED_SVD_AGENT_LAUNCHPAD.md`](plans/GPU_BACKED_SVD_AGENT_LAUNCHPAD.md) (GPU-backed SVD launchpad), and [`src/libactionet/plans/GPU_BACKEND_PLAN.md`](src/libactionet/plans/GPU_BACKEND_PLAN.md) (C++ + build).
 

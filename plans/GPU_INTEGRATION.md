@@ -20,6 +20,20 @@ The C++/build-side durable roadmap lives at
 - PRIMME and Feng are retired from the Python surface. Their C++ sources remain
   temporarily quarantined and should not be treated as GPU routes.
 
+## Platform Scope
+
+Python GPU API work must reflect the C++ platform contract:
+
+- Linux x86_64 with NVIDIA GPUs is the runtime target.
+- Windows 11 + WSL2 with NVIDIA GPUs is the developer test/sign-off target.
+- CUDA 12.2 is the minimum toolkit target.
+- Supported hardware is SM 8.0 / Ampere or newer.
+- macOS stays CPU-only.
+- Native Windows and R-facing GPU APIs are out of scope for v1.
+
+The Python surface should not imply support for CUDA 11.x, pre-Ampere GPUs, or
+GPU execution on macOS.
+
 ## Direction
 
 GPU support should be exposed as an execution backend for existing algorithms,

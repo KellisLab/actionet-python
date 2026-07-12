@@ -5,6 +5,10 @@ Date: 2026-07-12
 Status: active planning context for the next implementation pass. GPU SVD is
 not implemented yet.
 
+This is the implementation launchpad. The companion active documents are
+`plans/GPU_INTEGRATION.md` for Python API/metadata policy and
+`src/libactionet/plans/GPU_BACKEND_PLAN.md` for C++ build/platform policy.
+
 ## Goal
 
 Add NVIDIA GPU acceleration for SVD without fragmenting the SVD strategy again.
@@ -30,6 +34,31 @@ Current auto-selection:
 - backed dense/sparse: Halko
 
 Do not restore `"primme"` or `"feng"` to the Python API.
+
+## Target And Test Platforms
+
+GPU-backed SVD v1 targets:
+
+- Linux x86_64 with NVIDIA GPUs for production/runtime use.
+- Windows 11 + WSL2 with NVIDIA GPUs for developer hardware sign-off.
+- CUDA toolkit 12.2 or newer, with 12.2 as the minimum supported floor.
+- NVIDIA SM 8.0 / Ampere or newer hardware. Default CUDA architecture lists
+  should cover Ampere, Ada, and Hopper (`80;86;89;90`) unless a deployment
+  intentionally narrows them.
+- De-containerized conda/HPC environments; do not require Docker or
+  Singularity.
+
+Non-targets for v1:
+
+- CUDA 11.x.
+- Pre-Ampere NVIDIA GPUs.
+- macOS GPU acceleration. macOS remains CPU-only.
+- Native Windows outside WSL2.
+- R-facing GPU APIs.
+
+Do not record a newer CUDA toolkit as "recommended" just because one developer
+machine has it. Raise the recommendation only after target Linux/WSL2 hardware
+validation.
 
 ## Current Code State
 

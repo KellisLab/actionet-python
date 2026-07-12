@@ -66,7 +66,10 @@ for the underlying streaming operators.
 
 ## GPU
 
-GPU support is planned but not yet implemented. See
+GPU support is planned but not yet implemented. The first target is SVD on
+Linux x86_64 / WSL2 with NVIDIA Ampere+ hardware (SM 8.0+) and CUDA 12.2+.
+macOS remains CPU-only, native Windows is out of scope, and R-facing GPU APIs
+are deferred. See
 [`plans/GPU_INTEGRATION.md`](https://github.com/KellisLab/actionet-python/blob/dev/plans/GPU_INTEGRATION.md)
 for the Python-side roadmap,
 [`plans/GPU_BACKED_SVD_AGENT_LAUNCHPAD.md`](https://github.com/KellisLab/actionet-python/blob/dev/plans/GPU_BACKED_SVD_AGENT_LAUNCHPAD.md)
