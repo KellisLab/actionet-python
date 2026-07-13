@@ -4,12 +4,6 @@
 Benchmarks run_svd() with algorithm='halko' and 'irlb' on backed
 (HDF5-streamed) AnnData objects across dataset size tiers.
 
-Feng was retired from the public Python API (see context/DECISIONS.md -
-"SVD algorithm strategy update: Feng retired from public API"). This
-benchmark drops Feng from its default algorithm list. Pass
-``--include-retired`` to re-run Feng against the retained C++ path for
-one-off historical reproduction of the pre-removal results.
-
 Metrics collected per trial:
   - wall_s          : wall-clock seconds
   - peak_rss_mb     : peak RSS increase (MB) during the call
@@ -74,7 +68,6 @@ TIERS = [25_000, 50_000, 100_000, 150_000, 200_000]
 TIER_LABELS = {t: f"{t // 1000}k" for t in TIERS}
 
 ALGORITHMS = ["halko", "irlb"]
-RETIRED_ALGORITHMS = ["feng"]
 DEFAULT_N_COMPONENTS = 30
 DEFAULT_CHUNK_SIZE = 4096
 DEFAULT_TRIALS = 2
@@ -680,8 +673,6 @@ def generate_report(output_dir: Path, jsonl_path: Path) -> None:
                     return "Halko"
                 if alg == "irlb":
                     return "IRLB"
-                if alg == "feng":
-                    return "Feng"
                 return alg
 
             if winner == "halko":
@@ -737,7 +728,7 @@ def generate_report(output_dir: Path, jsonl_path: Path) -> None:
     print(summary.to_string(index=False), flush=True)
     ratio_cols = [c for c in pivot_wall.columns if isinstance(c, str) and c.endswith("_vs_halko")]
     if ratio_cols:
-        display_cols = [c for c in ["halko", "irlb", "feng"] if c in pivot_wall.columns] + ratio_cols
+        display_cols = [c for c in ["halko", "irlb"] if c in pivot_wall.columns] + ratio_cols
         print("\nSpeed ratio (alg wall / Halko wall) — <1.0 means alg is faster than Halko:", flush=True)
         print(pivot_wall[display_cols].to_string(), flush=True)
     print("="*70, flush=True)
@@ -847,16 +838,6 @@ def parse_args() -> argparse.Namespace:
                         help="Output directory (default: tests/benchmark_results/svd_alg_<timestamp>)")
     parser.add_argument("--resume", action="store_true",
                         help="Skip cases already completed in an existing output dir")
-    parser.add_argument(
-        "--include-retired", action="store_true",
-        help=(
-            "Also benchmark algorithms that were retired from the public API "
-            f"(currently: {RETIRED_ALGORITHMS}). The corresponding C++ paths "
-            "are still compiled for one release cycle; this flag preserves "
-            "reproducibility of the pre-retirement snapshot in "
-            "docs/svd_algorithm_benchmark.md."
-        ),
-    )
     return parser.parse_args()
 
 
@@ -870,8 +851,6 @@ def main() -> None:
         output_dir = REPO_ROOT / "tests" / "benchmark_results" / run_id
 
     algorithms = list(ALGORITHMS)
-    if args.include_retired:
-        algorithms.extend(a for a in RETIRED_ALGORITHMS if a not in algorithms)
 
     banner_algs = " vs ".join(a.capitalize() for a in algorithms)
     print(f"Backed SVD Algorithm Benchmark: {banner_algs}", flush=True)

@@ -17,8 +17,8 @@ The C++/build-side durable roadmap lives at
   `"halko"`.
 - `"auto"` selects IRLB for sparse in-memory inputs and Halko for dense
   in-memory and all backed inputs.
-- PRIMME and Feng are retired from the Python surface. Their C++ sources remain
-  temporarily quarantined and should not be treated as GPU routes.
+- PRIMME and Feng have been deleted from the Python surface and the C++ core.
+  They must not be reintroduced as GPU routes.
 
 ## Platform Scope
 

@@ -8,7 +8,7 @@ This directory contains a comprehensive benchmark test for comparing the 4 SVD a
 
 ### Features
 
-The benchmark evaluates all 3 SVD methods (IRLB, Halko, Feng) with:
+The benchmark evaluates both public SVD methods (IRLB, Halko) with:
 
 1. **Both Input Types:**
    - Sparse matrices (CSR format)
@@ -117,8 +117,6 @@ Method Input Type  Mean Time (s)  Std Time (s)  Min Time (s)  Max Time (s)  Memo
   IRLB      dense       1.354         0.072         1.282         1.426          19.5
  Halko     sparse       4.560         0.063         4.496         4.623          44.3
  Halko      dense       0.896         0.001         0.896         0.897          19.6
-  Feng     sparse       5.091         0.003         5.087         5.094          10.5
-  Feng      dense       0.915         0.000         0.915         0.915          21.9
 
 ----------------------------------------------------------------------
 FASTEST METHODS:
@@ -129,7 +127,7 @@ Dense input:   Halko      - 0.896 s
 ----------------------------------------------------------------------
 MEMORY EFFICIENCY:
 ----------------------------------------------------------------------
-Sparse input:  Feng       - 10.5 MB
+Sparse input:  Halko      - 44.3 MB
 Dense input:   IRLB       - 19.5 MB
 ```
 
@@ -139,7 +137,7 @@ Based on test data (6790 cells × 14445 genes, 81% sparse):
 
 1. **For Sparse Input:**
    - Fastest: IRLB (~2.4s)
-   - Most memory efficient: Feng (~10 MB)
+   - Most memory efficient: Halko (~44 MB)
 
 2. **For Dense Input:**
    - Fastest: Halko (~0.9s)

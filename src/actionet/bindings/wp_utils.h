@@ -25,17 +25,16 @@ namespace py = pybind11;
 
 /// @brief Validate SVD algorithm IDs accepted by the Python extension.
 ///
-/// Feng and PRIMME remain compiled in the C++ core for one release window, but
-/// the Python API is intentionally limited to IRLB and Halko. Keep this guard
-/// in pybind entry points so private ``actionet._core`` calls cannot bypass the
-/// public Python wrapper's string validation.
+/// The Python API exposes only IRLB and Halko. Keep this guard in pybind
+/// entry points so private ``actionet._core`` calls cannot bypass the public
+/// Python wrapper's string validation.
 inline void validate_python_svd_algorithm(int algorithm, const char* context) {
     if (algorithm == actionet::ALG_IRLB || algorithm == actionet::ALG_HALKO) {
         return;
     }
     throw std::runtime_error(
         std::string(context) + ": unsupported SVD algorithm id " +
-        std::to_string(algorithm) + "; Python bindings expose only IRLB (0) and Halko (1)");
+        std::to_string(algorithm) + "; valid IDs: 0 (IRLB), 1 (Halko)");
 }
 
 // Convert NumPy array to Armadillo dense matrix

@@ -1,6 +1,4 @@
 ## Primary
-* Delete PRIMME sources, headers, vendored tree, CMake wiring, `ALG_PRIMME`, and remaining test/wrapper references once the follow-up SVD/GPU plan stabilizes (see `context/DECISIONS.md` "SVD algorithm strategy" and `plans/GPU_BACKED_SVD_AGENT_LAUNCHPAD.md`).
-* Delete Feng SVD C++ sources (`svd_feng.{cpp,hpp}`), the `ALG_FENG` enum, the Feng switch cases in `runSVD`/`runSVD_Operator`, and the R wrapper's `algorithm=2` binding once the R front-end has been updated to drop that code path. Parallel to the PRIMME deletion follow-up (see `context/DECISIONS.md` "SVD algorithm strategy" and `plans/GPU_BACKED_SVD_AGENT_LAUNCHPAD.md`).
 * Consolidate plotting paths with render backend (lets_plot or matplotlib)
 * NaN and Inf support for _anndata_io
 * Recreate LazyTransform from uns
@@ -51,3 +49,5 @@
 * Document everything (OpenMP hard requirement, README overhaul, context files updated)
 * annotate_cells enrichment → DataFrame
 * Fixed violin/boxplot alignment
+* Delete PRIMME sources, headers, vendored tree, CMake wiring, `ALG_PRIMME`, and remaining test/wrapper references (see `context/DECISIONS.md` "SVD algorithm strategy").
+* Delete Feng SVD C++ sources (`svd_feng.{cpp,hpp}`), the `ALG_FENG` enum, and Feng switch cases in `runSVD`/`runSVD_Operator`. The `libactionet/wrappers_r/` copies here are reference-only and were intentionally left untouched; a reminder to patch the standalone `actionet-r` package is tracked in `src/libactionet/TODO.md`.

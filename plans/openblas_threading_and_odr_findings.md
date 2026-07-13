@@ -16,10 +16,12 @@ to `actionet-r`, and requires coordinated fixes in `libactionet`.
    `#pragma omp parallel` region silently oversubscribes threads by
    `N_omp * N_blas`. On a 32-thread WSL2 VM this produced ~900-way
    concurrency and turned a 7-9 s job into a 15 min job.
-2. **The Armadillo/PRIMME translation units emit ~15 ODR (One Definition
-   Rule) and LTO type-mismatch warnings on every build.** These are
-   longstanding, not caused by WSL2, but they undermine confidence in the
-   LTO-optimized artifact and should be treated as a real defect.
+2. **The Armadillo/PRIMME translation units emitted ~15 ODR (One Definition
+   Rule) and LTO type-mismatch warnings on every build.** This section is now
+   OBSOLETE — PRIMME has been fully deleted from the codebase (see
+   `context/DECISIONS.md` "SVD algorithm strategy"). The findings below are
+   retained as historical record of the defect class; the mitigation is the
+   deletion itself.
 
 Both issues sit inside `libactionet` and affect every front-end.
 
@@ -224,6 +226,14 @@ pathology (paging, filesystem, AVX dispatch, kernel scheduler cadence).
 ---
 
 ## 2. Armadillo / PRIMME ODR and LTO warnings
+
+> **OBSOLETE — historical record only.** PRIMME has been fully deleted from
+> `libactionet` (vendored sources, headers, CMake wiring, C++ dispatch, and
+> Python entry points). The mitigation described in this section is the
+> deletion itself. The `struct state_type` Armadillo ODR observations remain
+> conceptually valid for any future translation unit that pulls in an
+> independent copy of Armadillo internals; the PRIMME-specific BLAS/LAPACK
+> prototype clashes below are gone.
 
 ### 2.1 Symptom
 

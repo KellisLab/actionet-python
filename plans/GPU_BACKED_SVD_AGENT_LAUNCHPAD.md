@@ -122,13 +122,14 @@ The preflight cleanup has been implemented in this branch:
 Do not use PRIMME for GPU SVD. The previous PRIMME GPU attempt failed for
 structural reasons and does not fit the current architecture.
 
-PRIMME C++ code remains temporarily quarantined for deletion later. It should
-not influence the new GPU design.
+PRIMME C++ code has been fully deleted from the repository. It must not be
+reintroduced.
 
 ### Feng
 
-Do not use Feng as a public Python SVD option. It is retired from Python and
-does not provide a distinct enough capability to justify another path.
+Do not use Feng as a public Python SVD option. It has been fully deleted from
+the repository and does not provide a distinct enough capability to justify
+another path.
 
 ### 64-bit CPU Support
 

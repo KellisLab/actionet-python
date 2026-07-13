@@ -1,13 +1,13 @@
 # SVD algorithm benchmark
 
-> **Feng is no longer part of the public Python SVD API.** The tables and
+> **PRIMME and Feng have been deleted from the codebase.** The tables and
 > discussion of Feng in this document are retained as the empirical basis
 > for the retirement decision (see
 > [`context/DECISIONS.md`](../context/DECISIONS.md), "SVD algorithm
 > strategy") and to keep the in-memory and backed defaults' rationale
-> reproducible. The Feng C++ paths remain compiled for one release cycle
-> and can be re-run from the benchmark harnesses with `--include-retired`;
-> `run_svd(..., algorithm="feng")` raises `ValueError`.
+> reproducible. The Feng C++ paths are no longer available; the benchmark
+> harnesses no longer accept `--include-retired`. `run_svd(...,
+> algorithm="feng")` and `algorithm="primme"` raise `ValueError`.
 
 Empirical basis for the SVD auto-selection routing in
 [`_select_svd_algorithm_inmemory`](../src/actionet/decomposition/svd.py) and

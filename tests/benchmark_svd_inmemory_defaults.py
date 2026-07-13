@@ -7,12 +7,6 @@ tier-subset datasets the backed benchmark consumes. Purpose: settle the
 sparse-in-mem and dense-in-mem defaults in
 `actionet.decomposition.svd._select_svd_algorithm_inmemory`.
 
-Feng was retired from the public Python API (see context/DECISIONS.md -
-"SVD algorithm strategy update: Feng retired from public API"). This
-benchmark drops Feng from its default algorithm list. Pass
-``--include-retired`` to re-run Feng against the retained C++ path for
-one-off historical reproduction of the pre-removal results.
-
 Metrics per (dataset, storage_form, algorithm, trial):
   - wall_s              : wall-clock seconds
   - peak_rss_mb         : peak RSS increase (MB) during the SVD call
@@ -74,7 +68,6 @@ os.environ["HDF5_USE_FILE_LOCKING"] = "FALSE"
 
 DEFAULT_TIERS = ["25k", "50k", "100k", "150k", "200k"]
 ALGORITHMS = ["irlb", "halko"]
-RETIRED_ALGORITHMS = ["feng"]
 STORAGE_FORMS = ["sparse", "dense"]
 DEFAULT_N_COMPONENTS = 30
 DEFAULT_TRIALS = 2
@@ -877,16 +870,6 @@ def parse_args() -> argparse.Namespace:
         "--resume", action="store_true",
         help="Skip cases already completed in an existing output dir",
     )
-    parser.add_argument(
-        "--include-retired", action="store_true",
-        help=(
-            "Also benchmark algorithms that were retired from the public API "
-            f"(currently: {RETIRED_ALGORITHMS}). The corresponding C++ paths "
-            "are still compiled for one release cycle; this flag preserves "
-            "reproducibility of the pre-retirement snapshot in "
-            "docs/svd_algorithm_benchmark.md."
-        ),
-    )
     return parser.parse_args()
 
 
@@ -904,8 +887,6 @@ def main() -> None:
         skip_dense_above = None
 
     algorithms = list(ALGORITHMS)
-    if args.include_retired:
-        algorithms.extend(a for a in RETIRED_ALGORITHMS if a not in algorithms)
 
     banner_algs = " vs ".join(a.upper() for a in algorithms)
     print(f"In-Memory SVD Algorithm Benchmark: {banner_algs}", flush=True)
