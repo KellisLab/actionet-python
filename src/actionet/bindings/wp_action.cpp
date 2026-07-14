@@ -27,6 +27,18 @@ py::dict run_aa(py::array_t<double> A, py::array_t<double> W0, int max_it = 100,
 }
 
 // action_decomp =======================================================================================================
+//
+// ACTION ``tol`` defaults intentionally diverge across the three front ends:
+//   * C++ core (``runACTION`` in action_main.hpp):     1e-6   (default for R and direct C++ callers).
+//   * pybind11 binding (``decomp_action`` / ``run_action``): 1e-16
+//     — kept as a stricter fallback in case a caller invokes ``actionet._core``
+//       directly without going through the Python wrapper.
+//   * Python wrapper (``actionet.action.run_action``): 1e-100
+//     — documented in ``src/actionet/action/run_action.py`` docstring; chosen
+//       to prioritize convergence speed / sensitivity in interactive workflows.
+// The Python-facing calls always pass an explicit ``tolerance``, so the
+// pybind default here is effectively used only by ``actionet._core`` power
+// users who bypass the Python wrapper.  See also ``context/DECISIONS.md``.
 
 py::dict decomp_action(py::array_t<double> S_r, int k_min = 2, int k_max = 30,
                        int max_it = 100, double tol = 1e-16, int thread_no = 0) {

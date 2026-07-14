@@ -53,19 +53,7 @@ py::array_t<double> run_lpa(py::object G, py::array_t<double> labels, double lam
     arma::uvec fixed_labels_vec;
     if (!fixed_labels.is_none()) {
         auto fixed_arr = fixed_labels.cast<py::array_t<int, py::array::forcecast>>();
-        auto fixed_buf = fixed_arr.request();
-        auto fixed_ptr = static_cast<const int*>(fixed_buf.ptr);
-        fixed_labels_vec.set_size(static_cast<arma::uword>(fixed_buf.size));
-        for (py::ssize_t i = 0; i < fixed_buf.size; ++i) {
-            const int val = fixed_ptr[i];
-            if (val < 0) {
-                throw std::runtime_error(
-                    "fixed_labels values must be >= 0 (0-indexed); got " +
-                    std::to_string(val)
-                );
-            }
-            fixed_labels_vec(static_cast<arma::uword>(i)) = static_cast<arma::uword>(val);
-        }
+        fixed_labels_vec = int_array_to_uvec(fixed_arr, "fixed_labels");
     }
 
     arma::vec new_labels;

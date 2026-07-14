@@ -20,6 +20,7 @@
 #include <memory>
 #include <stdexcept>
 #include <string>
+#include <type_traits>
 
 namespace py = pybind11;
 
@@ -63,6 +64,40 @@ arma::vec numpy_to_arma_vec(py::array_t<double, py::array::c_style | py::array::
 
 // Convert Armadillo vector to NumPy array
 py::array_t<double> arma_vec_to_numpy(const arma::vec& vec);
+
+/// @brief Copy a 1-D signed integer NumPy array into an ``arma::uvec``.
+///
+/// Consolidates the label / index unpacking loops that were previously
+/// duplicated across ``wp_annotation.cpp``, ``wp_io.cpp``, and
+/// ``wp_network.cpp``.  Enforces the same non-negative index invariant that
+/// the original loops assumed but did not always check.
+///
+/// @tparam T  Element type of the source array (``int``, ``int64_t``, ...).
+/// @param arr Source NumPy array (must be 1-D).
+/// @param name Human-readable label used in error messages.
+template <typename T>
+arma::uvec int_array_to_uvec(const py::array_t<T>& arr, const char* name = "index array") {
+    static_assert(std::is_integral<T>::value, "int_array_to_uvec requires an integer element type");
+
+    py::buffer_info buf = arr.request();
+    if (buf.ndim != 1) {
+        throw std::runtime_error(
+            std::string("Expected a 1D array for ") + name);
+    }
+    const auto n = static_cast<arma::uword>(buf.size);
+    arma::uvec out(n);
+    const auto* ptr = static_cast<const T*>(buf.ptr);
+    for (arma::uword i = 0; i < n; ++i) {
+        const T val = ptr[i];
+        if (val < 0) {
+            throw std::runtime_error(
+                std::string(name) + " values must be non-negative; got " +
+                std::to_string(val));
+        }
+        out(i) = static_cast<arma::uword>(val);
+    }
+    return out;
+}
 
 /// @brief Copy an Armadillo integer index vector (uword) into a NumPy array of
 /// dtype ``T``.  Each call site picks the Python-visible dtype (typically

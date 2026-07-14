@@ -196,12 +196,7 @@ py::dict archetype_feature_specificity_dense(py::array_t<double> S, py::array_t<
 py::dict compute_feature_specificity_sparse(py::object S, py::array_t<int> labels, int thread_no = 0) {
     arma::sp_mat S_sp = scipy_to_arma_sparse(S);
 
-    auto labels_buf = labels.request();
-    auto labels_ptr = static_cast<int*>(labels_buf.ptr);
-    arma::uvec labels_vec(labels_buf.size);
-    for (size_t i = 0; i < labels_buf.size; ++i) {
-        labels_vec(i) = labels_ptr[i];
-    }
+    arma::uvec labels_vec = int_array_to_uvec(labels, "labels");
 
     arma::field<arma::mat> res;
     {
@@ -219,12 +214,7 @@ py::dict compute_feature_specificity_sparse(py::object S, py::array_t<int> label
 py::dict compute_feature_specificity_dense(py::array_t<double> S, py::array_t<int> labels, int thread_no = 0) {
     arma::mat S_mat = numpy_to_arma_mat(S);
 
-    auto labels_buf = labels.request();
-    auto labels_ptr = static_cast<int*>(labels_buf.ptr);
-    arma::uvec labels_vec(labels_buf.size);
-    for (size_t i = 0; i < labels_buf.size; ++i) {
-        labels_vec(i) = labels_ptr[i];
-    }
+    arma::uvec labels_vec = int_array_to_uvec(labels, "labels");
 
     arma::field<arma::mat> res;
     {
@@ -249,9 +239,11 @@ py::dict archetype_feature_specificity_backed_operator(
     }
     arma::mat H_mat = numpy_to_arma_mat(H);
 
-    py::gil_scoped_release release;
-    arma::field<arma::mat> res = actionet::computeFeatureSpecificity(*op, H_mat, thread_no);
-    py::gil_scoped_acquire acquire;
+    arma::field<arma::mat> res;
+    {
+        py::gil_scoped_release release;
+        res = actionet::computeFeatureSpecificity(*op, H_mat, thread_no);
+    }
 
     py::dict out;
     out["archetypes"]          = arma_mat_to_numpy(res(0));
@@ -267,16 +259,13 @@ py::dict compute_feature_specificity_backed_operator(
         throw std::runtime_error("compute_feature_specificity_backed_operator: operator is null");
     }
 
-    auto labels_buf = labels.request();
-    auto labels_ptr = static_cast<int*>(labels_buf.ptr);
-    arma::uvec labels_vec(static_cast<size_t>(labels_buf.size));
-    for (size_t i = 0; i < static_cast<size_t>(labels_buf.size); ++i) {
-        labels_vec(i) = static_cast<arma::uword>(labels_ptr[i]);
-    }
+    arma::uvec labels_vec = int_array_to_uvec(labels, "labels");
 
-    py::gil_scoped_release release;
-    arma::field<arma::mat> res = actionet::computeFeatureSpecificity(*op, labels_vec, thread_no);
-    py::gil_scoped_acquire acquire;
+    arma::field<arma::mat> res;
+    {
+        py::gil_scoped_release release;
+        res = actionet::computeFeatureSpecificity(*op, labels_vec, thread_no);
+    }
 
     py::dict out;
     out["average_profile"]     = arma_mat_to_numpy(res(0));
@@ -365,9 +354,11 @@ void init_annotation(py::module_ &m) {
               }
               arma::mat H_mat = numpy_to_arma_mat(H);
 
-              py::gil_scoped_release release;
-              arma::field<arma::mat> res = actionet::computeFeatureSpecificity(*op, H_mat, thread_no);
-              py::gil_scoped_acquire acquire;
+              arma::field<arma::mat> res;
+              {
+                  py::gil_scoped_release release;
+                  res = actionet::computeFeatureSpecificity(*op, H_mat, thread_no);
+              }
 
               py::dict out;
               out["archetypes"]         = arma_mat_to_numpy(res(0));
@@ -389,16 +380,13 @@ void init_annotation(py::module_ &m) {
                   throw std::runtime_error("compute_feature_specificity_backed_dense_operator: operator is not a dense operator");
               }
 
-              auto labels_buf = labels.request();
-              auto labels_ptr = static_cast<int*>(labels_buf.ptr);
-              arma::uvec labels_vec(static_cast<size_t>(labels_buf.size));
-              for (size_t i = 0; i < static_cast<size_t>(labels_buf.size); ++i) {
-                  labels_vec(i) = static_cast<arma::uword>(labels_ptr[i]);
-              }
+              arma::uvec labels_vec = int_array_to_uvec(labels, "labels");
 
-              py::gil_scoped_release release;
-              arma::field<arma::mat> res = actionet::computeFeatureSpecificity(*op, labels_vec, thread_no);
-              py::gil_scoped_acquire acquire;
+              arma::field<arma::mat> res;
+              {
+                  py::gil_scoped_release release;
+                  res = actionet::computeFeatureSpecificity(*op, labels_vec, thread_no);
+              }
 
               py::dict out;
               out["average_profile"]    = arma_mat_to_numpy(res(0));

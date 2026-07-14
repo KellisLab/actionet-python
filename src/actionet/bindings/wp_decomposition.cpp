@@ -173,8 +173,12 @@ py::dict orthogonalize_batch_effect_operator(
     reduction.A     = A_mat;
     reduction.B     = B_mat;
 
-    actionet::KernelReductionResult result = actionet::orthogonalizeBatchEffect_Operator(
-        *op, reduction, design_mat);
+    actionet::KernelReductionResult result;
+    {
+        py::gil_scoped_release release;
+        result = actionet::orthogonalizeBatchEffect_Operator(
+            *op, reduction, design_mat);
+    }
 
     return kernel_result_to_dict(result);
 }
@@ -204,8 +208,12 @@ py::dict orthogonalize_basal_operator(
     reduction.A     = A_mat;
     reduction.B     = B_mat;
 
-    actionet::KernelReductionResult result = actionet::orthogonalizeBasal_Operator(
-        *op, reduction, basal_mat);
+    actionet::KernelReductionResult result;
+    {
+        py::gil_scoped_release release;
+        result = actionet::orthogonalizeBasal_Operator(
+            *op, reduction, basal_mat);
+    }
 
     return kernel_result_to_dict(result);
 }
@@ -214,11 +222,11 @@ py::dict orthogonalize_basal_operator(
 
 static py::dict perturbed_svd_result_to_dict(const actionet::PerturbedSVDResult& res) {
     py::dict out;
-    out["u"] = arma_mat_to_numpy(res.U);
+    out["u"] = arma_mat_to_numpy_c(res.U);
     out["d"] = arma_vec_to_numpy(res.sigma);
-    out["v"] = arma_mat_to_numpy(res.V);
-    out["A"] = arma_mat_to_numpy(res.A);
-    out["B"] = arma_mat_to_numpy(res.B);
+    out["v"] = arma_mat_to_numpy_c(res.V);
+    out["A"] = arma_mat_to_numpy_c(res.A);
+    out["B"] = arma_mat_to_numpy_c(res.B);
     return out;
 }
 
@@ -253,9 +261,9 @@ py::dict run_svd_sparse(py::object A, int k = 30, int max_it = 0, int seed = 0,
     }
 
     py::dict out;
-    out["u"] = arma_mat_to_numpy(res(0));
+    out["u"] = arma_mat_to_numpy_c(res(0));
     out["d"] = arma_vec_to_numpy(arma::vec(res(1)));
-    out["v"] = arma_mat_to_numpy(res(2));
+    out["v"] = arma_mat_to_numpy_c(res(2));
     return out;
 }
 
@@ -270,9 +278,9 @@ py::dict run_svd_dense(py::object A, int k = 30, int max_it = 0, int seed = 0,
     }
 
     py::dict out;
-    out["u"] = arma_mat_to_numpy(res(0));
+    out["u"] = arma_mat_to_numpy_c(res(0));
     out["d"] = arma_vec_to_numpy(arma::vec(res(1)));
-    out["v"] = arma_mat_to_numpy(res(2));
+    out["v"] = arma_mat_to_numpy_c(res(2));
     return out;
 }
 

@@ -37,26 +37,10 @@ namespace {
         return std::vector<double>(ptr, ptr + static_cast<size_t>(buf.shape[0]));
     }
 
-    // Copy a 1-D int64 numpy array into an arma::uvec.  Consolidates the
-    // ``col_indices``/``row_indices`` copy loops that were previously
-    // duplicated inline in ``backed_take_columns``.
+    // Copy a 1-D int64 numpy array into an arma::uvec, with a message-name
+    // matching the historical ``backed_take_columns`` error strings.
     arma::uvec int64_array_to_uvec(const py::array_t<int64_t>& arr) {
-        auto buf = arr.request();
-        if (buf.ndim != 1) {
-            throw std::runtime_error(
-                "expected a 1D int64 array for backed index conversion");
-        }
-        const auto n = static_cast<arma::uword>(buf.size);
-        arma::uvec out(n);
-        const auto* ptr = static_cast<const int64_t*>(buf.ptr);
-        for (size_t i = 0; i < static_cast<size_t>(n); ++i) {
-            if (ptr[i] < 0) {
-                throw std::runtime_error(
-                    "backed index arrays must be non-negative");
-            }
-            out(i) = static_cast<arma::uword>(ptr[i]);
-        }
-        return out;
+        return int_array_to_uvec(arr, "backed index array");
     }
 } // namespace
 
