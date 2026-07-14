@@ -627,8 +627,11 @@ class TestSubsetAfterViewToMemory:
     """
 
     def _prime(self, backed_adata) -> None:
-        """Force the parent's HDF5 handle closed via `view.to_memory()`."""
+        """Force the parent's HDF5 handle closed to simulate anndata 0.12's
+        ``view.to_memory()`` side effect (removed in anndata 0.13)."""
         _ = backed_adata[:10, :].to_memory()
+        if backed_adata.file.is_open:
+            backed_adata.file.close()
         assert backed_adata.isbacked
         assert not backed_adata.file.is_open
 

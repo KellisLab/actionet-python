@@ -32,6 +32,7 @@ from .persist import (
     _ensure_backed_writable,
     _flush_pending,
     _init_from_reopened,
+    _real_layer_keys,
     _refresh_backed_handle,
     is_backed_adata,
 )
@@ -420,7 +421,7 @@ def _write_filtered_backed(
         _write_dataframe_to_h5(f, "obs", obs_sub)
         _write_dataframe_to_h5(f, "var", var_sub)
 
-        layer_keys = list(adata.layers.keys())
+        layer_keys = _real_layer_keys(adata)
         if layer_keys or "layers" in h5file:
             lg = f.create_group("layers")
             lg.attrs["encoding-type"] = "dict"

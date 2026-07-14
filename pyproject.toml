@@ -21,7 +21,7 @@ requires-python = ">=3.12"
 dependencies = [
     "numpy>=2.0.0",
     "scipy>=1.11.0",
-    "anndata>=0.12.10",
+    "anndata>=0.12.10,<0.14",
     "pandas>=2.0.0",
     "h5py>=3.9.0",
     "igraph>=1.0.0",

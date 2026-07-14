@@ -20,6 +20,7 @@ from .persist import (
     _ensure_backed_writable,
     _include_all_inmemory_annotations,
     _init_from_reopened,
+    _real_layer_keys,
     _refresh_backed_handle,
     is_backed_adata,
 )
@@ -183,7 +184,7 @@ def _checkpoint_collect_args(adata: AnnData) -> dict:
             "varm_keys": list(adata.varm.keys()),
             "obsp_keys": list(adata.obsp.keys()),
             "varp_keys": list(adata.varp.keys()),
-            "layers_keys": list(adata.layers.keys()),
+            "layers_keys": _real_layer_keys(adata),
             "uns_keys": list(adata.uns.keys()),
         }
 

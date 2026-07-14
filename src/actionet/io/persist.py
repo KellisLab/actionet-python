@@ -68,6 +68,11 @@ def is_backed_adata(adata: AnnData) -> bool:
     return bool(getattr(adata, "isbacked", False) and getattr(adata, "filename", None))
 
 
+def _real_layer_keys(adata: AnnData) -> list:
+    """Return real layer keys, filtering out the anndata >= 0.13 None alias for X."""
+    return [k for k in adata.layers.keys() if k is not None]
+
+
 def _ensure_backed_open(adata: AnnData) -> None:
     """Reopen the backing HDF5 file if anndata silently closed it.
 
@@ -153,14 +158,61 @@ def _refresh_backed_handle(adata: AnnData, path: str, mode: str = "r+") -> None:
 
 
 def _init_from_reopened(adata: AnnData, reopened: AnnData) -> None:
-    """Reinitialize *adata* from *reopened*, handling backed-raw edge cases."""
-    raw_obj = getattr(reopened, "raw", None)
-    if raw_obj is not None and getattr(raw_obj, "_X", None) is None:
+    """Reinitialize *adata* from *reopened*, handling backed-raw edge cases.
+
+    Passing *reopened* directly as ``X`` to ``_init_as_actual`` triggers a
+    ValueError under ``anndata >= 0.13`` when the source is backed:
+    ``reopened.X`` and ``reopened.layers[None]`` are distinct wrapper
+    instances returned freshly from the file each access, so anndata's
+    ``X is layers[None]`` identity check inside ``_init_as_actual``
+    always fails.
+
+    Route around it by unpacking *reopened* into explicit kwargs, driving
+    the "init from file" branch (so ``layers.isbacked`` becomes ``True``
+    and ``X`` is served from the on-disk dataset), and then adopting the
+    reopened file handle so we don't leak the auxiliary one that
+    ``_init_as_actual`` opens.
+
+    ``raw`` handling: passing a :class:`~anndata.Raw` instance alongside
+    ``filename`` trips an anndata assertion, and passing ``None`` when
+    the file has a raw group crashes on ``dict(X=None, **None)``. Pass a
+    ``{"var": raw.var, "varm": raw.varm}`` mapping and let the file-init
+    branch resolve ``raw.X`` from disk.
+    """
+    reopened_raw = getattr(reopened, "raw", None)
+    if reopened_raw is not None and getattr(reopened_raw, "_X", None) is None:
         try:
-            raw_obj._X = raw_obj.X
+            reopened_raw._X = reopened_raw.X
         except Exception:
             pass
-    adata._init_as_actual(reopened)
+    if reopened_raw is None:
+        raw_arg = None
+    else:
+        raw_varm = getattr(reopened_raw, "varm", None)
+        raw_arg = {
+            "var": reopened_raw.var,
+            "varm": dict(raw_varm) if raw_varm else None,
+        }
+    real_layers = {k: v for k, v in reopened.layers.items() if k is not None}
+    reopened_filemode = getattr(getattr(reopened, "file", None), "_filemode", None)
+    adata._init_as_actual(
+        None,
+        obs=reopened.obs,
+        var=reopened.var,
+        uns=reopened.uns,
+        obsm=reopened.obsm,
+        varm=reopened.varm,
+        obsp=reopened.obsp,
+        varp=reopened.varp,
+        layers=real_layers,
+        raw=raw_arg,
+        filename=reopened.filename,
+        filemode=reopened_filemode,
+    )
+    try:
+        adata.file.close()
+    except Exception:
+        pass
     adata.file = reopened.file
 
 
@@ -275,7 +327,7 @@ def _include_all_inmemory_annotations(adata: AnnData, results: dict) -> None:
             if k not in results[key]:
                 results[key][k] = container[k]
 
-    for k in adata.layers.keys():
+    for k in _real_layer_keys(adata):
         if k not in results["layers_keys"]:
             results["layers_keys"][k] = adata.layers[k]
 
