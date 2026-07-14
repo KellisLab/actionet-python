@@ -1,0 +1,62 @@
+name: OpenBLAS ACTION kernels
+
+on:
+  pull_request:
+    paths:
+      - "src/libactionet/**"
+      - "src/actionet/action/**"
+      - "src/actionet/bindings/wp_action.cpp"
+      - "tests/test_action_small_dense_kernels.py"
+      - ".github/workflows/openblas-action.yml"
+  workflow_dispatch:
+
+jobs:
+  action-openblas:
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        threading: [pthread, openmp]
+
+    env:
+      OMP_NUM_THREADS: "8"
+      OPENBLAS_NUM_THREADS: "32"
+      ACTIONET_RUN_OPENBLAS_SMOKE: "1"
+      LD_LIBRARY_PATH: /usr/lib/x86_64-linux-gnu/openblas-${{ matrix.threading }}
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install native dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libhdf5-dev libopenblas-${{ matrix.threading }}-dev
+
+      - name: Build against selected OpenBLAS variant
+        env:
+          CMAKE_ARGS: >-
+            -DBLA_VENDOR=OpenBLAS
+            -DBLAS_openblas_LIBRARY=/usr/lib/x86_64-linux-gnu/openblas-${{ matrix.threading }}/libopenblas.so
+            -DLIBACTIONET_OPENMP_RUNTIME=GNU
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install . pytest
+
+      - name: Verify resolved BLAS and OpenMP linkage
+        run: |
+          extension=$(python -c 'from actionet import _core; print(_core.__file__)')
+          ldd "$extension"
+          ldd "$extension" | grep -q 'openblas'
+          resolved=$(ldd "$extension" | awk '/openblas/ {print $3; exit}')
+          readlink -f "$resolved" | grep -q 'openblas-${{ matrix.threading }}'
+          ldd "$extension" | grep -q 'libgomp'
+
+      - name: Run ACTION correctness and catastrophic-regression tests
+        run: python -m pytest -q tests/test_action_small_dense_kernels.py

@@ -171,6 +171,50 @@ This document records **deliberate architectural and operational decisions** for
 
 ---
 
+## BLAS policy for ACTION
+
+### Shape-specialized dense kernels under coarse OpenMP parallelism
+
+**Decision:**
+
+- ACTION's outer OpenMP decomposition across archetype count `k` owns
+  parallelism for the default AA workload.
+- Private column-major kernels handle copy, dot, scale, axpy, symmetric
+  matvec, gemv, rank-one update, Gram, residual-product, norm, and
+  normalization operations when the smaller matrix dimension is at most 128.
+- Larger general-purpose matrices continue through the configured BLAS and
+  Armadillo paths.
+- The policy is based only on operation shape. There is no public API change,
+  BLAS-vendor detection, new environment requirement, runtime BLAS-thread
+  guard, import warning, or diagnostic Python API.
+- Assignment results must remain identical across supported backends/thread
+  counts; C and H comparisons use `rtol=1e-8`, `atol=1e-10`.
+
+**Rationale:**
+
+- Same-source measurement on the cached toy reduction was 9.40 s with MKL
+  versus 79.36 s with OpenBLAS-OpenMP. SPA was backend-neutral; profiling
+  isolated the gap to AA's high-frequency tiny/skinny BLAS dispatch.
+- OpenBLAS runtime setters changed reported counts but did not reliably select
+  its low-overhead serial path after initialization. The runtime-guard design
+  on `bad-fix` is therefore rejected.
+- Inline kernels keep the existing algorithm and coarse-grained OpenMP model
+  while retaining vendor BLAS for shapes where its throughput is valuable.
+
+**Deferred:**
+
+- Near-MKL-parity redesign may evaluate batched active-set solves,
+  blocked/fused AA updates, workspace reuse, and convergence policy. Those
+  changes require separate numerical and performance evidence because they
+  reorganize the algorithm or alter semantics.
+
+**Related:**
+
+- `plans/openblas_threading_and_odr_findings.md`
+- `tests/benchmark_action_blas_backends.py`
+
+---
+
 ## GPU backend scope and platform
 
 ### NVIDIA CUDA backend: Python-first, SVD-first

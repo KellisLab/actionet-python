@@ -76,6 +76,10 @@ wheel.packages = ["src/actionet"]
 testpaths = ["tests"]
 python_files = "test_*.py"
 python_functions = "test_*"
+markers = [
+    "benchmark: opt-in performance benchmark",
+    "openblas_smoke: loose runtime smoke test for catastrophic OpenBLAS regressions",
+]
 
 [tool.black]
 line-length = 100
