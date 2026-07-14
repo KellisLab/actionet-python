@@ -468,9 +468,14 @@ def collect_annotation_results(
                 if verbose:
                     print(f"[INFO]   Collected varp['{key}']")
 
-    # Collect layers keys
+    # Collect layers keys. anndata >= 0.13 exposes an alias ``layers[None]``
+    # that points back to ``.X`` so any caller iterating over ``layers.keys()``
+    # sees a spurious ``None`` entry. Skip it here (the caller should read
+    # ``.X`` explicitly if they want the primary matrix).
     if layers_keys:
         for key in layers_keys:
+            if key is None:
+                continue
             if key in adata.layers.keys():
                 results['layers_keys'][key] = adata.layers[key]
                 if verbose:

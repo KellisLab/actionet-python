@@ -96,6 +96,26 @@ def reduce_kernel(
     -------
     None or AnnData
         None if ``inplace=True``; modified copy if ``inplace=False``.
+
+    Notes
+    -----
+    ``adata.uns[f"{key_added}_params"]`` contains:
+
+    - ``sigma``: singular values used to build the kernel.
+    - ``n_components``: number of components retained.
+    - ``svd_algorithm``: integer id of the SVD algorithm actually used
+      (``0`` = IRLB, ``1`` = Halko). ``None`` when ``precomputed_svd`` was
+      supplied and no in-house SVD was run.
+    - ``svd_algorithm_name``: human-readable name for ``svd_algorithm``
+      (``"none"`` when a precomputed SVD was used).
+    - ``svd_backend_requested`` / ``svd_backend_resolved``: SVD backend
+      slot for future GPU dispatch. Both are currently ``"cpu"``.
+    - ``used_precomputed_svd``: True when the caller supplied
+      ``precomputed_svd``.
+    - ``operator_mode``: True when the kernel ran over a backed HDF5
+      operator (streaming path) instead of an in-memory matrix.
+    - Lazy-transform provenance (``lazy_row_scale`` etc.) when
+      ``lazy_transform`` is supplied.
     """
     if backed_n_threads < 0:
         raise ValueError("`backed_n_threads` must be >= 0")
@@ -119,7 +139,7 @@ def reduce_kernel(
             lazy_transform=lazy_transform,
             backed_chunk_size=backed_chunk_size,
         )
-        selected_algorithm = _select_svd_algorithm_backed(algorithm_name, verbose)
+        svd_algorithm_id = _select_svd_algorithm_backed(algorithm_name, verbose)
         io_target_chunk_bytes = _chunk_target_bytes(backed_target_chunk_mb)
         temp_path: Optional[str] = None
         file_path = str(adata.filename)
@@ -149,7 +169,7 @@ def reduce_kernel(
             ) as op:
                 if precomputed_svd is None:
                     result = _core.reduce_kernel_backed_operator(
-                        op, n_components, selected_algorithm, max_iter, seed, verbose
+                        op, n_components, svd_algorithm_id, max_iter, seed, verbose
                     )
                 else:
                     result = _core.reduce_kernel_from_svd_backed_operator(
@@ -162,8 +182,6 @@ def reduce_kernel(
         finally:
             if temp_path is not None and os.path.exists(temp_path):
                 os.remove(temp_path)
-
-        svd_algorithm_id = selected_algorithm
     else:
         S = anndata_to_matrix(adata, layer=layer)
         svd_algorithm_id = _select_svd_algorithm_inmemory(S, algorithm_name, verbose)
@@ -185,14 +203,28 @@ def reduce_kernel(
                     precomputed_svd["v"], verbose,
                 )
 
+    used_precomputed_svd = precomputed_svd is not None
+    if used_precomputed_svd:
+        # A precomputed SVD short-circuits the C++ solver, so there is no
+        # in-house algorithm to attribute in the metadata. Emit ``None`` /
+        # ``"none"`` instead of the resolved-but-unused id to keep the
+        # persisted params honest.
+        params_svd_algorithm: Optional[int] = None
+        params_svd_algorithm_name = "none"
+    else:
+        params_svd_algorithm = svd_algorithm_id
+        params_svd_algorithm_name = _SVD_ID_TO_ALGORITHM.get(
+            svd_algorithm_id, f"unknown({svd_algorithm_id})"
+        )
+
     params = {
         "sigma": np.asarray(result["sigma"]).ravel(),
         "n_components": n_components,
-        "svd_algorithm": svd_algorithm_id,
-        "svd_algorithm_name": _SVD_ID_TO_ALGORITHM.get(svd_algorithm_id, f"unknown({svd_algorithm_id})"),
+        "svd_algorithm": params_svd_algorithm,
+        "svd_algorithm_name": params_svd_algorithm_name,
         "svd_backend_requested": _SVD_BACKEND_CPU,
         "svd_backend_resolved": _SVD_BACKEND_CPU,
-        "used_precomputed_svd": precomputed_svd is not None,
+        "used_precomputed_svd": used_precomputed_svd,
         "operator_mode": use_operator,
     }
     params.update(_lazy_params_for_metadata(lazy_transform if apply_log1p else None))

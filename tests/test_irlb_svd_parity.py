@@ -13,6 +13,9 @@ Covers:
   - Disk-backed sparse (HDF5)
   - Disk-backed dense (HDF5)
   - All supported algorithms: IRLB, Halko
+  - Rejection of retired algorithms (Feng, PRIMME) at every API surface
+  - SVD backend / algorithm provenance metadata attached to ``run_svd``
+    results and persisted by ``reduce_kernel``
 """
 
 import os
@@ -35,6 +38,15 @@ SIGMA_RTOL = 0.05      # 5% relative tolerance for singular values (cross-algori
 SIGMA_ATOL = 1e-3      # Absolute tolerance for singular values
 RECON_RTOL = 0.95      # Relative reconstruction error tolerance (relaxed for full-rank test matrices)
 SIGMA_CORR_THRESHOLD = 0.999  # Pearson correlation threshold for sigma vectors (cross-algorithm)
+
+# Halko's in-memory C++ default (``default_max_it=5``) is tuned for real
+# single-cell matrices where spectra decay quickly. On the small full-rank
+# synthetic matrices used here the tail singular values have not converged
+# after 5 iterations, so the cross-algorithm parity checks below pass
+# ``max_iter=HALKO_SYNTHETIC_MAX_IT`` to give Halko room to match IRLB.
+# The single-algorithm smoke tests keep the default max_iter=0 so the
+# public default is still exercised.
+HALKO_SYNTHETIC_MAX_IT = 20
 
 
 def _create_test_matrix(
@@ -215,7 +227,12 @@ def test_inmemory_sparse_parity_irlb_vs_halko():
         X_sparse, n_components=n_components, algorithm="irlb", seed=42, verbose=False
     )
     result_halko = an.run_svd(
-        X_sparse, n_components=n_components, algorithm="halko", seed=42, verbose=False
+        X_sparse,
+        n_components=n_components,
+        algorithm="halko",
+        seed=42,
+        verbose=False,
+        max_iter=HALKO_SYNTHETIC_MAX_IT,
     )
 
     _validate_svd_result(result_irlb, X_sparse, n_components)
@@ -234,7 +251,12 @@ def test_inmemory_dense_parity_irlb_vs_halko():
         X_dense, n_components=n_components, algorithm="irlb", seed=42, verbose=False
     )
     result_halko = an.run_svd(
-        X_dense, n_components=n_components, algorithm="halko", seed=42, verbose=False
+        X_dense,
+        n_components=n_components,
+        algorithm="halko",
+        seed=42,
+        verbose=False,
+        max_iter=HALKO_SYNTHETIC_MAX_IT,
     )
 
     _validate_svd_result(result_irlb, X_dense, n_components)
@@ -324,7 +346,12 @@ def test_backed_sparse_parity_irlb_vs_halko(tmp_path):
             adata_irlb, n_components=n_components, algorithm="irlb", seed=42, verbose=False
         )
         result_halko = an.run_svd(
-            adata_halko, n_components=n_components, algorithm="halko", seed=42, verbose=False
+            adata_halko,
+            n_components=n_components,
+            algorithm="halko",
+            seed=42,
+            verbose=False,
+            max_iter=HALKO_SYNTHETIC_MAX_IT,
         )
 
         _validate_svd_result(result_irlb, X_sparse, n_components)
@@ -356,7 +383,12 @@ def test_backed_dense_parity_irlb_vs_halko(tmp_path):
             adata_irlb, n_components=n_components, algorithm="irlb", seed=42, verbose=False
         )
         result_halko = an.run_svd(
-            adata_halko, n_components=n_components, algorithm="halko", seed=42, verbose=False
+            adata_halko,
+            n_components=n_components,
+            algorithm="halko",
+            seed=42,
+            verbose=False,
+            max_iter=HALKO_SYNTHETIC_MAX_IT,
         )
 
         _validate_svd_result(result_irlb, X_dense, n_components)
@@ -545,8 +577,12 @@ def test_reduce_kernel_rejects_primme():
     """`reduce_kernel` must also refuse `svd_algorithm="primme"`."""
     X = _create_test_matrix(n_obs=32, n_vars=24, density=0.3, as_sparse=True, random_state=1)
     adata = ad.AnnData(X=X)
-    with pytest.raises(ValueError, match=r"Invalid algorithm"):
+    with pytest.raises(ValueError, match=r"Invalid algorithm") as excinfo:
         an.reduce_kernel(adata, n_components=4, svd_algorithm="primme", verbose=False)
+
+    message = str(excinfo.value)
+    for name in ("auto", "halko", "irlb"):
+        assert name in message, f"Expected {name!r} in allowed set of error message: {message}"
 
 
 @pytest.mark.parametrize("algorithm", ["feng", "FENG", "Feng"])
@@ -572,8 +608,12 @@ def test_reduce_kernel_rejects_feng():
     """`reduce_kernel` must also refuse `svd_algorithm="feng"`."""
     X = _create_test_matrix(n_obs=32, n_vars=24, density=0.3, as_sparse=True, random_state=1)
     adata = ad.AnnData(X=X)
-    with pytest.raises(ValueError, match=r"Invalid algorithm"):
+    with pytest.raises(ValueError, match=r"Invalid algorithm") as excinfo:
         an.reduce_kernel(adata, n_components=4, svd_algorithm="feng", verbose=False)
+
+    message = str(excinfo.value)
+    for name in ("auto", "halko", "irlb"):
+        assert name in message, f"Expected {name!r} in allowed set of error message: {message}"
 
 
 @pytest.mark.parametrize("algorithm_id", [2, 3])
@@ -609,12 +649,20 @@ def test_core_reduce_kernel_rejects_retired_algorithm_ids(algorithm_id):
 @pytest.mark.parametrize("algorithm_id", [2, 3])
 def test_core_backed_operator_rejects_retired_algorithm_ids(tmp_path, algorithm_id):
     """Backed `_core` SVD entry points expose only IRLB/Halko to Python."""
+    os.environ["HDF5_USE_FILE_LOCKING"] = "FALSE"
+
     X_sparse = _create_test_matrix(
         n_obs=32, n_vars=24, density=0.3, as_sparse=True, random_state=4
     ).tocsr()
     adata_backed, h5ad_path = _create_backed_anndata(
         X_sparse, tmp_path, prefix=f"core_retired_{algorithm_id}"
     )
+
+    # Close the anndata `r+` handle before the C++ side opens the same file,
+    # otherwise HDF5 refuses to co-open the file on Linux even with locking
+    # disabled at the environment level.
+    if hasattr(adata_backed, "file") and adata_backed.file is not None:
+        adata_backed.file.close()
 
     try:
         op = _core.create_backed_operator(str(h5ad_path), "/X", 16)
@@ -625,7 +673,8 @@ def test_core_backed_operator_rejects_retired_algorithm_ids(tmp_path, algorithm_
         with pytest.raises(RuntimeError, match=r"unsupported SVD algorithm id"):
             _core.reduce_kernel_backed_operator(op, 4, algorithm_id, 0, 0, False)
     finally:
-        adata_backed.file.close()
+        if h5ad_path.exists():
+            h5ad_path.unlink()
 
 
 def test_irlb_sparse_accepts_int64_indices():
@@ -662,6 +711,249 @@ def test_irlb_sparse_accepts_int64_indices():
 
     np.testing.assert_allclose(result32["d"], result64["d"], rtol=1e-10, atol=1e-12)
     _validate_svd_result(result64, X64, n_components)
+
+
+# ============================================================================
+# Regression tests: SVD backend / algorithm provenance metadata (Phase 2)
+# ============================================================================
+
+
+_SVD_METADATA_KEYS = (
+    "svd_algorithm",
+    "svd_algorithm_name",
+    "svd_backend_requested",
+    "svd_backend_resolved",
+)
+
+
+@pytest.mark.parametrize("algorithm", ["irlb", "halko"])
+def test_run_svd_emits_backend_metadata_inmemory_sparse(algorithm):
+    """`run_svd` must attach backend/algorithm provenance on the non-operator path."""
+    X = _create_test_matrix(
+        n_obs=64, n_vars=32, density=0.25, as_sparse=True, random_state=17
+    )
+    result = an.run_svd(
+        X,
+        n_components=6,
+        algorithm=algorithm,
+        seed=42,
+        verbose=False,
+        return_operator_compatible=False,
+    )
+
+    for key in _SVD_METADATA_KEYS:
+        assert key in result, f"expected {key!r} in run_svd result, got {sorted(result)}"
+
+    assert result["svd_algorithm"] == (0 if algorithm == "irlb" else 1)
+    assert result["svd_algorithm_name"] == algorithm
+    assert result["svd_backend_requested"] == "cpu"
+    assert result["svd_backend_resolved"] == "cpu"
+
+
+@pytest.mark.parametrize("algorithm", ["irlb", "halko"])
+def test_run_svd_emits_backend_metadata_inmemory_dense(algorithm):
+    """Dense in-memory path must also emit backend/algorithm provenance."""
+    X = _create_test_matrix(
+        n_obs=64, n_vars=32, density=1.0, as_sparse=False, random_state=19
+    )
+    result = an.run_svd(
+        X,
+        n_components=6,
+        algorithm=algorithm,
+        seed=42,
+        verbose=False,
+        return_operator_compatible=False,
+    )
+
+    for key in _SVD_METADATA_KEYS:
+        assert key in result
+    assert result["svd_algorithm_name"] == algorithm
+
+
+@pytest.mark.parametrize("algorithm", ["irlb", "halko"])
+def test_run_svd_emits_backend_metadata_backed(algorithm, tmp_path):
+    """Backed streaming path must emit the same provenance keys as in-memory."""
+    os.environ["HDF5_USE_FILE_LOCKING"] = "FALSE"
+
+    X = _create_test_matrix(
+        n_obs=80, n_vars=48, density=0.2, as_sparse=True, random_state=21
+    )
+    adata_backed, h5ad_path = _create_backed_anndata(
+        X, tmp_path, prefix=f"backend_meta_{algorithm}"
+    )
+    try:
+        result = an.run_svd(
+            adata_backed,
+            n_components=6,
+            algorithm=algorithm,
+            seed=42,
+            verbose=False,
+            return_operator_compatible=False,
+            backed_chunk_size=4096,
+        )
+    finally:
+        if hasattr(adata_backed, "file") and adata_backed.file is not None:
+            adata_backed.file.close()
+        if h5ad_path.exists():
+            h5ad_path.unlink()
+
+    for key in _SVD_METADATA_KEYS:
+        assert key in result
+    assert result["svd_algorithm_name"] == algorithm
+    assert result["svd_backend_resolved"] == "cpu"
+
+
+def test_run_svd_operator_compatible_omits_backend_metadata():
+    """`return_operator_compatible=True` returns only the u/d/v triple."""
+    X = _create_test_matrix(
+        n_obs=48, n_vars=24, density=0.3, as_sparse=True, random_state=23
+    )
+    result = an.run_svd(
+        X,
+        n_components=5,
+        algorithm="irlb",
+        seed=42,
+        verbose=False,
+        return_operator_compatible=True,
+    )
+    assert set(result) == {"u", "d", "v"}
+
+
+def test_reduce_kernel_persists_backend_metadata_inmemory():
+    """`reduce_kernel` writes backend/algorithm provenance into ``uns[<key>_params]``."""
+    X = _create_test_matrix(
+        n_obs=64, n_vars=32, density=0.25, as_sparse=True, random_state=25
+    )
+    adata = ad.AnnData(X=X)
+    an.reduce_kernel(adata, n_components=6, svd_algorithm="halko", seed=42, verbose=False)
+
+    params = adata.uns["action_params"]
+    for key in _SVD_METADATA_KEYS:
+        assert key in params, f"expected {key!r} in reduce_kernel params, got {sorted(params)}"
+
+    assert params["svd_algorithm"] == 1
+    assert params["svd_algorithm_name"] == "halko"
+    assert params["svd_backend_requested"] == "cpu"
+    assert params["svd_backend_resolved"] == "cpu"
+    assert params["used_precomputed_svd"] is False
+    assert params["operator_mode"] is False
+
+
+def test_reduce_kernel_precomputed_svd_marks_algorithm_none():
+    """When a precomputed SVD is supplied, no in-house algorithm was run.
+
+    The persisted metadata must therefore report ``svd_algorithm=None`` /
+    ``svd_algorithm_name="none"`` instead of the resolved-but-unused id;
+    ``used_precomputed_svd`` should be True.
+    """
+    X = _create_test_matrix(
+        n_obs=64, n_vars=32, density=0.25, as_sparse=True, random_state=27
+    )
+    svd = an.run_svd(X, n_components=6, algorithm="irlb", seed=42, verbose=False)
+
+    adata = ad.AnnData(X=X)
+    an.reduce_kernel(
+        adata,
+        n_components=6,
+        svd_algorithm="halko",
+        precomputed_svd=svd,
+        verbose=False,
+    )
+
+    params = adata.uns["action_params"]
+    assert params["svd_algorithm"] is None
+    assert params["svd_algorithm_name"] == "none"
+    assert params["used_precomputed_svd"] is True
+    assert params["svd_backend_requested"] == "cpu"
+    assert params["svd_backend_resolved"] == "cpu"
+
+
+def test_reduce_kernel_persists_backend_metadata_backed(tmp_path):
+    """Backed `reduce_kernel` writes the same provenance keys as in-memory,
+    and reports ``operator_mode=True``.
+
+    Locks in that the streaming branch of ``reduce_kernel`` funnels into the
+    same ``params`` dict as the in-memory branch and preserves the full
+    backend/algorithm contract exposed by Phase 2.
+    """
+    os.environ["HDF5_USE_FILE_LOCKING"] = "FALSE"
+
+    X = _create_test_matrix(
+        n_obs=80, n_vars=48, density=0.2, as_sparse=True, random_state=29
+    )
+    adata_backed, h5ad_path = _create_backed_anndata(
+        X, tmp_path, prefix="reduce_kernel_backed_meta"
+    )
+    try:
+        an.reduce_kernel(
+            adata_backed,
+            n_components=6,
+            svd_algorithm="halko",
+            seed=42,
+            verbose=False,
+        )
+        params = dict(adata_backed.uns["action_params"])
+    finally:
+        if hasattr(adata_backed, "file") and adata_backed.file is not None:
+            adata_backed.file.close()
+        if h5ad_path.exists():
+            h5ad_path.unlink()
+
+    for key in _SVD_METADATA_KEYS:
+        assert key in params, f"expected {key!r} in backed reduce_kernel params, got {sorted(params)}"
+
+    assert params["svd_algorithm"] == 1
+    assert params["svd_algorithm_name"] == "halko"
+    assert params["svd_backend_requested"] == "cpu"
+    assert params["svd_backend_resolved"] == "cpu"
+    assert params["used_precomputed_svd"] is False
+    assert params["operator_mode"] is True
+
+
+def test_reduce_kernel_precomputed_svd_marks_algorithm_none_backed(tmp_path):
+    """Backed ``reduce_kernel(precomputed_svd=...)`` also records
+    ``svd_algorithm=None`` / ``svd_algorithm_name="none"``.
+
+    The backed precomputed-SVD short-circuit runs a different C++ entry point
+    (``_core.reduce_kernel_from_svd_backed_operator``) than the in-memory
+    variant; this test guards its provenance contract explicitly.
+    """
+    os.environ["HDF5_USE_FILE_LOCKING"] = "FALSE"
+
+    X = _create_test_matrix(
+        n_obs=80, n_vars=48, density=0.2, as_sparse=True, random_state=31
+    )
+    svd = an.run_svd(X, n_components=6, algorithm="irlb", seed=42, verbose=False)
+
+    adata_backed, h5ad_path = _create_backed_anndata(
+        X, tmp_path, prefix="reduce_kernel_backed_precomputed"
+    )
+    try:
+        an.reduce_kernel(
+            adata_backed,
+            n_components=6,
+            svd_algorithm="halko",
+            precomputed_svd=svd,
+            verbose=False,
+        )
+        params = dict(adata_backed.uns["action_params"])
+    finally:
+        if hasattr(adata_backed, "file") and adata_backed.file is not None:
+            adata_backed.file.close()
+        if h5ad_path.exists():
+            h5ad_path.unlink()
+
+    assert params["svd_algorithm_name"] == "none"
+    assert params["used_precomputed_svd"] is True
+    assert params["operator_mode"] is True
+    assert params["svd_backend_requested"] == "cpu"
+    assert params["svd_backend_resolved"] == "cpu"
+    # ``svd_algorithm`` is written as ``None`` for the precomputed path but
+    # AnnData's HDF5 writer drops ``None`` entries from ``uns`` on backed
+    # persistence; either "absent" or "None" is acceptable for the backed
+    # contract. Assert the *absence* of a numeric algorithm id so the
+    # provenance stays honest.
+    assert params.get("svd_algorithm") is None
 
 
 if __name__ == "__main__":

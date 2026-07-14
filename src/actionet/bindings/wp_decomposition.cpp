@@ -210,7 +210,7 @@ py::dict orthogonalize_basal_operator(
     return kernel_result_to_dict(result);
 }
 
-// svd_main ============================================================================================================
+// perturbed_svd ============================================================================================================
 
 static py::dict perturbed_svd_result_to_dict(const actionet::PerturbedSVDResult& res) {
     py::dict out;

@@ -234,6 +234,16 @@ def run_svd(
         SVD result with keys ``"u"`` (left singular vectors, cells x k),
         ``"d"`` (singular values), ``"v"`` (right singular vectors,
         features x k).
+
+        When ``return_operator_compatible=False``, the result additionally
+        carries provenance metadata alongside ``"u"``, ``"d"``, ``"v"`` and
+        any raw solver diagnostics returned by the C++ layer:
+
+        - ``svd_algorithm``: integer id of the SVD algorithm actually used
+          (``0`` = IRLB, ``1`` = Halko).
+        - ``svd_algorithm_name``: human-readable name for the resolved id.
+        - ``svd_backend_requested`` / ``svd_backend_resolved``: SVD backend
+          slot for future GPU dispatch. Both are currently ``"cpu"``.
     """
     if backed_n_threads < 0:
         raise ValueError("`backed_n_threads` must be >= 0")
@@ -259,8 +269,7 @@ def run_svd(
             lazy_transform=lazy_transform,
             backed_chunk_size=backed_chunk_size,
         )
-        selected_algorithm = _select_svd_algorithm_backed(algorithm_name, verbose)
-        algorithm_id = selected_algorithm
+        algorithm_id = _select_svd_algorithm_backed(algorithm_name, verbose)
         io_target_chunk_bytes = _chunk_target_bytes(backed_target_chunk_mb)
 
         temp_path: Optional[str] = None
@@ -288,7 +297,7 @@ def run_svd(
                 n_threads=backed_n_threads,
             ) as op:
                 result = _core.run_svd_backed_operator(
-                    op, n_components, max_iter, seed, selected_algorithm, verbose
+                    op, n_components, max_iter, seed, algorithm_id, verbose
                 )
         finally:
             if temp_path is not None and os.path.exists(temp_path):

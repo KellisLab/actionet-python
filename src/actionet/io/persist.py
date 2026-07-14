@@ -423,7 +423,13 @@ def persist_updates(
     if varp:
         _dirty_tracker.mark(adata, "varp_keys", set(varp.keys()))
     if layers:
-        _dirty_tracker.mark(adata, "layers_keys", set(layers.keys()))
+        # Drop the anndata >= 0.13 ``layers[None]`` alias for ``.X`` so the
+        # dirty tracker never asks callers to persist a phantom layer key.
+        _dirty_tracker.mark(
+            adata,
+            "layers_keys",
+            {key for key in layers.keys() if key is not None},
+        )
     if uns:
         _dirty_tracker.mark(adata, "uns_keys", set(uns.keys()))
 
