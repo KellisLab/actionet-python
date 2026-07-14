@@ -4,7 +4,8 @@
 Run this script from an environment containing exactly the actionet wheel to
 measure.  The script verifies the extension's ELF dependencies, creates one
 reusable reduction from ``data/test_adata.h5ad``, reports medians of three
-trials, and checks thread/output determinism.
+trials, checks thread/output determinism, and records ACTION decision margins
+from one untimed decomposition trace.
 """
 
 from __future__ import annotations
@@ -43,6 +44,8 @@ from actionet import _core  # noqa: E402
 THREAD_LABELS = ("1", "2", "4", "8", "16", "auto")
 RTOL = 1e-8
 ATOL = 1e-10
+COEFFICIENT_SUPPORT_TOLERANCE = 1e-6
+LANDMARK_PROXIMITY_TOLERANCE = 1e-3
 
 
 def _parse_args() -> argparse.Namespace:
@@ -167,6 +170,126 @@ def _assert_parity(reference: dict[str, np.ndarray], candidate: dict[str, np.nda
         np.testing.assert_allclose(reference[key], candidate[key], rtol=RTOL, atol=ATOL)
 
 
+def _decision_diagnostics(
+    reduction: np.ndarray,
+    outputs: dict[str, np.ndarray],
+) -> dict[str, Any]:
+    """Recompute an untimed trace and report margins at each decision gate.
+
+    ``run_action`` returns H after merge-time normalization, so the returned
+    matrices cannot reconstruct the earlier landmark predicate. Recomputing
+    one decomposition outside the timed region keeps performance measurements
+    honest while measuring every margin on the matrices that actually enter
+    pruning and merging.
+    """
+    normalized = np.ascontiguousarray(an.tools.l1_norm_scale(reduction, axis=1))
+    trace = _core.decomp_action(normalized, 2, 30, 50, 1e-100, 0)
+    C_full = np.asarray(trace["C_stacked"], dtype=np.float64)
+    H_full = np.asarray(trace["H_stacked"], dtype=np.float64)
+    collected = _core.collect_archetypes(C_full, H_full, -3.0, 2)
+    retained = np.asarray(collected["selected_archs"], dtype=np.int64)
+    H_merged = np.asarray(outputs["H_merged"], dtype=np.float64)
+
+    if C_full.shape != H_full.T.shape:
+        raise AssertionError(
+            "decision diagnostics require transposed full C/H decomposition buffers"
+        )
+    if C_full.ndim != 2 or retained.size == 0:
+        raise AssertionError("decision diagnostics require retained archetypes")
+    if retained.size != outputs["C_stacked"].shape[1]:
+        raise AssertionError("diagnostic retained count disagrees with run_action output")
+
+    h_max = np.max(H_full, axis=1, keepdims=True)
+    landmark_distance = h_max - H_full
+    landmark_mask = landmark_distance < LANDMARK_PROXIMITY_TOLERANCE
+    strongest_landmark_support = np.max(
+        np.where(landmark_mask, C_full.T, -np.inf),
+        axis=1,
+    )
+
+    backbone = np.corrcoef(H_full)
+    np.fill_diagonal(backbone, 0.0)
+    backbone = np.maximum(np.nan_to_num(backbone, nan=0.0), 0.0)
+    adjacency = (backbone > 0.0).astype(np.float64)
+    adjacency_squared = adjacency @ adjacency
+    strength = np.sum(backbone, axis=1)
+    degree = np.sum(adjacency, axis=1)
+    denominator = strength * (degree - 1.0)
+    transitivity = np.zeros(H_full.shape[0], dtype=np.float64)
+    valid = denominator > 0.0
+    transitivity[valid] = np.sum(
+        backbone[valid] * adjacency_squared[valid], axis=1
+    ) / denominator[valid]
+    transitivity_std = float(np.std(transitivity, ddof=1))
+    if transitivity_std > 0.0:
+        specificity_z = (transitivity - np.mean(transitivity)) / transitivity_std
+    else:
+        specificity_z = np.zeros_like(transitivity)
+
+    C_retained = C_full[:, retained]
+    H_retained = H_full[retained, :].copy()
+    column_sums = np.sum(H_retained, axis=0)
+    column_sums = np.where(column_sums > 0.0, column_sums, 1.0)
+    H_retained /= column_sums[np.newaxis, :]
+    H_arch = np.ascontiguousarray(H_retained @ C_retained)
+    H_arch = np.nan_to_num(H_arch, nan=0.0)
+    spa = _core.run_spa(H_arch, H_arch.shape[1])
+    merge_scores = np.asarray(spa["norms"], dtype=np.float64)
+    score_sum = float(np.sum(merge_scores))
+    score_sq_sum = float(np.sum(np.square(merge_scores)))
+    effective_rank = score_sum * score_sum / score_sq_sum if score_sq_sum > 0.0 else None
+
+    assignment_gap = None
+    if H_merged.ndim == 2 and H_merged.shape[1] >= 2:
+        top_two = np.partition(H_merged, kth=-2, axis=1)[:, -2:]
+        top_two.sort(axis=1)
+        assignment_gap = float(np.min(top_two[:, 1] - top_two[:, 0]))
+
+    return {
+        "scope": "full-decomposition",
+        "policy": {
+            "coefficient_support_tolerance": COEFFICIENT_SUPPORT_TOLERANCE,
+            "landmark_proximity_tolerance": LANDMARK_PROXIMITY_TOLERANCE,
+        },
+        "full_archetype_count": int(C_full.shape[1]),
+        "retained_archetype_count": int(retained.size),
+        "merged_archetype_count": int(outputs["C_merged"].shape[1]),
+        "minimum_retained_landmark_support_margin": float(
+            np.min(
+                strongest_landmark_support[retained]
+                - COEFFICIENT_SUPPORT_TOLERANCE
+            )
+        ),
+        "minimum_landmark_support_boundary_margin": float(
+            np.min(
+                np.abs(
+                    strongest_landmark_support
+                    - COEFFICIENT_SUPPORT_TOLERANCE
+                )
+            )
+        ),
+        "minimum_coefficient_support_boundary_margin": float(
+            np.min(np.abs(C_full - COEFFICIENT_SUPPORT_TOLERANCE))
+        ),
+        "minimum_landmark_proximity_boundary_margin": float(
+            np.min(np.abs(landmark_distance - LANDMARK_PROXIMITY_TOLERANCE))
+        ),
+        "minimum_specificity_threshold_margin": float(
+            np.min(np.abs(specificity_z - (-3.0)))
+        ),
+        "merge_effective_rank": effective_rank,
+        "merge_effective_rank_selected_count": (
+            int(np.floor(effective_rank + 0.5)) if effective_rank is not None else None
+        ),
+        "merge_effective_rank_rounding_margin": (
+            float(abs(effective_rank - (np.floor(effective_rank) + 0.5)))
+            if effective_rank is not None
+            else None
+        ),
+        "assignment_top_two_minimum_gap": assignment_gap,
+    }
+
+
 def _benchmark_run_action(
     reduction: np.ndarray,
     thread_count: int,
@@ -270,8 +393,11 @@ def main() -> None:
                 if medians[mode]["auto"] > 1.5 * reference["medians"][mode]["auto"]:
                     raise AssertionError(f"OpenBLAS {mode} exceeds 1.5x the MKL median")
 
+    decision_diagnostics = (
+        _decision_diagnostics(reduction, parity) if parity is not None else None
+    )
     report = {
-        "schema_version": 1,
+        "schema_version": 2,
         "platform": platform.platform(),
         "processor": platform.processor(),
         "python": platform.python_version(),
@@ -283,10 +409,20 @@ def main() -> None:
         "linkage": linkage,
         "timings": timings,
         "medians": medians,
+        "decision_diagnostics": decision_diagnostics,
     }
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(report, indent=2) + "\n")
-    print(json.dumps({"backend": linkage["backend"], "medians": medians}, indent=2))
+    print(
+        json.dumps(
+            {
+                "backend": linkage["backend"],
+                "medians": medians,
+                "decision_diagnostics": decision_diagnostics,
+            },
+            indent=2,
+        )
+    )
 
 
 if __name__ == "__main__":

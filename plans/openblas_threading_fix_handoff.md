@@ -1,6 +1,6 @@
 # OpenBLAS ACTION performance fix handoff
 
-Date: 2026-07-13
+Date: 2026-07-14
 
 Status: implemented and locally validated on `dev-gpu`; changes are currently
 uncommitted in both `actionet-python` and the `src/libactionet` submodule.
@@ -35,9 +35,81 @@ Final median-of-three results on the cached 6790-by-30 reduction from
 | OpenBLAS-pthread | 51.30 s | 35.01 s | 21.41 s | 12.10 s | 9.63 s | 7.00 s | 13.39 s |
 | OpenBLAS-OpenMP | 53.65 s | 37.32 s | 22.35 s | 12.47 s | 9.48 s | 6.86 s | 13.56 s |
 
-All assignments matched exactly. C and H outputs were numerically equivalent
-at `rtol=1e-8`, `atol=1e-10` across thread counts, BLAS backends, and the
-untouched pre-change MKL build.
+On the identical cached reduction, all assignments matched exactly. C and H
+outputs were numerically equivalent at `rtol=1e-8`, `atol=1e-10` across thread
+counts, BLAS backends, and the untouched pre-change MKL build.
+
+## MKL parity and numerical decision stability
+
+The fixed-reduction comparison isolates the AA implementation and passed: the
+pre-change and small-dense MKL builds selected identical SPA columns, retained
+the same 383 archetypes, chose the same 20 merge representatives, and made the
+same 6,790 assignments. Full C/H differences were approximately `1e-11` or
+smaller and met the documented tolerances.
+
+The initially reported downstream difference came from a different experiment:
+each build recomputed `reduce_kernel` before running ACTION. The seeded
+reduction was bitwise stable within each build but not across builds:
+
+| Quantity | Old/current MKL difference |
+|---|---:|
+| Reduced kernel, maximum absolute | `1.78e-13` |
+| Row-L1-normalized ACTION input, maximum absolute | `7.22e-16` |
+| Full C, maximum absolute | `1.41e-8` |
+| Full H, maximum absolute | `1.63e-8` |
+
+These are valid floating-point differences. The small-dense kernels reassociate
+operations relative to vendor BLAS, and seeded iterative SVD/factorization is
+not a bitwise portability guarantee across separately linked builds. The AA
+solver can amplify tiny input differences without producing an invalid
+decomposition.
+
+One post-processing predicate nevertheless turned this expected variability
+into a discrete output change. Archetype 17 had the same two H landmarks in
+both runs, but its C coefficient at cell 1,415 was zero in the old build and
+`1.73e-18` in the new build. `collectArchetypes` used `C > 0` as landmark
+support, so the roundoff residue retained that archetype. The result was 395
+versus 396 retained archetypes and 622 different final assignments after the
+changed retained set propagated through merging.
+
+The corrected policy defines simplex support as strictly greater than `1e-6`,
+the same threshold already used for meaningful membership. Any tested cutoff
+from `1e-16` through `1e-6` removed the flip; `1e-6` gives one consistent
+semantic definition for coefficients constrained to `[0, 1]`. With this policy
+the recomputed-reduction comparison retains the same 395 archetypes, selects
+the same 24 merge representatives, and makes all 6,790 assignments identically.
+Merged C/H maximum differences are no larger than `5.99e-13` and `1.94e-13`,
+respectively, across the simulated differing-reduction pair and final rebuilt
+parity run.
+
+Other decision gates had comfortable measured margins and remain unchanged:
+
+- SPA selected identical columns for every `k=2..30`;
+- the nearest specificity z-score was `0.101` from `-3`;
+- the nearest H-landmark distance was `5.82e-6` from `1e-3`;
+- merge effective rank was `23.7056`, about `0.206` from the half-integer
+  rounding boundary;
+- the minimum final assignment top-two gap was `1.56e-4`.
+
+AA tolerance and iteration changes are not parity fixes. A representative
+fixed-input sweep showed old/current differences remained tiny at the same
+iteration count, while changing 50 to 100 iterations changed C/H materially.
+Tolerance values `1e-10`, `1e-16`, and `1e-100` were identical when the same
+maximum-iteration limit was reached. Convergence-policy evaluation therefore
+remains a separate semantic redesign.
+
+Final modified-tree validation confirmed:
+
+- exact retained-index, merge-representative, and assignment equality against
+  the pre-change MKL build on the recomputed full-pipeline case;
+- full stacked C/H relative Frobenius errors of `3.56e-9` and `3.30e-9`, with
+  maximum absolute differences `1.48e-8` and `1.71e-8`;
+- merged C/H elementwise parity at `rtol=1e-8`, `atol=1e-10`;
+- fixed-reduction parity against the preserved MKL artifact;
+- an MKL auto-thread median of `5.89 s` over three trials, below both the
+  original `9.40 s` baseline and its 10% regression ceiling;
+- successful pthread and OpenMP OpenBLAS builds, support-boundary tests, exact
+  assignments, and strict C/H parity against the fixed MKL artifact.
 
 ## What was disproved
 
@@ -94,6 +166,21 @@ min(rows, columns) > 128   -> existing CBLAS/Armadillo path
 This threshold covers default ACTION reductions, which are small in at least
 one dimension, without replacing BLAS for genuinely large dense operations.
 There is no vendor-specific behavior in the dispatch.
+
+### `libactionet`: shared numerical decision policy
+
+Added:
+
+- `include/utils_internal/utils_action_numeric_policy.hpp`
+
+The private header names the existing SPA tie, AA singularity, simplex
+regularization/optimality, active-set zero-step, and landmark tolerances. Their
+values are unchanged. It also defines the `1e-6` meaningful simplex-support
+threshold now shared by landmark reproducibility and membership counting.
+
+This is the only intended behavioral change in the numerical-stability patch.
+Returned C/H matrices are not clamped or quantized. The header is also the
+policy source future CPU/GPU backends should share.
 
 ### `libactionet`: active-set solvers
 
@@ -200,6 +287,8 @@ Coverage includes:
 - agreement between solver variants at `rtol=1e-8`, `atol=1e-10`;
 - single- versus multithreaded `runAA`, `decompose_action`, and `run_action`;
 - identical assignments and equivalent C/H matrices;
+- landmark-support behavior at zero, `1e-18`, exactly `1e-6`, and immediately
+  above `1e-6`;
 - an opt-in synthetic catastrophic-regression smoke test.
 
 The timing smoke deliberately starts OpenBLAS with 32 threads in CI. It is
@@ -242,6 +331,8 @@ The benchmark:
 - benchmarks `run_action` and optionally the post-reduction default pipeline;
 - checks determinism within a backend;
 - saves and compares cross-backend parity artifacts;
+- recomputes one untimed full decomposition and records coefficient, landmark,
+  specificity, merge-rank, and assignment decision margins;
 - enforces the documented timing and scaling gates.
 
 The benchmark sets vendor BLAS thread pools to one before importing NumPy or
@@ -296,39 +387,43 @@ All four gates passed on the validation machine.
 - OpenMP remains mandatory and owns coarse ACTION parallelism.
 - The active-set algorithm and convergence policy remain unchanged.
 - Larger matrices retain BLAS dispatch.
+- Meaningful simplex support is `coefficient > 1e-6`; exact positivity is not
+  a reproducibility contract.
+- Seeded reduction is deterministic within a controlled build but not promised
+  bitwise-identical across BLAS builds.
+- Exact multithreaded HNSW graphs or UMAP layouts are outside the ACTION
+  decision-stability contract.
 
 ## Current workspace and commit order
 
 Both repositories are currently on `dev-gpu`:
 
 ```text
-actionet-python HEAD: e0021f5
-libactionet HEAD:     10f180a
+actionet-python HEAD: c18d4c6
+libactionet HEAD:     b5a30c7
 ```
 
 Current parent-repository changes:
 
 ```text
 M  context/DECISIONS.md
-M  plans/openblas_threading_and_odr_findings.md
-M  pyproject.toml
+M  plans/openblas_threading_fix_handoff.md
 m  src/libactionet
-?? .github/workflows/openblas-action.yml
-?? plans/openblas_threading_fix_handoff.md
-?? tests/benchmark_action_blas_backends.py
-?? tests/test_action_small_dense_kernels.py
+M  tests/benchmark_action_blas_backends.py
+M  tests/test_action_small_dense_kernels.py
 ```
 
 Current `src/libactionet` changes:
 
 ```text
 M  context/DECISIONS.md
-M  include/utils_internal/utils_parallel.hpp
+M  include/utils_internal/utils_active_set.hpp
 M  src/action/aa.cpp
-M  src/action/action_decomp.cpp
+M  src/action/action_post.cpp
 M  src/action/simplex_regression.cpp
+M  src/action/spa.cpp
 M  src/utils_internal/utils_active_set.cpp
-?? include/utils_internal/utils_small_dense.hpp
+?? include/utils_internal/utils_action_numeric_policy.hpp
 ```
 
 Commit and push the submodule changes first. Then update and commit the
@@ -440,6 +535,8 @@ primitive.
 - Avoid per-primitive polymorphism in the hot path.
 - Keep convergence-policy experiments out of a semantics-preserving backend
   refactor.
+- Make CPU and accelerator implementations consume the same internal ACTION
+  numerical policy; do not duplicate threshold literals in backend code.
 - Validate on real NVIDIA hardware; device discovery alone is not a sufficient
   canary.
 - Continue to require cross-backend assignment identity and C/H tolerances

@@ -72,6 +72,47 @@ def test_simplex_solvers_handle_duplicate_and_zero_columns() -> None:
     np.testing.assert_allclose(noncached, cached, rtol=RTOL, atol=ATOL)
 
 
+@pytest.mark.parametrize(
+    ("landmark_coefficient", "expected_retained"),
+    [
+        pytest.param(0.0, False, id="exact-zero"),
+        pytest.param(1e-18, False, id="roundoff-residue"),
+        pytest.param(1e-6, False, id="exact-support-threshold"),
+        pytest.param(
+            np.nextafter(1e-6, np.inf),
+            True,
+            id="above-support-threshold",
+        ),
+    ],
+)
+def test_landmark_support_uses_meaningful_simplex_coefficients(
+    landmark_coefficient: float,
+    expected_retained: bool,
+) -> None:
+    # Each H row has one unambiguous landmark. Archetype zero has meaningful
+    # membership on a non-landmark cell, so only its candidate coefficient at
+    # cell zero controls the reproducibility decision. This isolates landmark
+    # support from the independent trivial-membership filter.
+    H_stacked = np.ascontiguousarray(np.eye(4, dtype=np.float64))
+    C_stacked = np.zeros((4, 4), dtype=np.float64)
+    C_stacked[1, 0] = 0.5
+    C_stacked[0, 0] = landmark_coefficient
+    C_stacked[1, 1] = 1.0
+    C_stacked[2, 2] = 1.0
+    C_stacked[3, 3] = 1.0
+    C_stacked = np.ascontiguousarray(C_stacked)
+
+    result = _core.collect_archetypes(
+        C_stacked,
+        H_stacked,
+        -np.inf,  # Disable specificity pruning for this focused policy test.
+        1,
+    )
+    retained = np.asarray(result["selected_archs"], dtype=np.int64)
+
+    assert (0 in retained) is expected_retained
+
+
 _THREAD_PARITY_PROGRAM = textwrap.dedent(
     """
     import sys

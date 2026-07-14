@@ -215,6 +215,51 @@ This document records **deliberate architectural and operational decisions** for
 
 ---
 
+## ACTION numerical decision stability
+
+### Meaningful simplex support, not exact floating-point positivity
+
+**Decision:**
+
+- ACTION's private numerical constants are named in the shared internal
+  `utils_action_numeric_policy.hpp` header so CPU and future accelerator
+  implementations use the same decision policy.
+- A simplex coefficient represents meaningful support only when it is
+  strictly greater than `1e-6`. The same predicate is used for landmark
+  reproducibility and trivial-membership counting.
+- SPA tie handling, AA convergence and singularity handling, active-set
+  regularization/optimality decisions, H-landmark proximity, specificity
+  pruning, merge effective-rank rounding, and assignment argmax retain their
+  existing values and behavior.
+- Exact discrete ACTION decisions are the reproducibility contract for a
+  controlled input. C/H matrices are compared numerically rather than
+  bitwise. Seeded `reduce_kernel` output is a separate reproducibility
+  boundary and is not promised bitwise-identical across BLAS builds.
+
+**Rationale:**
+
+- Recomputing the toy reduction under two MKL builds changed the normalized
+  ACTION input by at most `7.22e-16`. One active-set coefficient consequently
+  changed from exact zero to `1.73e-18`; the former `C > 0` landmark test
+  treated that roundoff residue as biological support and retained one extra
+  archetype.
+- Any support cutoff from `1e-16` through `1e-6` removed the observed flip.
+  `1e-6` is selected because simplex coefficients are dimensionless and the
+  existing membership filter already uses that value.
+- Controlled margin analysis found no crossing in SPA, specificity,
+  H-landmark proximity, merge rank, or final assignment. Changing AA
+  tolerances or iteration limits would alter the fitted model and is not a
+  parity repair.
+- Replacing one elementwise comparison has no meaningful runtime cost and may
+  slightly reduce merge work for numerically unsupported archetypes.
+
+**Related:**
+
+- `plans/openblas_threading_fix_handoff.md`
+- `tests/test_action_small_dense_kernels.py`
+
+---
+
 ## GPU backend scope and platform
 
 ### NVIDIA CUDA backend: Python-first, SVD-first
