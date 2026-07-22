@@ -10,6 +10,7 @@ from scipy.sparse import issparse, csr_matrix, csc_matrix
 
 from .specificity import (
     _cluster_names_for_specificity_labels,
+    compute_archetype_feature_specificity,
     compute_feature_specificity,
 )
 from ..io.lazy_transform import LazyTransform, _validate_lazy_transform
@@ -824,7 +825,7 @@ def annotate_clusters(
 
     # Compute enrichment using C++ backend
     # assess_enrichment expects (features × annotations) for both inputs
-    # Returns dict with "logPvals" and "thresholds"
+    # Returns dict with "logPvals" and "peak_rank_idx"
     enrichment_result = _core.assess_enrichment(
         cluster_feat_spec,  # features × clusters
         marker_mat,         # features × celltypes
@@ -849,6 +850,251 @@ def annotate_clusters(
         "confidence": confidence,
         "enrichment": log_pvals,
         "cluster_names": cluster_names,
+    }
+
+
+def annotate_archetypes(
+    adata: AnnData,
+    markers: Optional[Union[Dict[str, List[str]], pd.DataFrame, np.ndarray]] = None,
+    labels: Optional[Union[str, np.ndarray]] = None,
+    scores: Optional[Union[str, np.ndarray]] = None,
+    archetype_slot: str = "H_merged",
+    specificity_key: Optional[str] = None,
+    features_use: Optional[str] = None,
+    layer: Optional[str] = None,
+    n_threads: int = 0,
+    backed_chunk_size: int = 4096,
+    lazy_transform: Optional[LazyTransform] = None,
+) -> Dict[str, np.ndarray]:
+    """
+    Annotate archetypes using marker genes, prior annotations, or a score matrix.
+
+    This is the archetype-level counterpart of :func:`annotate_clusters`.  Where
+    ``annotate_clusters`` operates on discrete cluster labels, this function
+    operates on the continuous cell-by-archetype soft-membership matrix stored
+    in ``adata.obsm[archetype_slot]`` (default ``"H_merged"``) — a simplex-
+    constrained matrix of shape ``n_cells x n_archetypes`` produced by
+    :func:`actionet.run_actionet` / :func:`actionet.merge_archetypes`.
+
+    Exactly one of ``markers``, ``labels``, or ``scores`` must be provided.
+
+    - ``markers``: known marker genes per cell type.  Uses archetype feature
+      specificity (``pmax(upper - lower, 0)``) together with the Bennett
+      concentration inequality via ``_core.assess_enrichment``.
+    - ``labels``: a per-cell annotation (either a column name in ``adata.obs``
+      or a 1-D array).  Uses ``_core.xicor_matrix`` between the continuous
+      archetype soft-membership matrix and the one-hot encoded labels.
+    - ``scores``: a per-cell numeric score matrix (either a key in
+      ``adata.obsm`` or a 2-D array).  Uses ``_core.xicor_matrix`` between
+      the archetype soft-membership matrix and the score matrix.
+
+    Parameters
+    ----------
+    adata : AnnData
+        Annotated data matrix.
+    markers, labels, scores
+        Mutually-exclusive annotation inputs.  See summary above.
+    archetype_slot : str, default ``"H_merged"``
+        Key in ``adata.obsm`` for the archetype soft-membership matrix
+        (labels/scores modes).
+    specificity_key : str, optional
+        Prefix used to look up pre-computed archetype feature specificity
+        in ``adata.varm``.  When provided (marker mode), the function reads
+        ``{specificity_key}_upper`` and, if present, ``{specificity_key}_lower``
+        and forms ``pmax(upper - lower, 0)``.  When ``None`` (default),
+        archetype feature specificity is computed on the fly via
+        :func:`compute_archetype_feature_specificity`.
+    features_use : str, optional
+        Column in ``adata.var`` supplying feature labels for marker matching.
+    layer : str, optional
+        Layer used when computing archetype feature specificity de novo.
+    n_threads : int, default 0
+        Number of parallel threads.  ``0`` lets the backend choose.
+    backed_chunk_size : int, default 4096
+        Backed streaming chunk size for de-novo specificity.
+    lazy_transform : LazyTransform, optional
+        Optional lazy transform for backed inputs (used only when computing
+        specificity de novo; ignored with a warning otherwise).
+
+    Returns
+    -------
+    dict
+        Dictionary with keys:
+        - ``"labels"``: Inferred archetype labels (array of length
+          ``n_archetypes``).
+        - ``"confidence"``: Confidence scores (array of length ``n_archetypes``).
+        - ``"enrichment"``: ``n_archetypes x n_annotations`` enrichment matrix.
+        - ``"archetype_names"``: Archetype names, in row order.
+
+    Examples
+    --------
+    >>> # Marker mode with de-novo archetype specificity:
+    >>> markers = {"T": ["CD3D"], "B": ["CD19"]}
+    >>> res = annotate_archetypes(adata, markers=markers)
+    >>> # Labels mode against an existing per-cell annotation:
+    >>> res = annotate_archetypes(adata, labels="cell_type")
+    """
+    supplied = [x is not None for x in (markers, labels, scores)]
+    if sum(supplied) != 1:
+        raise ValueError(
+            "Exactly one of `markers`, `labels`, or `scores` must be provided."
+        )
+
+    if markers is not None:
+        # -------- Marker branch --------
+        if specificity_key is not None:
+            if lazy_transform is not None:
+                warnings.warn(
+                    "`lazy_transform` is ignored when `specificity_key` is provided.",
+                    UserWarning,
+                    stacklevel=2,
+                )
+            upper_key = f"{specificity_key}_upper"
+            lower_key = f"{specificity_key}_lower"
+            if upper_key not in adata.varm:
+                raise ValueError(
+                    f"Pre-computed archetype specificity not found. Expected "
+                    f"'{upper_key}' in adata.varm. Available: {list(adata.varm.keys())}"
+                )
+            upper_sig = np.asarray(adata.varm[upper_key])
+            if lower_key in adata.varm:
+                lower_sig = np.asarray(adata.varm[lower_key])
+                archetype_feat_spec = upper_sig - lower_sig
+            else:
+                archetype_feat_spec = upper_sig
+        else:
+            spec_result = compute_archetype_feature_specificity(
+                adata,
+                layer=layer,
+                n_threads=n_threads,
+                backed_chunk_size=backed_chunk_size,
+                return_raw=True,
+                lazy_transform=lazy_transform,
+            )
+            upper_sig = spec_result["upper_significance"]
+            lower_sig = spec_result.get("lower_significance")
+            archetype_feat_spec = (
+                upper_sig - lower_sig if lower_sig is not None else upper_sig
+            )
+
+        archetype_feat_spec = np.asarray(archetype_feat_spec)
+        archetype_feat_spec[archetype_feat_spec < 0] = 0
+
+        # Resolve feature space and encode markers.
+        from .._feature_lookup import resolve_feature_space
+
+        space = resolve_feature_space(adata, features_use, context="annotate_archetypes")
+        feature_set = space.labels
+        marker_mat, celltype_names = _encode_markers(markers, feature_set)
+
+        if issparse(archetype_feat_spec):
+            archetype_feat_spec = archetype_feat_spec.toarray()
+        if not issparse(marker_mat):
+            marker_mat = csr_matrix(marker_mat)
+
+        enrichment_result = _core.assess_enrichment(
+            archetype_feat_spec,
+            marker_mat,
+            n_threads,
+        )
+        log_pvals = enrichment_result["logPvals"].T  # archetypes x celltypes
+        log_pvals = np.nan_to_num(log_pvals, nan=0.0, posinf=0.0, neginf=0.0)
+
+        n_archetypes = log_pvals.shape[0]
+        archetype_names = np.array(
+            [f"A{i + 1}" for i in range(n_archetypes)], dtype=object
+        )
+        labels_idx = np.argmax(log_pvals, axis=1)
+        confidence = np.max(log_pvals, axis=1)
+        annot_labels = np.array([celltype_names[i] for i in labels_idx])
+
+        return {
+            "labels": annot_labels,
+            "confidence": confidence,
+            "enrichment": log_pvals,
+            "archetype_names": archetype_names,
+        }
+
+    # -------- Labels / scores branches: continuous-H XICOR --------
+    if archetype_slot not in adata.obsm:
+        raise ValueError(
+            f"Archetype slot '{archetype_slot}' not found in adata.obsm. "
+            f"Available: {list(adata.obsm.keys())}"
+        )
+    X1 = np.asarray(adata.obsm[archetype_slot], dtype=np.float64)
+    if X1.ndim != 2:
+        raise ValueError(
+            f"adata.obsm['{archetype_slot}'] must be 2-D (cells x archetypes); "
+            f"got shape {X1.shape}"
+        )
+    n_archetypes = X1.shape[1]
+    archetype_names = np.array(
+        [f"A{i + 1}" for i in range(n_archetypes)], dtype=object
+    )
+
+    if labels is not None:
+        if isinstance(labels, str):
+            if labels not in adata.obs.columns:
+                raise ValueError(f"Labels key '{labels}' not found in adata.obs.")
+            label_vec = adata.obs[labels].values
+        else:
+            label_vec = np.asarray(labels)
+        label_vec = as_plain_labels(label_vec)
+        categories, inverse = np.unique(label_vec, return_inverse=True)
+        n_cat = len(categories)
+        X2 = np.zeros((label_vec.shape[0], n_cat), dtype=np.float64)
+        X2[np.arange(label_vec.shape[0]), inverse] = 1.0
+        col_names = np.asarray(categories, dtype=object)
+    else:
+        if isinstance(scores, str):
+            if scores not in adata.obsm:
+                raise ValueError(f"Scores slot '{scores}' not found in adata.obsm.")
+            X2 = np.asarray(adata.obsm[scores], dtype=np.float64)
+            col_names = np.array(
+                [f"S{i + 1}" for i in range(X2.shape[1])], dtype=object
+            )
+        else:
+            X2 = np.asarray(scores, dtype=np.float64)
+            if X2.ndim == 1:
+                X2 = X2[:, None]
+            col_names = np.array(
+                [f"S{i + 1}" for i in range(X2.shape[1])], dtype=object
+            )
+
+    if X1.shape[0] != X2.shape[0]:
+        raise ValueError(
+            f"Row count mismatch: archetype matrix has {X1.shape[0]} rows, "
+            f"annotation matrix has {X2.shape[0]}."
+        )
+
+    xi_out = _core.xicor_matrix(X1, X2, True, 0, n_threads)
+    z_pos = np.asarray(xi_out["Z"], dtype=np.float64)
+    z_pos[z_pos < 0] = 0.0
+    # Restore signed direction via classical Pearson correlation.
+    corr = np.zeros_like(z_pos)
+    # Vectorized column-wise Pearson correlation.
+    X1c = X1 - X1.mean(axis=0, keepdims=True)
+    X2c = X2 - X2.mean(axis=0, keepdims=True)
+    X1_std = np.sqrt((X1c ** 2).sum(axis=0))
+    X2_std = np.sqrt((X2c ** 2).sum(axis=0))
+    denom = np.outer(X1_std, X2_std)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        corr = (X1c.T @ X2c) / denom
+    direction = np.sign(np.nan_to_num(corr, nan=0.0))
+    archetype_enrichment = direction * z_pos
+    archetype_enrichment = np.nan_to_num(
+        archetype_enrichment, nan=0.0, posinf=0.0, neginf=0.0
+    )
+
+    labels_idx = np.argmax(archetype_enrichment, axis=1)
+    confidence = np.max(archetype_enrichment, axis=1)
+    annot_labels = np.array([col_names[i] for i in labels_idx])
+
+    return {
+        "labels": annot_labels,
+        "confidence": confidence,
+        "enrichment": archetype_enrichment,
+        "archetype_names": archetype_names,
     }
 
 

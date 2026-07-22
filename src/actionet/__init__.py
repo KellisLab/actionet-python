@@ -29,6 +29,7 @@ from .action import (
     run_spa,
 )
 from .annotation import (
+    annotate_archetypes,
     annotate_cells,
     annotate_clusters,
     compute_archetype_feature_specificity,
@@ -108,6 +109,7 @@ __all__ = [
     # Annotation (markers + specificity)
     "annotate_cells",
     "annotate_clusters",
+    "annotate_archetypes",
     "compute_archetype_feature_specificity",
     "compute_feature_specificity",
     "find_markers",

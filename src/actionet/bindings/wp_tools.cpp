@@ -169,7 +169,10 @@ py::dict assess_enrichment(py::array_t<double> scores, py::object associations, 
 
     py::dict out;
     out["logPvals"] = arma_mat_to_numpy(res(0));
-    out["thresholds"] = arma_mat_to_numpy(res(1));
+    // 0-based position, in the descending sort of each score column, at
+    // which the logPval peaks. NOT a score threshold; to recover the
+    // score, index into np.sort(scores[:, j])[::-1] with this value.
+    out["peak_rank_idx"] = arma_mat_to_numpy(res(1));
 
     return out;
 }
