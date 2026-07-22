@@ -633,6 +633,52 @@ def annotate_cells(
     return result
 
 
+def _annotate_from_markers(
+    *,
+    adata: AnnData,
+    markers: Union[Dict[str, List[str]], pd.DataFrame, np.ndarray],
+    features_use: Optional[str],
+    n_threads: int,
+    spec_upper: np.ndarray,
+    spec_lower: Optional[np.ndarray],
+    row_names: np.ndarray,
+    row_names_key: str,
+    context: str,
+) -> Dict[str, np.ndarray]:
+    """Shared marker-mode enrichment pipeline.
+
+    Used by both :func:`annotate_clusters` and the marker branch of
+    :func:`annotate_archetypes`.  Given an ``upper``/``lower`` specificity
+    pair (``lower`` may be ``None``), a marker specification, and the row
+    names for the group axis, computes ``pmax(upper - lower, 0)``, encodes
+    the markers to a sparse feature x celltype matrix, calls
+    ``_core.assess_enrichment``, and returns the standard annotation dict.
+    """
+    spec = spec_upper - spec_lower if spec_lower is not None else spec_upper
+    spec = np.asarray(spec)
+    spec[spec < 0] = 0
+    if issparse(spec):
+        spec = spec.toarray()
+
+    from .._feature_lookup import resolve_feature_space
+
+    space = resolve_feature_space(adata, features_use, context=context)
+    marker_mat, celltype_names = _encode_markers(markers, space.labels)
+    if not issparse(marker_mat):
+        marker_mat = csr_matrix(marker_mat)
+
+    log_pvals = _core.assess_enrichment(spec, marker_mat, n_threads)["logPvals"].T
+    log_pvals = np.nan_to_num(log_pvals, nan=0.0, posinf=0.0, neginf=0.0)
+
+    labels_idx = np.argmax(log_pvals, axis=1)
+    return {
+        "labels": np.array([celltype_names[i] for i in labels_idx]),
+        "confidence": np.max(log_pvals, axis=1),
+        "enrichment": log_pvals,
+        row_names_key: row_names,
+    }
+
+
 def annotate_clusters(
     adata: AnnData,
     markers: Union[Dict[str, List[str]], pd.DataFrame, np.ndarray],
@@ -752,8 +798,6 @@ def annotate_clusters(
 
         upper_sig = adata.varm[upper_key]
         lower_sig = adata.varm[lower_key]
-        cluster_feat_spec = upper_sig - lower_sig
-        cluster_feat_spec[cluster_feat_spec < 0] = 0
 
         # For pre-computed specificity, we need cluster labels to determine cluster names
         if cluster_key not in adata.obs.columns:
@@ -782,17 +826,14 @@ def annotate_clusters(
             return_raw=True,
             lazy_transform=lazy_transform,
         )
-        # Combine upper and lower to get feature specificity
         upper_sig = result["upper_significance"]
         lower_sig = result["lower_significance"]
-        cluster_feat_spec = upper_sig - lower_sig
-        cluster_feat_spec[cluster_feat_spec < 0] = 0
 
     # Normalize cluster labels to plain array to ensure consistent ordering.
     cluster_labels = as_plain_labels(cluster_labels)
 
     # Match the same label ordering logic used by compute_feature_specificity.
-    n_clusters = cluster_feat_spec.shape[1]
+    n_clusters = np.asarray(upper_sig).shape[1]
     cluster_names = _cluster_names_for_specificity_labels(cluster_labels)
     if cluster_names.shape[0] != n_clusters:
         from pandas.api.types import is_integer_dtype
@@ -807,50 +848,17 @@ def annotate_clusters(
                 f"({cluster_names.shape[0]} labels vs {n_clusters} columns)."
             )
 
-    # Get feature labels
-    from .._feature_lookup import resolve_feature_space
-    space = resolve_feature_space(adata, features_use, context="annotate_clusters")
-    feature_set = space.labels
-
-    # Encode markers into binary/weighted matrix
-    marker_mat, celltype_names = _encode_markers(markers, feature_set)
-
-    # Convert to dense if sparse
-    if issparse(cluster_feat_spec):
-        cluster_feat_spec = cluster_feat_spec.toarray()
-
-    # Convert marker_mat to sparse for efficiency
-    if not issparse(marker_mat):
-        marker_mat = csr_matrix(marker_mat)
-
-    # Compute enrichment using C++ backend
-    # assess_enrichment expects (features × annotations) for both inputs
-    # Returns dict with "logPvals" and "peak_rank_idx"
-    enrichment_result = _core.assess_enrichment(
-        cluster_feat_spec,  # features × clusters
-        marker_mat,         # features × celltypes
-        n_threads
+    return _annotate_from_markers(
+        adata=adata,
+        markers=markers,
+        features_use=features_use,
+        n_threads=n_threads,
+        spec_upper=upper_sig,
+        spec_lower=lower_sig,
+        row_names=cluster_names,
+        row_names_key="cluster_names",
+        context="annotate_clusters",
     )
-
-    # enrichment_result["logPvals"] is clusters × celltypes
-    log_pvals = enrichment_result["logPvals"].T  # Transpose to clusters × celltypes
-
-    # Handle non-finite values
-    log_pvals = np.nan_to_num(log_pvals, nan=0.0, posinf=0.0, neginf=0.0)
-
-    # Assign labels based on highest enrichment
-    labels_idx = np.argmax(log_pvals, axis=1)
-    confidence = np.max(log_pvals, axis=1)
-
-    # Convert indices to label names
-    labels = np.array([celltype_names[i] for i in labels_idx])
-
-    return {
-        "labels": labels,
-        "confidence": confidence,
-        "enrichment": log_pvals,
-        "cluster_names": cluster_names,
-    }
 
 
 def annotate_archetypes(
@@ -959,9 +967,8 @@ def annotate_archetypes(
             upper_sig = np.asarray(adata.varm[upper_key])
             if lower_key in adata.varm:
                 lower_sig = np.asarray(adata.varm[lower_key])
-                archetype_feat_spec = upper_sig - lower_sig
             else:
-                archetype_feat_spec = upper_sig
+                lower_sig = None
         else:
             spec_result = compute_archetype_feature_specificity(
                 adata,
@@ -973,47 +980,23 @@ def annotate_archetypes(
             )
             upper_sig = spec_result["upper_significance"]
             lower_sig = spec_result.get("lower_significance")
-            archetype_feat_spec = (
-                upper_sig - lower_sig if lower_sig is not None else upper_sig
-            )
 
-        archetype_feat_spec = np.asarray(archetype_feat_spec)
-        archetype_feat_spec[archetype_feat_spec < 0] = 0
-
-        # Resolve feature space and encode markers.
-        from .._feature_lookup import resolve_feature_space
-
-        space = resolve_feature_space(adata, features_use, context="annotate_archetypes")
-        feature_set = space.labels
-        marker_mat, celltype_names = _encode_markers(markers, feature_set)
-
-        if issparse(archetype_feat_spec):
-            archetype_feat_spec = archetype_feat_spec.toarray()
-        if not issparse(marker_mat):
-            marker_mat = csr_matrix(marker_mat)
-
-        enrichment_result = _core.assess_enrichment(
-            archetype_feat_spec,
-            marker_mat,
-            n_threads,
-        )
-        log_pvals = enrichment_result["logPvals"].T  # archetypes x celltypes
-        log_pvals = np.nan_to_num(log_pvals, nan=0.0, posinf=0.0, neginf=0.0)
-
-        n_archetypes = log_pvals.shape[0]
+        n_archetypes = np.asarray(upper_sig).shape[1]
         archetype_names = np.array(
             [f"A{i + 1}" for i in range(n_archetypes)], dtype=object
         )
-        labels_idx = np.argmax(log_pvals, axis=1)
-        confidence = np.max(log_pvals, axis=1)
-        annot_labels = np.array([celltype_names[i] for i in labels_idx])
 
-        return {
-            "labels": annot_labels,
-            "confidence": confidence,
-            "enrichment": log_pvals,
-            "archetype_names": archetype_names,
-        }
+        return _annotate_from_markers(
+            adata=adata,
+            markers=markers,
+            features_use=features_use,
+            n_threads=n_threads,
+            spec_upper=upper_sig,
+            spec_lower=lower_sig,
+            row_names=archetype_names,
+            row_names_key="archetype_names",
+            context="annotate_archetypes",
+        )
 
     # -------- Labels / scores branches: continuous-H XICOR --------
     if archetype_slot not in adata.obsm:
