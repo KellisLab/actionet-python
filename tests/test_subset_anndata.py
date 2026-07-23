@@ -10,6 +10,7 @@ import pandas as pd
 import pytest
 import scipy.sparse as sp
 import anndata as ad
+import h5py
 import os
 
 import actionet
@@ -545,6 +546,179 @@ class TestSubsetAnndataBackedView:
 # ---------------------------------------------------------------------------
 
 class TestBackedRewriteRegressions:
+    def test_mixed_csr_index_dtypes_are_normalized_without_source_mutation(self):
+        source = sp.csr_matrix(
+            np.array(
+                [
+                    [1.0, 0.0, 2.0, 0.0],
+                    [0.0, 3.0, 0.0, 4.0],
+                    [5.0, 0.0, 0.0, 6.0],
+                ]
+            )
+        )
+        source.indptr = source.indptr.astype(np.int64)
+        assert source.indices.dtype == np.int32
+        assert source.indptr.dtype == np.int64
+
+        normalized = _backed_persist._normalize_scipy_sparse_for_row_slicing(source)
+
+        assert sp.isspmatrix_csr(normalized)
+        assert normalized.indices.dtype == np.int32
+        assert normalized.indptr.dtype == np.int32
+        assert source.indices.dtype == np.int32
+        assert source.indptr.dtype == np.int64
+        assert np.shares_memory(normalized.data, source.data)
+        assert np.shares_memory(normalized.indices, source.indices)
+        np.testing.assert_array_equal(normalized.toarray(), source.toarray())
+
+    def test_sparse_index_dtype_uses_int64_only_when_required(self):
+        assert _backed_persist._sparse_index_dtype((100, 200), 1_000) == np.dtype(np.int32)
+        assert _backed_persist._sparse_index_dtype(
+            (100, _backed_persist._INT32_MAX + 1), 1_000
+        ) == np.dtype(np.int64)
+        assert _backed_persist._sparse_index_dtype(
+            (100, 200), _backed_persist._INT32_MAX + 1
+        ) == np.dtype(np.int64)
+
+    def test_csc_nnz_estimation_is_orientation_safe(self):
+        csr = sp.csr_matrix(
+            np.array(
+                [
+                    [1.0, 0.0, 2.0],
+                    [0.0, 3.0, 0.0],
+                    [4.0, 5.0, 0.0],
+                    [0.0, 0.0, 6.0],
+                ]
+            )
+        )
+        csc = csr.tocsc()
+        rows = np.array([3, 0, 2], dtype=np.int64)
+
+        assert _backed_persist._estimate_total_nnz(csc, rows, None) is None
+
+        normalized = _backed_persist._normalize_scipy_sparse_for_row_slicing(csc)
+        assert sp.isspmatrix_csr(normalized)
+        assert _backed_persist._estimate_total_nnz(normalized, rows, None) == int(
+            normalized[rows, :].nnz
+        )
+
+    def test_sparse_writer_preserves_selection_and_writes_coherent_indices(self, tmp_path):
+        source = sp.csr_matrix(
+            np.array(
+                [
+                    [1.0, 0.0, 2.0, 0.0, 3.0],
+                    [0.0, 4.0, 0.0, 5.0, 0.0],
+                    [6.0, 0.0, 7.0, 0.0, 8.0],
+                    [0.0, 9.0, 0.0, 10.0, 0.0],
+                    [11.0, 0.0, 12.0, 0.0, 13.0],
+                    [0.0, 14.0, 0.0, 15.0, 0.0],
+                ]
+            )
+        )
+        source.indptr = source.indptr.astype(np.int64)
+        obs_idx = np.array([5, 0, 5, 3], dtype=np.int64)
+        var_idx = np.array([4, 1, 4, 0], dtype=np.int64)
+        expected = source[obs_idx, :][:, var_idx].tocsr()
+        events = []
+        output = tmp_path / "mixed_indices.h5ad"
+
+        with h5py.File(output, "w") as handle:
+            _backed_persist._write_sparse_subsetted(
+                handle,
+                "graph",
+                source,
+                obs_idx,
+                var_idx,
+                chunk_size=3,
+                profile_callback=events.append,
+            )
+
+        with h5py.File(output, "r") as handle:
+            group = handle["graph"]
+            actual = sp.csr_matrix(
+                (group["data"][:], group["indices"][:], group["indptr"][:]),
+                shape=tuple(group.attrs["shape"]),
+            )
+            assert group.attrs["encoding-type"] == "csr_matrix"
+            assert group["indices"].dtype == np.dtype(np.int32)
+            assert group["indptr"].dtype == np.dtype(np.int32)
+
+        np.testing.assert_array_equal(actual.toarray(), expected.toarray())
+        chunk_events = [event for event in events if event["event"] == "sparse_chunk"]
+        assert len(chunk_events) == 2
+        assert all(event["source_read_s"] >= 0 for event in chunk_events)
+        assert all(event["selection_s"] >= 0 for event in chunk_events)
+        assert all(event["destination_write_s"] >= 0 for event in chunk_events)
+        component_event = next(
+            event for event in events if event["event"] == "sparse_component"
+        )
+        assert component_event["nnz"] == expected.nnz
+        assert component_event["chunk_size"] == 3
+
+    def test_identity_var_selector_uses_fixed_sparse_allocation(self, tmp_path):
+        source = sp.csr_matrix(np.eye(8, 5, dtype=np.float64))
+        obs_idx = np.array([0, 2, 4, 6], dtype=np.int64)
+        var_idx = np.arange(source.shape[1], dtype=np.int64)
+        events = []
+
+        with h5py.File(tmp_path / "identity_vars.h5ad", "w") as handle:
+            _backed_persist._write_sparse_subsetted(
+                handle,
+                "X",
+                source,
+                obs_idx,
+                var_idx,
+                chunk_size=2,
+                profile_callback=events.append,
+            )
+
+        chunks = [event for event in events if event["event"] == "sparse_chunk"]
+        assert chunks
+        assert all(event["selection_s"] == 0.0 for event in chunks)
+        component = next(event for event in events if event["event"] == "sparse_component")
+        assert component["fixed_allocation"] is True
+
+    def test_filtered_writer_profiles_components_flush_and_close(self, tmp_path):
+        adata = _make_test_adata(n_obs=30, n_var=12)
+        graph = sp.eye(30, format="csr", dtype=np.float64)
+        graph.indptr = graph.indptr.astype(np.int64)
+        adata.obsp["graph"] = graph
+        source_path = str(tmp_path / "profile_source.h5ad")
+        dest_path = str(tmp_path / "profile_dest.h5ad")
+        backed = _write_backed(adata, source_path)
+        events = []
+
+        try:
+            _backed_persist._write_filtered_backed(
+                backed,
+                np.arange(20, dtype=np.int64),
+                np.arange(10, dtype=np.int64),
+                dest_path,
+                7,
+                profile_callback=events.append,
+            )
+        finally:
+            backed.file.close()
+
+        component_names = {
+            event["component"]
+            for event in events
+            if event["event"] == "component"
+        }
+        assert {"X", "obs", "var", "obsp/graph"}.issubset(component_names)
+        assert all(
+            event["hdf5_flush_s"] >= 0
+            for event in events
+            if event["event"] == "component"
+        )
+        assert any(event["event"] == "close" for event in events)
+        assert any(event["event"] == "filtered_write" for event in events)
+
+        reopened = ad.read_h5ad(dest_path, backed="r")
+        assert reopened.shape == (20, 10)
+        assert reopened.obsp["graph"].shape == (20, 20)
+        reopened.file.close()
+
     def test_subset_backed_preserves_raw_payload(self, tmp_path):
         adata = _make_test_adata(n_obs=60, n_var=35)
         adata.raw = adata.copy()
@@ -706,4 +880,3 @@ class TestSubsetAfterViewToMemory:
         assert view.isbacked
         assert view.n_obs == 20
         assert view.n_vars == 20
-

@@ -16,6 +16,8 @@ from __future__ import annotations
 import os
 import tempfile
 import warnings
+from collections.abc import Callable
+from time import perf_counter
 
 import anndata as ad
 import numpy as np
@@ -36,6 +38,28 @@ from .persist import (
     _refresh_backed_handle,
     is_backed_adata,
 )
+
+
+_INT32_MAX = int(np.iinfo(np.int32).max)
+_WriteProfileCallback = Callable[[dict[str, object]], None]
+
+
+def _emit_write_profile(
+    callback: _WriteProfileCallback | None,
+    event: str,
+    **details: object,
+) -> None:
+    """Emit one private backed-write profiling event when requested."""
+    if callback is not None:
+        callback({"event": event, **details})
+
+
+def _h5_file_size(handle) -> int:
+    """Return HDF5's current file-size view, or ``-1`` if unavailable."""
+    try:
+        return int(handle.id.get_filesize())
+    except Exception:
+        return -1
 
 
 def _as_compression_policy(policy) -> CompressionPolicy:
@@ -93,6 +117,95 @@ def _warn_if_duplicates(idx: np.ndarray, *, name: str) -> None:
         )
 
 
+def _is_identity_index(idx: np.ndarray | None, axis_size: int) -> bool:
+    """Return whether *idx* selects an axis once, in its original order."""
+    return bool(
+        idx is not None
+        and idx.size == axis_size
+        and np.array_equal(idx, np.arange(axis_size, dtype=np.int64))
+    )
+
+
+def _sparse_storage_format(matrix) -> str | None:
+    """Return ``csr``/``csc`` for scipy and backed sparse objects."""
+    fmt = getattr(matrix, "format", None)
+    if isinstance(fmt, str):
+        fmt = fmt.lower()
+        if fmt in {"csr", "csc"}:
+            return fmt
+
+    for node in (matrix, getattr(matrix, "group", None)):
+        attrs = getattr(node, "attrs", None)
+        if attrs is None:
+            continue
+        encoding = attrs.get("encoding-type", "")
+        if isinstance(encoding, bytes):
+            encoding = encoding.decode("utf-8", errors="ignore")
+        if isinstance(encoding, str):
+            encoding = encoding.lower()
+            if "csr" in encoding:
+                return "csr"
+            if "csc" in encoding:
+                return "csc"
+    return None
+
+
+def _sparse_index_dtype(shape: tuple[int, int], nnz: int) -> np.dtype:
+    """Choose one coherent scipy index dtype for a sparse matrix."""
+    max_required = max(int(shape[0]), int(shape[1]), int(nnz))
+    return np.dtype(np.int32 if max_required <= _INT32_MAX else np.int64)
+
+
+def _normalize_scipy_sparse_for_row_slicing(matrix):
+    """Return a CSR matrix whose ``indices`` and ``indptr`` dtypes agree.
+
+    SciPy fancy row indexing promotes both index arrays to their common
+    dtype. A mixed ``indices=int32``/``indptr=int64`` CSR therefore converts
+    the *entire* indices array on every row chunk. Harmonizing the two arrays
+    once avoids that atlas-scale repeated cost. The returned wrapper does not
+    mutate *matrix* and shares data/index arrays whenever their dtype already
+    matches the safe target.
+    """
+    if not sp.issparse(matrix):
+        return matrix
+
+    source = matrix if sp.isspmatrix_csr(matrix) else sp.csr_matrix(matrix, copy=False)
+    target_dtype = _sparse_index_dtype(source.shape, int(source.nnz))
+
+    if (
+        np.dtype(source.indices.dtype) == target_dtype
+        and np.dtype(source.indptr.dtype) == target_dtype
+    ):
+        return source
+
+    indices = np.asarray(source.indices, dtype=target_dtype)
+    indptr = np.asarray(source.indptr, dtype=target_dtype)
+    normalized = sp.csr_matrix(
+        (source.data, indices, indptr),
+        shape=source.shape,
+        copy=False,
+    )
+
+    # Preserve already-computed format flags without forcing an O(nnz) check.
+    if hasattr(source, "_has_sorted_indices"):
+        normalized._has_sorted_indices = source._has_sorted_indices
+    if hasattr(source, "_has_canonical_format"):
+        normalized._has_canonical_format = source._has_canonical_format
+    return normalized
+
+
+def _source_sparse_indices_dtype(matrix) -> np.dtype | None:
+    """Read the source sparse-index dtype without materializing its values."""
+    indices = getattr(matrix, "indices", None)
+    if indices is not None and hasattr(indices, "dtype"):
+        return np.dtype(indices.dtype)
+
+    group = getattr(matrix, "group", None)
+    if group is not None and "indices" in group:
+        return np.dtype(group["indices"].dtype)
+    return None
+
+
 def _adaptive_sparse_chunk_size(
     matrix,
     obs_idx: np.ndarray,
@@ -113,14 +226,8 @@ def _adaptive_sparse_chunk_size(
     rows = obs_idx[:sample_n]
     block = matrix[rows, :]
 
-    if var_idx is not None:
-        n_vars = block.shape[1]
-        is_full_var = (
-            var_idx.size == n_vars
-            and np.array_equal(var_idx, np.arange(n_vars, dtype=np.int64))
-        )
-        if not is_full_var:
-            block = block[:, var_idx]
+    if var_idx is not None and not _is_identity_index(var_idx, block.shape[1]):
+        block = block[:, var_idx]
 
     block = sp.csr_matrix(block)
     if block.shape[0] == 0 or block.nnz == 0:
@@ -137,12 +244,16 @@ def _adaptive_sparse_chunk_size(
 
 
 def _estimate_total_nnz(matrix, obs_idx: np.ndarray, var_idx: np.ndarray | None) -> int | None:
-    """Try to compute exact output nnz from source indptr without reading data.
+    """Estimate selected-row nnz from a CSR ``indptr`` without reading data.
 
-    Returns None if the source format doesn't support cheap nnz estimation
-    (e.g. CSC with row subsetting, or non-sparse backed objects).
+    The result is exact when columns are not subsetted and an upper bound when
+    ``var_idx`` applies a further column selection. Returns ``None`` for CSC
+    and other sources that do not expose cheap row counts.
     """
     import h5py
+
+    if _sparse_storage_format(matrix) != "csr":
+        return None
 
     indptr = None
 
@@ -175,12 +286,23 @@ def _write_sparse_subsetted(
     chunk_size: int,
     encoding: str = "csr_matrix",
     compression_policy: CompressionPolicy | dict | None = None,
+    profile_callback: _WriteProfileCallback | None = None,
 ):
     """Write a row/col-subsetted sparse matrix to *f[h5_key]* in chunks."""
+    component_started = perf_counter()
     policy = _as_compression_policy(compression_policy)
-    source_mat = matrix
+
+    normalize_started = perf_counter()
+    source_mat = _normalize_scipy_sparse_for_row_slicing(matrix)
+    normalize_s = perf_counter() - normalize_started
+
+    if _is_identity_index(var_idx, source_mat.shape[1]):
+        var_idx = None
+
     n_out = obs_idx.size
     n_vars_out = var_idx.size if var_idx is not None else source_mat.shape[1]
+
+    adaptive_started = perf_counter()
     chunk_size = _adaptive_sparse_chunk_size(
         source_mat,
         obs_idx,
@@ -189,27 +311,54 @@ def _write_sparse_subsetted(
         target_block_mb=128,
         overhead_factor=8.0,
     )
+    adaptive_s = perf_counter() - adaptive_started
 
+    estimate_started = perf_counter()
     estimated_nnz = _estimate_total_nnz(source_mat, obs_idx, var_idx)
+    estimate_s = perf_counter() - estimate_started
+
+    totals = {
+        "source_read_s": 0.0,
+        "selection_s": 0.0,
+        "conversion_s": 0.0,
+        "destination_write_s": 0.0,
+        "indptr_update_s": 0.0,
+        "resize_s": 0.0,
+    }
+
+    def _read_block(pos: int, end: int):
+        rows = obs_idx[pos:end]
+
+        started = perf_counter()
+        block = source_mat[rows, :]
+        source_read_s = perf_counter() - started
+
+        selection_s = 0.0
+        if var_idx is not None:
+            started = perf_counter()
+            block = block[:, var_idx]
+            selection_s = perf_counter() - started
+
+        started = perf_counter()
+        block = sp.csr_matrix(block)
+        conversion_s = perf_counter() - started
+        return block, source_read_s, selection_s, conversion_s
 
     def _iter_blocks():
         for pos in range(0, n_out, chunk_size):
             end = min(pos + chunk_size, n_out)
-            rows = obs_idx[pos:end]
-            block = source_mat[rows, :]
-            if var_idx is not None:
-                block = block[:, var_idx]
-            yield sp.csr_matrix(block)
+            yield pos, end, *_read_block(pos, end)
 
     blocks = _iter_blocks()
-    first_block = next(blocks, None)
+    first_entry = next(blocks, None)
+    first_block = first_entry[2] if first_entry is not None else None
     data_dtype = source_mat.dtype if hasattr(source_mat, "dtype") else np.float64
-    indices_dtype = np.int32
+    indices_dtype = _source_sparse_indices_dtype(source_mat) or np.dtype(np.int32)
     if first_block is not None and first_block.nnz > 0:
         data_dtype = first_block.data.dtype
-        indices_dtype = first_block.indices.dtype
+        indices_dtype = np.promote_types(indices_dtype, first_block.indices.dtype)
 
-    if estimated_nnz is not None and estimated_nnz > 0:
+    if estimated_nnz is not None:
         alloc_size = estimated_nnz
     elif first_block is not None and first_block.nnz > 0:
         avg_nnz_per_row = first_block.nnz / max(1, first_block.shape[0])
@@ -217,8 +366,9 @@ def _write_sparse_subsetted(
     else:
         alloc_size = 1024
 
-    use_fixed = (estimated_nnz is not None and var_idx is None)
+    use_fixed = estimated_nnz is not None and var_idx is None
 
+    dataset_setup_started = perf_counter()
     grp = f.create_group(h5_key)
     if use_fixed:
         data_ds = grp.create_dataset(
@@ -248,6 +398,7 @@ def _write_sparse_subsetted(
             dtype=indices_dtype,
             **policy.sparse_kwargs("indices"),
         )
+    dataset_setup_s = perf_counter() - dataset_setup_started
 
     indptr = np.zeros(n_out + 1, dtype=np.int64)
     row_pos = 0
@@ -260,39 +411,109 @@ def _write_sparse_subsetted(
         data_ds.resize((new_size,))
         indices_ds.resize((new_size,))
 
-    def _write_block(block: sp.csr_matrix) -> None:
+    def _write_block(
+        pos: int,
+        end: int,
+        block: sp.csr_matrix,
+        source_read_s: float,
+        selection_s: float,
+        conversion_s: float,
+    ) -> None:
         nonlocal row_pos, nnz_pos
         n_rows = block.shape[0]
         block_nnz = int(block.nnz)
 
+        started = perf_counter()
         if block_nnz > 0:
             if not use_fixed:
                 _ensure_capacity(nnz_pos + block_nnz)
-            data_ds[nnz_pos:nnz_pos + block_nnz] = block.data
-            indices_ds[nnz_pos:nnz_pos + block_nnz] = block.indices
+            data_ds[nnz_pos : nnz_pos + block_nnz] = block.data
+            indices_ds[nnz_pos : nnz_pos + block_nnz] = block.indices
+        destination_write_s = perf_counter() - started
 
+        started = perf_counter()
         row_nnz = np.diff(block.indptr).astype(np.int64, copy=False)
         if n_rows > 0:
-            indptr[row_pos + 1:row_pos + 1 + n_rows] = nnz_pos + np.cumsum(row_nnz, dtype=np.int64)
+            indptr[row_pos + 1 : row_pos + 1 + n_rows] = nnz_pos + np.cumsum(
+                row_nnz, dtype=np.int64
+            )
+        indptr_update_s = perf_counter() - started
 
         row_pos += n_rows
         nnz_pos += block_nnz
 
-    if first_block is not None:
-        _write_block(first_block)
-    for block in blocks:
-        _write_block(block)
+        if profile_callback is not None:
+            totals["source_read_s"] += source_read_s
+            totals["selection_s"] += selection_s
+            totals["conversion_s"] += conversion_s
+            totals["destination_write_s"] += destination_write_s
+            totals["indptr_update_s"] += indptr_update_s
+            _emit_write_profile(
+                profile_callback,
+                "sparse_chunk",
+                component=h5_key,
+                row_start=pos,
+                row_end=end,
+                rows=n_rows,
+                nnz=block_nnz,
+                source_read_s=source_read_s,
+                selection_s=selection_s,
+                conversion_s=conversion_s,
+                destination_write_s=destination_write_s,
+                indptr_update_s=indptr_update_s,
+                output_bytes=_h5_file_size(f),
+            )
 
+    if first_entry is not None:
+        _write_block(*first_entry)
+    for entry in blocks:
+        _write_block(*entry)
+
+    resize_started = perf_counter()
     if not use_fixed:
         data_ds.resize((nnz_pos,))
         indices_ds.resize((nnz_pos,))
+    totals["resize_s"] = perf_counter() - resize_started
 
+    # Keep small outputs coherent on disk so AnnData will not recreate the
+    # mixed int32/int64 CSR layout that triggered the repeated SciPy upcast.
+    indices_dtype = np.dtype(indices_ds.dtype)
+    if (
+        indices_dtype == np.dtype(np.int32)
+        and max(int(n_out), int(n_vars_out), int(nnz_pos)) <= _INT32_MAX
+    ):
+        stored_indptr = indptr.astype(np.int32, copy=False)
+    else:
+        stored_indptr = indptr
+
+    finalize_started = perf_counter()
     grp.create_dataset(
         "indptr",
-        data=indptr,
+        data=stored_indptr,
         **policy.sparse_kwargs("indptr"),
     )
     write_sparse_csr_group_attrs(grp, shape=(n_out, n_vars_out), encoding=encoding)
+    finalize_s = perf_counter() - finalize_started
+
+    if profile_callback is not None:
+        _emit_write_profile(
+            profile_callback,
+            "sparse_component",
+            component=h5_key,
+            rows=n_out,
+            columns=n_vars_out,
+            nnz=nnz_pos,
+            chunk_size=chunk_size,
+            fixed_allocation=use_fixed,
+            normalization_s=normalize_s,
+            adaptive_chunk_s=adaptive_s,
+            nnz_estimation_s=estimate_s,
+            dataset_setup_s=dataset_setup_s,
+            finalize_s=finalize_s,
+            total_s=perf_counter() - component_started,
+            output_bytes=_h5_file_size(f),
+            **totals,
+        )
 
 
 def _write_dense_subsetted(
@@ -303,6 +524,7 @@ def _write_dense_subsetted(
     var_idx: np.ndarray | None,
     chunk_size: int,
     compression_policy: CompressionPolicy | dict | None = None,
+    profile_callback: _WriteProfileCallback | None = None,
 ):
     """Write a row/col-subsetted dense matrix to *f[h5_key]* in chunks."""
     policy = _as_compression_policy(compression_policy)
@@ -324,12 +546,40 @@ def _write_dense_subsetted(
     for pos in range(0, n_out, chunk_size):
         end = min(pos + chunk_size, n_out)
         rows = obs_idx[pos:end]
+
+        started = perf_counter()
         block = matrix[rows, :]
+        source_read_s = perf_counter() - started
+
+        selection_s = 0.0
         if var_idx is not None:
+            started = perf_counter()
             block = block[:, var_idx]
+            selection_s = perf_counter() - started
+
+        started = perf_counter()
         if sp.issparse(block):
             block = block.toarray()
-        ds[pos:end, :] = np.asarray(block, dtype=out_dtype)
+        block = np.asarray(block, dtype=out_dtype)
+        conversion_s = perf_counter() - started
+
+        started = perf_counter()
+        ds[pos:end, :] = block
+        destination_write_s = perf_counter() - started
+        if profile_callback is not None:
+            _emit_write_profile(
+                profile_callback,
+                "dense_chunk",
+                component=h5_key,
+                row_start=pos,
+                row_end=end,
+                rows=end - pos,
+                source_read_s=source_read_s,
+                selection_s=selection_s,
+                conversion_s=conversion_s,
+                destination_write_s=destination_write_s,
+                output_bytes=_h5_file_size(f),
+            )
 
 
 def _write_subsetted_matrix(
@@ -340,14 +590,21 @@ def _write_subsetted_matrix(
     var_idx: np.ndarray | None,
     chunk_size: int,
     compression_policy: CompressionPolicy | dict | None = None,
+    profile_callback: _WriteProfileCallback | None = None,
 ):
     """Dispatch to sparse or dense chunked writer."""
     from .matrix_source import _is_sparse_matrix_like
+
+    if _is_identity_index(var_idx, matrix.shape[1]):
+        var_idx = None
 
     if compression_policy is None:
         policy = CompressionPolicy.from_matrix(matrix)
     else:
         policy = _as_compression_policy(compression_policy)
+
+    component_started = perf_counter() if profile_callback is not None else 0.0
+    output_bytes_before = _h5_file_size(f) if profile_callback is not None else -1
 
     if _is_sparse_matrix_like(matrix):
         _write_sparse_subsetted(
@@ -358,6 +615,7 @@ def _write_subsetted_matrix(
             var_idx,
             chunk_size,
             compression_policy=policy,
+            profile_callback=profile_callback,
         )
     else:
         _write_dense_subsetted(
@@ -368,7 +626,27 @@ def _write_subsetted_matrix(
             var_idx,
             chunk_size,
             compression_policy=policy,
+            profile_callback=profile_callback,
         )
+
+    if profile_callback is None:
+        return
+
+    write_s = perf_counter() - component_started
+    flush_started = perf_counter()
+    f.flush()
+    flush_s = perf_counter() - flush_started
+    _emit_write_profile(
+        profile_callback,
+        "component",
+        component=h5_key,
+        kind="matrix",
+        write_s=write_s,
+        hdf5_flush_s=flush_s,
+        total_s=perf_counter() - component_started,
+        output_bytes_before=output_bytes_before,
+        output_bytes=_h5_file_size(f),
+    )
 
 
 def _write_filtered_backed(
@@ -377,22 +655,56 @@ def _write_filtered_backed(
     var_idx: np.ndarray,
     dest_path: str,
     chunk_size: int,
+    *,
+    profile_callback: _WriteProfileCallback | None = None,
 ) -> None:
     """Write a row/col-subsetted backed AnnData to *dest_path* via h5py.
 
     Only ``chunk_size`` rows of the expression matrix are in memory at any
     time, so peak RAM is proportional to ``chunk_size * n_vars_filtered``
     rather than the full filtered matrix.
+
+    When ``profile_callback`` is provided, it receives dictionaries for
+    matrix chunks, completed components, explicit HDF5 flushes, and file
+    close. Profiling is private and opt-in so ordinary rewrites retain their
+    existing buffering and flush behavior.
     """
     import h5py
     from .anndata_io import _write_dataframe_to_h5, _write_dict_value
 
+    total_started = perf_counter()
     _flush_pending(adata)
     _ensure_backed_open(adata)
 
     obs_sub = adata.obs.iloc[obs_idx].copy()
     var_sub = adata.var.iloc[var_idx].copy()
     h5file = adata.file._file
+
+    def _write_profiled_component(f, component: str, kind: str, writer):
+        if profile_callback is None:
+            return writer()
+
+        output_bytes_before = _h5_file_size(f)
+        started = perf_counter()
+        result = writer()
+        write_s = perf_counter() - started
+        flush_s = 0.0
+        if profile_callback is not None:
+            flush_started = perf_counter()
+            f.flush()
+            flush_s = perf_counter() - flush_started
+        _emit_write_profile(
+            profile_callback,
+            "component",
+            component=component,
+            kind=kind,
+            write_s=write_s,
+            hdf5_flush_s=flush_s,
+            total_s=perf_counter() - started,
+            output_bytes_before=output_bytes_before,
+            output_bytes=_h5_file_size(f),
+        )
+        return result
 
     obs_is_identity = (
         obs_idx.size == adata.n_obs
@@ -416,10 +728,15 @@ def _write_filtered_backed(
             var_idx,
             chunk_size,
             compression_policy=x_policy,
+            profile_callback=profile_callback,
         )
 
-        _write_dataframe_to_h5(f, "obs", obs_sub)
-        _write_dataframe_to_h5(f, "var", var_sub)
+        _write_profiled_component(
+            f, "obs", "dataframe", lambda: _write_dataframe_to_h5(f, "obs", obs_sub)
+        )
+        _write_profiled_component(
+            f, "var", "dataframe", lambda: _write_dataframe_to_h5(f, "var", var_sub)
+        )
 
         layer_keys = _real_layer_keys(adata)
         if layer_keys or "layers" in h5file:
@@ -438,6 +755,7 @@ def _write_filtered_backed(
                     var_idx,
                     chunk_size,
                     compression_policy=layer_policy,
+                    profile_callback=profile_callback,
                 )
 
         for container, idx, is_identity, name in [
@@ -451,14 +769,28 @@ def _write_filtered_backed(
                 group.attrs["encoding-version"] = "0.1.0"
                 for k in keys:
                     if is_identity and name in h5file and k in h5file[name]:
-                        h5file[name].copy(k, group, name=k)
+                        _write_profiled_component(
+                            f,
+                            f"{name}/{k}",
+                            "h5copy",
+                            lambda name=name, k=k, group=group: h5file[name].copy(
+                                k, group, name=k
+                            ),
+                        )
                         continue
                     mat = container[k]
                     if mat is not None:
                         import pandas as pd
                         if isinstance(mat, pd.DataFrame):
                             mat_sub = mat.iloc[idx]
-                            _write_dataframe_to_h5(f, f"{name}/{k}", mat_sub)
+                            _write_profiled_component(
+                                f,
+                                f"{name}/{k}",
+                                "dataframe",
+                                lambda name=name, k=k, mat_sub=mat_sub: _write_dataframe_to_h5(
+                                    f, f"{name}/{k}", mat_sub
+                                ),
+                            )
                         else:
                             emb_policy = None
                             if name in h5file and k in h5file[name]:
@@ -471,6 +803,7 @@ def _write_filtered_backed(
                                 None,
                                 chunk_size,
                                 compression_policy=emb_policy,
+                                profile_callback=profile_callback,
                             )
 
         for container, idx, is_identity, name in [
@@ -484,7 +817,14 @@ def _write_filtered_backed(
                 group.attrs["encoding-version"] = "0.1.0"
                 for k in keys:
                     if is_identity and name in h5file and k in h5file[name]:
-                        h5file[name].copy(k, group, name=k)
+                        _write_profiled_component(
+                            f,
+                            f"{name}/{k}",
+                            "h5copy",
+                            lambda name=name, k=k, group=group: h5file[name].copy(
+                                k, group, name=k
+                            ),
+                        )
                         continue
                     mat = container[k]
                     if mat is not None:
@@ -499,16 +839,26 @@ def _write_filtered_backed(
                             idx,
                             chunk_size,
                             compression_policy=pair_policy,
+                            profile_callback=profile_callback,
                         )
 
         if adata.uns:
-            uns_grp = f.create_group("uns")
-            uns_grp.attrs["encoding-type"] = "dict"
-            uns_grp.attrs["encoding-version"] = "0.1.0"
-            for k, v in adata.uns.items():
-                _write_dict_value(uns_grp, k, v)
+
+            def _write_uns():
+                uns_grp = f.create_group("uns")
+                uns_grp.attrs["encoding-type"] = "dict"
+                uns_grp.attrs["encoding-version"] = "0.1.0"
+                for k, v in adata.uns.items():
+                    _write_dict_value(uns_grp, k, v)
+
+            _write_profiled_component(f, "uns", "metadata", _write_uns)
         elif "uns" in h5file:
-            h5file.copy("uns", f, name="uns")
+            _write_profiled_component(
+                f,
+                "uns",
+                "h5copy",
+                lambda: h5file.copy("uns", f, name="uns"),
+            )
 
         raw = getattr(adata, "raw", None)
         if raw is not None:
@@ -527,16 +877,51 @@ def _write_filtered_backed(
                 None,
                 chunk_size,
                 compression_policy=raw_policy,
+                profile_callback=profile_callback,
             )
-            _write_dataframe_to_h5(f, "raw/var", raw.var.copy())
+            _write_profiled_component(
+                f,
+                "raw/var",
+                "dataframe",
+                lambda: _write_dataframe_to_h5(f, "raw/var", raw.var.copy()),
+            )
 
             if "raw" in h5file and "varm" in h5file["raw"]:
-                h5file.copy("raw/varm", raw_grp, name="varm")
+                _write_profiled_component(
+                    f,
+                    "raw/varm",
+                    "h5copy",
+                    lambda: h5file.copy("raw/varm", raw_grp, name="varm"),
+                )
 
         for top_key in h5file.keys():
             if top_key in f:
                 continue
-            h5file.copy(top_key, f, name=top_key)
+            _write_profiled_component(
+                f,
+                top_key,
+                "h5copy",
+                lambda top_key=top_key: h5file.copy(top_key, f, name=top_key),
+            )
+
+        close_started = perf_counter() if profile_callback is not None else 0.0
+
+    if profile_callback is not None:
+        output_bytes = os.path.getsize(dest_path)
+        _emit_write_profile(
+            profile_callback,
+            "close",
+            component=dest_path,
+            close_s=perf_counter() - close_started,
+            output_bytes=output_bytes,
+        )
+        _emit_write_profile(
+            profile_callback,
+            "filtered_write",
+            component=dest_path,
+            total_s=perf_counter() - total_started,
+            output_bytes=output_bytes,
+        )
 
 
 def _view_idx_to_int(idx, axis_size: int) -> np.ndarray:
