@@ -1,14 +1,24 @@
 """Structural rewrites of backed AnnData files (subset, materialize).
 
-This is one third of the former ``_backed_persist.py``. It provides:
+Public entry points:
 
 - :func:`subset_backed_inplace` — the only safe way to shrink a backed
-  AnnData object.
-- :func:`materialize_backed` — turn a backed view into a proper backed
-  AnnData.
+  AnnData object; atomically rewrites the backing HDF5 file with only the
+  selected rows and columns and refreshes the Python handle.
+- :func:`materialize_backed` — turn a backed view (created by e.g.
+  ``adata[1:1000, :]``) into a proper backed AnnData that is no longer a
+  view.
 
-Both are implemented on top of :func:`_write_filtered_backed`, which
-atomically rewrites the HDF5 file with row/col-subsetted chunks.
+Both are implemented on top of the private :func:`_write_filtered_backed`
+helper, which rewrites the HDF5 file with row/col-subsetted chunks. The
+sparse-matrix write path (:func:`_write_sparse_subsetted`) also normalizes
+mixed ``indices``/``indptr`` dtypes and stores homogeneous index dtypes on
+disk so that ``obsp``/``varp``-style pairwise rewrites do not repeatedly
+upcast on every chunk.
+
+Companion modules under :mod:`actionet.io` handle annotation persistence
+(:mod:`actionet.io.persist`) and periodic checkpointing
+(:mod:`actionet.io.checkpoint`).
 """
 
 from __future__ import annotations
@@ -244,12 +254,18 @@ def _adaptive_sparse_chunk_size(
 
 
 def _estimate_total_nnz(matrix, obs_idx: np.ndarray, var_idx: np.ndarray | None) -> int | None:
-    """Estimate selected-row nnz from a CSR ``indptr`` without reading data.
+    """Return exact selected-row nnz from a CSR ``indptr`` without reading data.
 
-    The result is exact when columns are not subsetted and an upper bound when
-    ``var_idx`` applies a further column selection. Returns ``None`` for CSC
-    and other sources that do not expose cheap row counts.
+    The result depends only on ``obs_idx``; the ``var_idx`` argument is
+    retained in the signature for call-site symmetry but is intentionally
+    unused, since a CSR ``indptr`` describes row nnz regardless of column
+    subsetting. The single caller (``_write_sparse_subsetted``) trusts the
+    value as an exact fixed-size allocation only when ``var_idx is None``.
+    Returns ``None`` for CSC and other sources that do not expose cheap row
+    counts.
     """
+    # var_idx is intentionally unused; see docstring.
+    _ = var_idx
     import h5py
 
     if _sparse_storage_format(matrix) != "csr":
@@ -317,14 +333,17 @@ def _write_sparse_subsetted(
     estimated_nnz = _estimate_total_nnz(source_mat, obs_idx, var_idx)
     estimate_s = perf_counter() - estimate_started
 
-    totals = {
-        "source_read_s": 0.0,
-        "selection_s": 0.0,
-        "conversion_s": 0.0,
-        "destination_write_s": 0.0,
-        "indptr_update_s": 0.0,
-        "resize_s": 0.0,
-    }
+    if profile_callback is not None:
+        totals = {
+            "source_read_s": 0.0,
+            "selection_s": 0.0,
+            "conversion_s": 0.0,
+            "destination_write_s": 0.0,
+            "indptr_update_s": 0.0,
+            "resize_s": 0.0,
+        }
+    else:
+        totals = None
 
     def _read_block(pos: int, end: int):
         rows = obs_idx[pos:end]
@@ -473,7 +492,8 @@ def _write_sparse_subsetted(
     if not use_fixed:
         data_ds.resize((nnz_pos,))
         indices_ds.resize((nnz_pos,))
-    totals["resize_s"] = perf_counter() - resize_started
+    if totals is not None:
+        totals["resize_s"] = perf_counter() - resize_started
 
     # Keep small outputs coherent on disk so AnnData will not recreate the
     # mixed int32/int64 CSR layout that triggered the repeated SciPy upcast.
@@ -527,6 +547,7 @@ def _write_dense_subsetted(
     profile_callback: _WriteProfileCallback | None = None,
 ):
     """Write a row/col-subsetted dense matrix to *f[h5_key]* in chunks."""
+    component_started = perf_counter()
     policy = _as_compression_policy(compression_policy)
     if hasattr(matrix, "to_numpy"):
         matrix = matrix.to_numpy()
@@ -542,6 +563,13 @@ def _write_dense_subsetted(
     )
     ds.attrs["encoding-type"] = "array"
     ds.attrs["encoding-version"] = "0.2.0"
+
+    totals = {
+        "source_read_s": 0.0,
+        "selection_s": 0.0,
+        "conversion_s": 0.0,
+        "destination_write_s": 0.0,
+    }
 
     for pos in range(0, n_out, chunk_size):
         end = min(pos + chunk_size, n_out)
@@ -567,6 +595,10 @@ def _write_dense_subsetted(
         ds[pos:end, :] = block
         destination_write_s = perf_counter() - started
         if profile_callback is not None:
+            totals["source_read_s"] += source_read_s
+            totals["selection_s"] += selection_s
+            totals["conversion_s"] += conversion_s
+            totals["destination_write_s"] += destination_write_s
             _emit_write_profile(
                 profile_callback,
                 "dense_chunk",
@@ -581,6 +613,19 @@ def _write_dense_subsetted(
                 output_bytes=_h5_file_size(f),
             )
 
+    if profile_callback is not None:
+        _emit_write_profile(
+            profile_callback,
+            "dense_component",
+            component=h5_key,
+            rows=n_out,
+            columns=n_vars_out,
+            chunk_size=chunk_size,
+            total_s=perf_counter() - component_started,
+            output_bytes=_h5_file_size(f),
+            **totals,
+        )
+
 
 def _write_subsetted_matrix(
     f,
@@ -592,7 +637,12 @@ def _write_subsetted_matrix(
     compression_policy: CompressionPolicy | dict | None = None,
     profile_callback: _WriteProfileCallback | None = None,
 ):
-    """Dispatch to sparse or dense chunked writer."""
+    """Dispatch to sparse or dense chunked writer.
+
+    Emits (via ``profile_callback``) exactly one ``sparse_component`` or
+    ``dense_component`` event per call, followed by one ``component_flush``
+    event that measures the HDF5 flush after the chunked writer completes.
+    """
     from .matrix_source import _is_sparse_matrix_like
 
     if _is_identity_index(var_idx, matrix.shape[1]):
@@ -603,47 +653,37 @@ def _write_subsetted_matrix(
     else:
         policy = _as_compression_policy(compression_policy)
 
-    component_started = perf_counter() if profile_callback is not None else 0.0
-    output_bytes_before = _h5_file_size(f) if profile_callback is not None else -1
-
-    if _is_sparse_matrix_like(matrix):
-        _write_sparse_subsetted(
-            f,
-            h5_key,
-            matrix,
-            obs_idx,
-            var_idx,
-            chunk_size,
-            compression_policy=policy,
-            profile_callback=profile_callback,
-        )
-    else:
-        _write_dense_subsetted(
-            f,
-            h5_key,
-            matrix,
-            obs_idx,
-            var_idx,
-            chunk_size,
-            compression_policy=policy,
-            profile_callback=profile_callback,
-        )
+    writer = _write_sparse_subsetted if _is_sparse_matrix_like(matrix) else _write_dense_subsetted
 
     if profile_callback is None:
+        writer(f, h5_key, matrix, obs_idx, var_idx, chunk_size, compression_policy=policy)
         return
 
-    write_s = perf_counter() - component_started
+    output_bytes_before = _h5_file_size(f)
+    write_started = perf_counter()
+    writer(
+        f,
+        h5_key,
+        matrix,
+        obs_idx,
+        var_idx,
+        chunk_size,
+        compression_policy=policy,
+        profile_callback=profile_callback,
+    )
+    write_s = perf_counter() - write_started
+
     flush_started = perf_counter()
     f.flush()
     flush_s = perf_counter() - flush_started
     _emit_write_profile(
         profile_callback,
-        "component",
+        "component_flush",
         component=h5_key,
         kind="matrix",
         write_s=write_s,
         hdf5_flush_s=flush_s,
-        total_s=perf_counter() - component_started,
+        total_s=perf_counter() - write_started,
         output_bytes_before=output_bytes_before,
         output_bytes=_h5_file_size(f),
     )
@@ -670,6 +710,8 @@ def _write_filtered_backed(
     existing buffering and flush behavior.
     """
     import h5py
+    import pandas as pd
+
     from .anndata_io import _write_dataframe_to_h5, _write_dict_value
 
     total_started = perf_counter()
@@ -688,11 +730,9 @@ def _write_filtered_backed(
         started = perf_counter()
         result = writer()
         write_s = perf_counter() - started
-        flush_s = 0.0
-        if profile_callback is not None:
-            flush_started = perf_counter()
-            f.flush()
-            flush_s = perf_counter() - flush_started
+        flush_started = perf_counter()
+        f.flush()
+        flush_s = perf_counter() - flush_started
         _emit_write_profile(
             profile_callback,
             "component",
@@ -706,14 +746,76 @@ def _write_filtered_backed(
         )
         return result
 
-    obs_is_identity = (
-        obs_idx.size == adata.n_obs
-        and np.array_equal(obs_idx, np.arange(adata.n_obs, dtype=np.int64))
-    )
-    var_is_identity = (
-        var_idx.size == adata.n_vars
-        and np.array_equal(var_idx, np.arange(adata.n_vars, dtype=np.int64))
-    )
+    obs_is_identity = _is_identity_index(obs_idx, adata.n_obs)
+    var_is_identity = _is_identity_index(var_idx, adata.n_vars)
+
+    def _write_axis_container(
+        container,
+        row_idx: np.ndarray,
+        col_idx: np.ndarray | None,
+        is_identity: bool,
+        name: str,
+    ) -> None:
+        """Rewrite a single ``obsm``/``varm``/``obsp``/``varp`` group.
+
+        ``col_idx`` is ``None`` for embeddings (``obsm``/``varm``: row-only
+        subsetting) and equals ``row_idx`` for pairwise graphs
+        (``obsp``/``varp``: row and column subsetting on the same axis).
+        Values that are already an unchanged HDF5 copy of the source get a
+        cheap ``h5file.copy`` fast path. DataFrame values are written via
+        ``_write_dataframe_to_h5``; every other value type goes through the
+        chunked sparse/dense matrix writer.
+        """
+        keys = list(container.keys())
+        if not keys and name not in h5file:
+            return
+
+        group = f.create_group(name)
+        group.attrs["encoding-type"] = "dict"
+        group.attrs["encoding-version"] = "0.1.0"
+
+        for k in keys:
+            component = f"{name}/{k}"
+            if is_identity and name in h5file and k in h5file[name]:
+                _write_profiled_component(
+                    f,
+                    component,
+                    "h5copy",
+                    lambda name=name, k=k, group=group: h5file[name].copy(
+                        k, group, name=k
+                    ),
+                )
+                continue
+
+            mat = container[k]
+            if mat is None:
+                continue
+
+            if isinstance(mat, pd.DataFrame):
+                mat_sub = mat.iloc[row_idx]
+                _write_profiled_component(
+                    f,
+                    component,
+                    "dataframe",
+                    lambda component=component, mat_sub=mat_sub: _write_dataframe_to_h5(
+                        f, component, mat_sub
+                    ),
+                )
+                continue
+
+            policy = None
+            if name in h5file and k in h5file[name]:
+                policy = get_matrix_compression_policy(h5file[name][k])
+            _write_subsetted_matrix(
+                f,
+                component,
+                mat,
+                row_idx,
+                col_idx,
+                chunk_size,
+                compression_policy=policy,
+                profile_callback=profile_callback,
+            )
 
     with h5py.File(dest_path, "w") as f:
         for key, value in h5file.attrs.items():
@@ -762,85 +864,13 @@ def _write_filtered_backed(
             (adata.obsm, obs_idx, obs_is_identity, "obsm"),
             (adata.varm, var_idx, var_is_identity, "varm"),
         ]:
-            keys = list(container.keys())
-            if keys or name in h5file:
-                group = f.create_group(name)
-                group.attrs["encoding-type"] = "dict"
-                group.attrs["encoding-version"] = "0.1.0"
-                for k in keys:
-                    if is_identity and name in h5file and k in h5file[name]:
-                        _write_profiled_component(
-                            f,
-                            f"{name}/{k}",
-                            "h5copy",
-                            lambda name=name, k=k, group=group: h5file[name].copy(
-                                k, group, name=k
-                            ),
-                        )
-                        continue
-                    mat = container[k]
-                    if mat is not None:
-                        import pandas as pd
-                        if isinstance(mat, pd.DataFrame):
-                            mat_sub = mat.iloc[idx]
-                            _write_profiled_component(
-                                f,
-                                f"{name}/{k}",
-                                "dataframe",
-                                lambda name=name, k=k, mat_sub=mat_sub: _write_dataframe_to_h5(
-                                    f, f"{name}/{k}", mat_sub
-                                ),
-                            )
-                        else:
-                            emb_policy = None
-                            if name in h5file and k in h5file[name]:
-                                emb_policy = get_matrix_compression_policy(h5file[name][k])
-                            _write_subsetted_matrix(
-                                f,
-                                f"{name}/{k}",
-                                mat,
-                                idx,
-                                None,
-                                chunk_size,
-                                compression_policy=emb_policy,
-                                profile_callback=profile_callback,
-                            )
+            _write_axis_container(container, idx, None, is_identity, name)
 
         for container, idx, is_identity, name in [
             (adata.obsp, obs_idx, obs_is_identity, "obsp"),
             (adata.varp, var_idx, var_is_identity, "varp"),
         ]:
-            keys = list(container.keys())
-            if keys or name in h5file:
-                group = f.create_group(name)
-                group.attrs["encoding-type"] = "dict"
-                group.attrs["encoding-version"] = "0.1.0"
-                for k in keys:
-                    if is_identity and name in h5file and k in h5file[name]:
-                        _write_profiled_component(
-                            f,
-                            f"{name}/{k}",
-                            "h5copy",
-                            lambda name=name, k=k, group=group: h5file[name].copy(
-                                k, group, name=k
-                            ),
-                        )
-                        continue
-                    mat = container[k]
-                    if mat is not None:
-                        pair_policy = None
-                        if name in h5file and k in h5file[name]:
-                            pair_policy = get_matrix_compression_policy(h5file[name][k])
-                        _write_subsetted_matrix(
-                            f,
-                            f"{name}/{k}",
-                            mat,
-                            idx,
-                            idx,
-                            chunk_size,
-                            compression_policy=pair_policy,
-                            profile_callback=profile_callback,
-                        )
+            _write_axis_container(container, idx, idx, is_identity, name)
 
         if adata.uns:
 

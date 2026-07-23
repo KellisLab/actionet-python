@@ -14,7 +14,7 @@ import h5py
 import os
 
 import actionet
-import actionet.io.subset as _backed_persist
+import actionet.io.subset as subset_mod
 
 
 # ---------------------------------------------------------------------------
@@ -461,7 +461,7 @@ class TestMaterializeBacked:
         def _boom(*args, **kwargs):
             raise RuntimeError("synthetic write failure")
 
-        monkeypatch.setattr(_backed_persist, "_write_filtered_backed", _boom)
+        monkeypatch.setattr(subset_mod, "_write_filtered_backed", _boom)
 
         with pytest.raises(RuntimeError, match="synthetic"):
             actionet.materialize_backed(view, filename=dest)
@@ -560,7 +560,7 @@ class TestBackedRewriteRegressions:
         assert source.indices.dtype == np.int32
         assert source.indptr.dtype == np.int64
 
-        normalized = _backed_persist._normalize_scipy_sparse_for_row_slicing(source)
+        normalized = subset_mod._normalize_scipy_sparse_for_row_slicing(source)
 
         assert sp.isspmatrix_csr(normalized)
         assert normalized.indices.dtype == np.int32
@@ -572,12 +572,12 @@ class TestBackedRewriteRegressions:
         np.testing.assert_array_equal(normalized.toarray(), source.toarray())
 
     def test_sparse_index_dtype_uses_int64_only_when_required(self):
-        assert _backed_persist._sparse_index_dtype((100, 200), 1_000) == np.dtype(np.int32)
-        assert _backed_persist._sparse_index_dtype(
-            (100, _backed_persist._INT32_MAX + 1), 1_000
+        assert subset_mod._sparse_index_dtype((100, 200), 1_000) == np.dtype(np.int32)
+        assert subset_mod._sparse_index_dtype(
+            (100, subset_mod._INT32_MAX + 1), 1_000
         ) == np.dtype(np.int64)
-        assert _backed_persist._sparse_index_dtype(
-            (100, 200), _backed_persist._INT32_MAX + 1
+        assert subset_mod._sparse_index_dtype(
+            (100, 200), subset_mod._INT32_MAX + 1
         ) == np.dtype(np.int64)
 
     def test_csc_nnz_estimation_is_orientation_safe(self):
@@ -594,11 +594,11 @@ class TestBackedRewriteRegressions:
         csc = csr.tocsc()
         rows = np.array([3, 0, 2], dtype=np.int64)
 
-        assert _backed_persist._estimate_total_nnz(csc, rows, None) is None
+        assert subset_mod._estimate_total_nnz(csc, rows, None) is None
 
-        normalized = _backed_persist._normalize_scipy_sparse_for_row_slicing(csc)
+        normalized = subset_mod._normalize_scipy_sparse_for_row_slicing(csc)
         assert sp.isspmatrix_csr(normalized)
-        assert _backed_persist._estimate_total_nnz(normalized, rows, None) == int(
+        assert subset_mod._estimate_total_nnz(normalized, rows, None) == int(
             normalized[rows, :].nnz
         )
 
@@ -623,7 +623,7 @@ class TestBackedRewriteRegressions:
         output = tmp_path / "mixed_indices.h5ad"
 
         with h5py.File(output, "w") as handle:
-            _backed_persist._write_sparse_subsetted(
+            subset_mod._write_sparse_subsetted(
                 handle,
                 "graph",
                 source,
@@ -662,7 +662,7 @@ class TestBackedRewriteRegressions:
         events = []
 
         with h5py.File(tmp_path / "identity_vars.h5ad", "w") as handle:
-            _backed_persist._write_sparse_subsetted(
+            subset_mod._write_sparse_subsetted(
                 handle,
                 "X",
                 source,
@@ -689,7 +689,7 @@ class TestBackedRewriteRegressions:
         events = []
 
         try:
-            _backed_persist._write_filtered_backed(
+            subset_mod._write_filtered_backed(
                 backed,
                 np.arange(20, dtype=np.int64),
                 np.arange(10, dtype=np.int64),
@@ -700,16 +700,18 @@ class TestBackedRewriteRegressions:
         finally:
             backed.file.close()
 
+        matrix_component_events = {"sparse_component", "dense_component"}
         component_names = {
             event["component"]
             for event in events
-            if event["event"] == "component"
+            if event["event"] in matrix_component_events
+            or event["event"] == "component"
         }
         assert {"X", "obs", "var", "obsp/graph"}.issubset(component_names)
         assert all(
             event["hdf5_flush_s"] >= 0
             for event in events
-            if event["event"] == "component"
+            if event["event"] in {"component", "component_flush"}
         )
         assert any(event["event"] == "close" for event in events)
         assert any(event["event"] == "filtered_write" for event in events)
@@ -772,7 +774,7 @@ class TestBackedRewriteRegressions:
         def _forbid_ix(*args, **kwargs):
             raise AssertionError("np.ix_ should not be used in pairwise rewrite path")
 
-        monkeypatch.setattr(_backed_persist.np, "ix_", _forbid_ix)
+        monkeypatch.setattr(subset_mod.np, "ix_", _forbid_ix)
 
         actionet.subset_backed_inplace(
             backed,
@@ -796,7 +798,7 @@ class TestSubsetAfterViewToMemory:
 
     After that call, `adata.isbacked` still reports True and `adata.filename`
     is still set, but `adata.file._file` is a closed h5py handle. Every
-    entry point in `_backed_persist` that captures the raw handle must
+    entry point in :mod:`actionet.io.subset` that captures the raw handle must
     detect and reopen it.
     """
 
