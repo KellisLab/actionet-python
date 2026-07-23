@@ -33,7 +33,7 @@ def impute_features(
     archetype_matrix_key: str = "H_merged",
     # --- common ---
     n_threads: int = 0,
-    backed_chunk_size: int = 4096,
+    backed_chunk_size: int = 8192,
     lazy_transform: Optional[LazyTransform] = None,
 ) -> pd.DataFrame:
     """Impute gene expression values for a set of features.
@@ -90,7 +90,7 @@ def impute_features(
     n_threads : int, default 0
         Number of threads for the C++ backend.  ``0`` lets the backend choose.
         Used by ``method="diffusion"`` and ``method="pca"``.
-    backed_chunk_size : int, default 4096
+    backed_chunk_size : int, default 8192
         Number of rows per chunk when streaming a backed (HDF5-on-disk) AnnData.
         Ignored for in-memory objects.
         Used by ``method="diffusion"`` and ``method="pca"``.

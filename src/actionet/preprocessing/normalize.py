@@ -9,7 +9,10 @@ from anndata import AnnData
 from scipy.sparse import issparse
 
 from ..io.compression import sparse_group_format
-from ..io.chunking import resolve_backed_write_chunk_size
+from ..io.chunking import (
+    DEFAULT_BACKED_READ_CHUNK_SIZE,
+    resolve_backed_write_chunk_size,
+)
 from ..io.persist import (
     is_writable_backed,
     _refresh_backed_handle,
@@ -46,7 +49,7 @@ def normalize_anndata(
     log_base: Optional[float] = None,
     pseudocount: float = 1.0,
     layer: str | None = None,
-    backed_chunk_size: int = 4096,
+    backed_chunk_size: int = DEFAULT_BACKED_READ_CHUNK_SIZE,
     dtype_out: str = "float32",
     inplace: bool = True,
     layer_added: str | None = None,
@@ -80,9 +83,9 @@ def normalize_anndata(
         *log_transform* is ``False``.
     layer : str or None, optional (default: None)
         Layer to normalize.  ``None`` uses ``adata.X``.
-    backed_chunk_size : int, optional (default: 4096)
-        Number of rows per chunk for backed row-stat computation.
-        Ignored for in-memory objects.
+    backed_chunk_size : int, optional (default: 8192)
+        Number of rows per chunk for backed row-stat computation
+        (read/compute path). Ignored for in-memory objects.
     dtype_out : str, optional (default: "float32")
         Output dtype for backed normalization blocks.
     inplace : bool, optional (default: True)
@@ -95,9 +98,9 @@ def normalize_anndata(
         ``layers[layer_added]`` is overwritten.
     backed_write_chunk_size : int or None, optional (default: None)
         Number of rows per transform/write chunk in backed mode. ``None``
-        inherits ``backed_chunk_size`` for backward compatibility.
-        Atlas-scale HDF5 writes may benefit from starting with ``32768``;
-        larger values use proportionally more temporary memory.
+        uses the shared write default of ``16384``. Atlas-scale HDF5 writes
+        may benefit from starting with ``32768``; larger values use
+        proportionally more temporary memory.
 
     Returns
     -------

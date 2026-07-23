@@ -34,6 +34,10 @@ import numpy as np
 import scipy.sparse as sp
 from anndata import AnnData
 
+from .chunking import (
+    DEFAULT_BACKED_WRITE_CHUNK_SIZE,
+    validate_chunk_size,
+)
 from .compression import (
     CompressionPolicy,
     get_matrix_compression_policy,
@@ -642,6 +646,23 @@ def _write_subsetted_matrix(
     Emits (via ``profile_callback``) exactly one ``sparse_component`` or
     ``dense_component`` event per call, followed by one ``component_flush``
     event that measures the HDF5 flush after the chunked writer completes.
+
+    .. todo::
+       The current sparse/dense writers use ``chunk_size`` as a single
+       coupled read+write stride: each iteration reads a block from the
+       source matrix and immediately writes it to HDF5 without buffering
+       across iterations. The public Python API exposes this control as
+       ``backed_write_chunk_size`` because output chunking dominates the
+       performance profile. A follow-up should decouple the two so that
+       :func:`subset_anndata`, :func:`apply_filter`,
+       :func:`materialize_backed`, and :func:`subset_backed_inplace` can
+       accept independent ``backed_chunk_size`` (source read stride) and
+       ``backed_write_chunk_size`` (destination flush stride) parameters,
+       matching the read/write split already implemented in
+       :func:`~actionet.preprocessing.filter.filter_anndata`,
+       :func:`~actionet.preprocessing.normalize.normalize_anndata`,
+       :func:`~actionet.decomposition.svd.run_svd`, and
+       :func:`~actionet.decomposition.kernel.reduce_kernel`.
     """
     from .matrix_source import _is_sparse_matrix_like
 
@@ -970,7 +991,7 @@ def materialize_backed(
     adata: AnnData,
     filename: str | os.PathLike | None = None,
     *,
-    chunk_size: int = 4096,
+    backed_write_chunk_size: int = DEFAULT_BACKED_WRITE_CHUNK_SIZE,
 ) -> None:
     """Materialize a backed AnnData view into a standalone backed object.
 
@@ -986,16 +1007,27 @@ def materialize_backed(
     filename : path-like or None
         Destination HDF5 path.  When ``None`` (default), the parent backing
         file is atomically rewritten in place.
-    chunk_size : int
+    backed_write_chunk_size : int, optional (default: 16384)
         Rows per chunk during the backed write. Atlas-scale sparse rewrites
         may benefit from starting with ``32768``; larger values can increase
         temporary-memory use.
+
+        .. note::
+           The filtered-rewrite path currently uses a single coupled
+           read+write chunk stride internally; this parameter drives that
+           stride. Decoupling the read stride from the write stride is
+           tracked as a follow-up (see ``TODO`` in
+           :func:`_write_subsetted_matrix`).
 
     Raises
     ------
     ValueError
         If *adata* is not backed.
     """
+    backed_write_chunk_size = validate_chunk_size(
+        backed_write_chunk_size,
+        name="backed_write_chunk_size",
+    )
     if not is_backed_adata(adata):
         raise ValueError(
             "materialize_backed requires a backed AnnData object."
@@ -1022,7 +1054,7 @@ def materialize_backed(
 
     closed_parent = False
     try:
-        _write_filtered_backed(parent, obs_int, var_int, tmp_path, chunk_size)
+        _write_filtered_backed(parent, obs_int, var_int, tmp_path, backed_write_chunk_size)
         if in_place_parent and hasattr(parent, "file") and parent.file is not None:
             parent.file.close()
             closed_parent = True
@@ -1052,7 +1084,7 @@ def subset_backed_inplace(
     obs_idx: np.ndarray | None = None,
     var_idx: np.ndarray | None = None,
     *,
-    chunk_size: int = 4096,
+    backed_write_chunk_size: int = DEFAULT_BACKED_WRITE_CHUNK_SIZE,
 ) -> None:
     """Subset a backed AnnData in-place by rewriting the backing file.
 
@@ -1069,16 +1101,27 @@ def subset_backed_inplace(
         Row (cell) indices to keep.  ``None`` keeps all rows.
     var_idx : ndarray of int64 or None
         Column (feature) indices to keep.  ``None`` keeps all columns.
-    chunk_size : int
+    backed_write_chunk_size : int, optional (default: 16384)
         Rows per chunk during the backed write. Atlas-scale sparse rewrites
         may benefit from starting with ``32768``; larger values can increase
         temporary-memory use.
+
+        .. note::
+           The filtered-rewrite path currently uses a single coupled
+           read+write chunk stride internally; this parameter drives that
+           stride. Decoupling the read stride from the write stride is
+           tracked as a follow-up (see ``TODO`` in
+           :func:`_write_subsetted_matrix`).
 
     Raises
     ------
     ValueError
         If *adata* is not backed or is read-only.
     """
+    backed_write_chunk_size = validate_chunk_size(
+        backed_write_chunk_size,
+        name="backed_write_chunk_size",
+    )
     if not is_backed_adata(adata):
         raise ValueError(
             "subset_backed_inplace requires a backed AnnData object. "
@@ -1089,7 +1132,7 @@ def subset_backed_inplace(
     _flush_pending(adata)
 
     if getattr(adata, "is_view", False):
-        materialize_backed(adata, chunk_size=chunk_size)
+        materialize_backed(adata, backed_write_chunk_size=backed_write_chunk_size)
         if obs_idx is None and var_idx is None:
             return
 
@@ -1131,7 +1174,7 @@ def subset_backed_inplace(
     os.close(tmp_fd)
 
     try:
-        _write_filtered_backed(adata, obs_idx, var_idx, tmp_path, chunk_size)
+        _write_filtered_backed(adata, obs_idx, var_idx, tmp_path, backed_write_chunk_size)
     except Exception:
         if os.path.exists(tmp_path):
             os.unlink(tmp_path)

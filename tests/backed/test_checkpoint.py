@@ -140,10 +140,10 @@ class TestCheckpointBacked:
 
         monkeypatch.setattr(checkpoint_module, "_repack_h5ad", fake_repack)
 
-        checkpoint_backed(backed_adata, compact=False, chunk_size=123)
+        checkpoint_backed(backed_adata, compact=False, backed_write_chunk_size=123)
         assert observed == []
 
-        checkpoint_backed(backed_adata, compact=True, chunk_size=123)
+        checkpoint_backed(backed_adata, compact=True, backed_write_chunk_size=123)
         assert observed == [123]
 
 

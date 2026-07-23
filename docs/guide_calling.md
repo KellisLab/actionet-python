@@ -35,7 +35,7 @@ fit_guides_gmm(
     apply_log10p1=True,
     seed=0,
     n_threads=0,
-    backed_chunk_size=4096,
+    backed_chunk_size=8192,
     backed_chunk_guides=256,
     return_table=True,
 )
@@ -150,7 +150,7 @@ guide_call_gmm(
     apply_log10p1=True,
     seed=0,
     n_threads=0,
-    backed_chunk_size=4096,
+    backed_chunk_size=8192,
     backed_chunk_guides=256,
 )
 ```

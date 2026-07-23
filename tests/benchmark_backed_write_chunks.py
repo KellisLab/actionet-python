@@ -70,7 +70,7 @@ def _run_operation(
             an.decompress_backed_storage(
                 adata,
                 scope="file",
-                chunk_size=chunk_size,
+                backed_write_chunk_size=chunk_size,
                 verbose=False,
             )
         finally:
@@ -86,7 +86,7 @@ def _run_operation(
                 adata,
                 obs_idx=obs_idx,
                 inplace=True,
-                backed_chunk_size=chunk_size,
+                backed_write_chunk_size=chunk_size,
             )
         finally:
             if getattr(adata, "file", None) is not None:

@@ -73,7 +73,7 @@ def find_markers(
     n_threads: int = 0,
     result: Literal["table", "ranks", "scores"] = "table",
     return_type: Literal["dataframe", "dict"] = "dataframe",
-    backed_chunk_size: int = 4096,
+    backed_chunk_size: int = 8192,
     lazy_transform: Optional[LazyTransform] = None,
 ) -> Union[pd.DataFrame, Dict[str, np.ndarray]]:
     """
@@ -114,7 +114,7 @@ def find_markers(
         Return format:
         - "dataframe": pandas DataFrame
         - "dict": Dictionary with cluster names as keys
-    backed_chunk_size : int, optional (default: 4096)
+    backed_chunk_size : int, optional (default: 8192)
         Number of rows per chunk when streaming backed AnnData.
         Ignored for in-memory objects.
     lazy_transform : LazyTransform, optional
@@ -286,7 +286,7 @@ def annotate_cells(
     use_lpa: bool = False,
     return_log_pvals: bool = False,
     n_threads: int = 0,
-    backed_chunk_size: int = 4096,
+    backed_chunk_size: int = 8192,
     lazy_transform: Optional[LazyTransform] = None,
 ) -> Dict[str, np.ndarray]:
     """
@@ -333,7 +333,7 @@ def annotate_cells(
         result under the key ``"log_pvals"``.
     n_threads : int, optional (default: 0)
         Number of threads (0 = auto).
-    backed_chunk_size : int, optional (default: 4096)
+    backed_chunk_size : int, optional (default: 8192)
         Number of rows per chunk when streaming backed AnnData.
         Ignored for in-memory objects.
     lazy_transform : LazyTransform, optional
@@ -687,7 +687,7 @@ def annotate_clusters(
     features_use: Optional[str] = None,
     layer: Optional[str] = None,
     n_threads: int = 0,
-    backed_chunk_size: int = 4096,
+    backed_chunk_size: int = 8192,
     lazy_transform: Optional[LazyTransform] = None,
 ) -> Dict[str, np.ndarray]:
     """
@@ -721,7 +721,7 @@ def annotate_clusters(
         If None, uses adata.X. Only used if feature specificity needs to be computed.
     n_threads : int, optional (default: 0)
         Number of threads (0 = auto).
-    backed_chunk_size : int, optional (default: 4096)
+    backed_chunk_size : int, optional (default: 8192)
         Number of rows per chunk when streaming backed AnnData.
         Only used if feature specificity needs to be computed.
     lazy_transform : LazyTransform, optional
@@ -871,7 +871,7 @@ def annotate_archetypes(
     features_use: Optional[str] = None,
     layer: Optional[str] = None,
     n_threads: int = 0,
-    backed_chunk_size: int = 4096,
+    backed_chunk_size: int = 8192,
     lazy_transform: Optional[LazyTransform] = None,
 ) -> Dict[str, np.ndarray]:
     """
@@ -918,7 +918,7 @@ def annotate_archetypes(
         Layer used when computing archetype feature specificity de novo.
     n_threads : int, default 0
         Number of parallel threads.  ``0`` lets the backend choose.
-    backed_chunk_size : int, default 4096
+    backed_chunk_size : int, default 8192
         Backed streaming chunk size for de-novo specificity.
     lazy_transform : LazyTransform, optional
         Optional lazy transform for backed inputs (used only when computing

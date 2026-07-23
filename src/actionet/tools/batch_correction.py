@@ -50,7 +50,7 @@ def correct_batch_effect(
     layer: Optional[str] = None,
     corrected_suffix: str = "corrected",
     inplace: bool = True,
-    backed_chunk_size: int = 4096,
+    backed_chunk_size: int = 8192,
     lazy_transform: Optional[LazyTransform] = None,
 ) -> Optional[AnnData]:
     """Correct batch effects using orthogonalization.
@@ -203,7 +203,7 @@ def correct_basal_expression(
     layer: Optional[str] = None,
     corrected_key: str = "action_basal_corrected",
     inplace: bool = True,
-    backed_chunk_size: int = 4096,
+    backed_chunk_size: int = 8192,
     lazy_transform: Optional[LazyTransform] = None,
 ) -> Optional[AnnData]:
     """Correct for basal expression levels by orthogonalizing their effects.

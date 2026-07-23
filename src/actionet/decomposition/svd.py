@@ -21,7 +21,11 @@ from ..io.compression import (
     get_storage_metadata_from_adata,
     is_compressed_storage,
 )
-from ..io.chunking import resolve_backed_write_chunk_size
+from ..io.chunking import (
+    DEFAULT_BACKED_READ_CHUNK_SIZE,
+    DEFAULT_BACKED_WRITE_CHUNK_SIZE,
+    resolve_backed_write_chunk_size,
+)
 from ..io.lazy_transform import (
     LazyTransform,
     _resolve_lazy_backed_transform,
@@ -166,7 +170,7 @@ def _maybe_decompress_backed_path(
         layer=layer,
         scope="matrix",
         output_file=tmp_path,
-        chunk_size=write_chunk_size,
+        backed_write_chunk_size=write_chunk_size,
         verbose=verbose,
     )
     if decompressed is not None and getattr(decompressed, "file", None) is not None:
@@ -182,7 +186,7 @@ def run_svd(
     seed: int = 0,
     verbose: bool = True,
     return_operator_compatible: bool = True,
-    backed_chunk_size: int = 4096,
+    backed_chunk_size: int = DEFAULT_BACKED_READ_CHUNK_SIZE,
     layer: Optional[str] = None,
     allow_compressed: bool = False,
     backed_target_chunk_mb: Optional[float] = None,
@@ -214,7 +218,8 @@ def run_svd(
         If True, return only ``{"u", "d", "v"}`` suitable for
         :func:`.kernel.reduce_kernel_from_svd`.
     backed_chunk_size : int
-        Row chunk size for backed sparse streaming.
+        Row/element chunk size for backed **read/compute** streaming
+        (default ``8192``).
     layer : str or None
         Layer to use when ``X`` is an AnnData (None uses ``.X``).
     allow_compressed : bool
@@ -228,10 +233,10 @@ def run_svd(
         Pre-computed lazy transform for backed AnnData inputs.
     backed_write_chunk_size : int or None
         Row/element chunk size for write-heavy backed preparation, currently
-        automatic decompression. ``None`` (default) inherits
-        ``backed_chunk_size`` for backward compatibility. Atlas-scale HDF5
-        rewrites may benefit from starting with ``32768``; larger values use
-        proportionally more temporary memory.
+        automatic decompression. ``None`` (default) uses the shared write
+        default of ``16384``. Atlas-scale HDF5 rewrites may benefit from
+        starting with ``32768``; larger values use proportionally more
+        temporary memory.
 
     Returns
     -------

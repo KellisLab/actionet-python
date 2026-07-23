@@ -256,7 +256,7 @@ def _decompress_if_needed(adata: ad.AnnData) -> None:
         import actionet as an
         if is_compressed_storage(get_storage_metadata_from_adata(adata)):
             print("      decompressing backed storage ...", flush=True)
-            an.decompress_backed_storage(adata, scope="file", chunk_size=4096, verbose=False)
+            an.decompress_backed_storage(adata, scope="file", backed_write_chunk_size=4096, verbose=False)
     except Exception as exc:
         print(f"      decompression check failed (ignored): {exc}", flush=True)
 

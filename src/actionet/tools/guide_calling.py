@@ -310,8 +310,8 @@ def fit_guides_gmm(
     apply_log10p1: bool = True,
     seed: int = 0,
     n_threads: int = 0,
-    backed_chunk_size: int = 4096,
-    backed_chunk_guides: int = 256,
+    backed_chunk_size: int = 8192,
+    backed_chunk_guides: int = 512,
     return_table: bool = True,
 ) -> dict:
     """Fit per-guide 2-component shared-variance GMMs (cells x guides).
@@ -569,8 +569,8 @@ def guide_call_gmm(
     apply_log10p1: bool = True,
     seed: int = 0,
     n_threads: int = 0,
-    backed_chunk_size: int = 4096,
-    backed_chunk_guides: int = 256,
+    backed_chunk_size: int = 8192,
+    backed_chunk_guides: int = 512,
 ) -> dict:
     """Run fit/derive/apply guide calling with full/simple/auto result modes.
 

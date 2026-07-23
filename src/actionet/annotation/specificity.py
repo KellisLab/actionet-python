@@ -157,7 +157,7 @@ def compute_feature_specificity(
     n_threads: int = 0,
     key_added: str = "specificity",
     inplace: bool = True,
-    backed_chunk_size: int = 4096,
+    backed_chunk_size: int = 8192,
     return_raw: bool = False,
     lazy_transform: Optional[LazyTransform] = None,
 ) -> Optional[Union[AnnData, dict]]:
@@ -195,7 +195,7 @@ def compute_feature_specificity(
         If ``True``, write results into ``adata`` and return ``None``.
         If ``False``, operate on a copy of ``adata`` and return it.
         Ignored when ``return_raw=True``.
-    backed_chunk_size : int, default 4096
+    backed_chunk_size : int, default 8192
         Row chunk size used when streaming a backed (HDF5-on-disk) AnnData.
     return_raw : bool, default ``False``
         If ``True``, return the raw result dict from the C++ backend instead of
@@ -294,7 +294,7 @@ def compute_archetype_feature_specificity(
     n_threads: int = 0,
     key_added: str = "archetype",
     inplace: bool = True,
-    backed_chunk_size: int = 4096,
+    backed_chunk_size: int = 8192,
     return_raw: bool = False,
     lazy_transform: Optional[LazyTransform] = None,
 ) -> Optional[Union[AnnData, dict]]:
@@ -329,7 +329,7 @@ def compute_archetype_feature_specificity(
         If ``True``, write results into ``adata`` and return ``None``.
         If ``False``, operate on a copy of ``adata`` and return it.
         Ignored when ``return_raw=True``.
-    backed_chunk_size : int, default 4096
+    backed_chunk_size : int, default 8192
         Row chunk size used when streaming a backed (HDF5-on-disk) AnnData.
     return_raw : bool, default ``False``
         If ``True``, return the raw result dict from the C++ backend instead of

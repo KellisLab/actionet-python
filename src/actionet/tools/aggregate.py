@@ -309,7 +309,7 @@ def matrix_sums(
     axis: Optional[int] = None,
     layer: Optional[str] = None,
     nonzero: bool = False,
-    chunk_size: int = 4096,
+    chunk_size: int = 8192,
 ) -> Union[np.ndarray, np.floating, np.integer]:
     """Compute sums or non-zero counts of the expression matrix.
 
@@ -333,7 +333,7 @@ def matrix_sums(
         If ``False``, compute the sum of all values (float64).
         If ``True``, count the number of non-zero entries (int64) instead
         of summing values.
-    chunk_size : int, default=4096
+    chunk_size : int, default=8192
         Number of rows per streaming chunk.
     """
     if axis not in (0, 1, None):

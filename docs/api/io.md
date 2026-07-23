@@ -5,46 +5,55 @@ checkpoint, and subset helpers used across the pipeline.
 
 ## Read/compute versus write chunks
 
-The default backed chunk size remains 4,096 for compatibility and for the
-read/compute paths tuned by the backed SVD benchmarks. HDF5 rewrites can
-benefit substantially from larger transfers because a 4,096-element transfer
-may be smaller than one physical HDF5 storage chunk. For atlas-scale sparse
-files, 32,768 is a useful first value to test. Larger values increase the
-amount of temporary data held for each transfer.
+The Python front-end exposes chunk-size parameters **granularly**: functions
+supporting backed mode take a **read/compute** control (`backed_chunk_size`),
+a **write** control (`backed_write_chunk_size`), or both, depending on what
+the function does. The two directions have independent shared defaults:
 
-Write-only APIs already expose their transfer size directly:
+| Direction | Parameter | Default |
+| --- | --- | --- |
+| Read / compute streaming | `backed_chunk_size` | `8192` |
+| HDF5 write / rewrite | `backed_write_chunk_size` | `16384` |
+
+HDF5 rewrites can benefit substantially from larger transfers because a
+small transfer may be smaller than one physical HDF5 storage chunk. For
+atlas-scale sparse files, `32768` is a useful first value to test. Larger
+values increase the amount of temporary data held for each transfer.
+
+Write-only APIs expose their transfer size directly under the write name:
 
 | Operation | Write control |
 | --- | --- |
-| `checkpoint_backed(..., compact=True)` | `chunk_size` |
-| `decompress_backed_storage(...)` | `chunk_size` |
-| `subset_anndata(...)`, `apply_filter(...)` | `backed_chunk_size` |
-| `materialize_backed(...)`, `subset_backed_inplace(...)` | `chunk_size` |
+| `checkpoint_backed(..., compact=True)` | `backed_write_chunk_size` |
+| `decompress_backed_storage(...)` | `backed_write_chunk_size` |
+| `subset_anndata(...)`, `apply_filter(...)` | `backed_write_chunk_size` |
+| `materialize_backed(...)`, `subset_backed_inplace(...)` | `backed_write_chunk_size` |
 
 `checkpoint_backed(..., compact=False)` does not repack the file, so its
-`chunk_size` is unused.
+`backed_write_chunk_size` is unused.
 
-Hybrid compute/write APIs expose an independent
-`backed_write_chunk_size`. Leaving it as `None` preserves historical behavior
-by inheriting `backed_chunk_size`:
+Hybrid compute/write APIs expose an independent `backed_write_chunk_size`
+alongside `backed_chunk_size`. Leaving `backed_write_chunk_size` as `None`
+now falls back to the shared write default (`16384`); it no longer
+implicitly inherits `backed_chunk_size`.
 
 ```python
 an.run_svd(
     adata,
-    backed_chunk_size=4096,
+    backed_chunk_size=8192,
     backed_write_chunk_size=32768,
 )
 
 an.filter_anndata(
     adata,
-    backed_chunk_size=4096,
+    backed_chunk_size=8192,
     backed_write_chunk_size=32768,
 )
 
 an.checkpoint_backed(
     adata,
     compact=True,
-    chunk_size=32768,
+    backed_write_chunk_size=32768,
 )
 ```
 
@@ -53,10 +62,10 @@ decompression while `backed_chunk_size` continues to configure the C++
 read/compute operator. For filtering it applies to the structural rewrite,
 and for normalization it applies to the transform/write pass. The C++ backed
 operators remain read/compute components and keep their independently tuned
-4,096 default.
+`4096` default.
 
-The focused benchmark compares 4,096 and 32,768 on the same filesystem and
-records wall time, peak RSS, and process I/O for repacking, decompression,
+The focused benchmark compares different chunk sizes on the same filesystem
+and records wall time, peak RSS, and process I/O for repacking, decompression,
 subsetting, normalization, and SVD auto-decompression:
 
 ```bash

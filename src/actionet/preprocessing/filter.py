@@ -26,7 +26,12 @@ from ..io.subset import (
     subset_backed_inplace,
 )
 from ..io.matrix_source import MatrixSource
-from ..io.chunking import resolve_backed_write_chunk_size
+from ..io.chunking import (
+    DEFAULT_BACKED_READ_CHUNK_SIZE,
+    DEFAULT_BACKED_WRITE_CHUNK_SIZE,
+    resolve_backed_write_chunk_size,
+    validate_chunk_size,
+)
 
 
 def _compute_filter_stats(
@@ -100,7 +105,7 @@ def compute_filter_masks(
     min_feats_per_cell: int | None = None,
     min_umis_per_cell: int | None = None,
     max_umis_per_cell: int | None = None,
-    backed_chunk_size: int = 4096,
+    backed_chunk_size: int = DEFAULT_BACKED_READ_CHUNK_SIZE,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Compute iterative filtering masks without modifying *adata*.
 
@@ -122,8 +127,8 @@ def compute_filter_masks(
         Minimum total UMI count per cell.
     max_umis_per_cell : int or None, optional
         Maximum total UMI count per cell.
-    backed_chunk_size : int, optional (default: 4096)
-        Rows per streaming chunk (backed mode only).
+    backed_chunk_size : int, optional (default: 8192)
+        Rows per streaming chunk (backed mode only). Read-only path.
 
     Returns
     -------
@@ -234,7 +239,7 @@ def subset_anndata(
     *,
     inplace: bool = True,
     output_file: str | None = None,
-    backed_chunk_size: int = 4096,
+    backed_write_chunk_size: int = DEFAULT_BACKED_WRITE_CHUNK_SIZE,
 ) -> AnnData | None:
     """Subset an AnnData safely on both axes (backed and in-memory).
 
@@ -267,16 +272,27 @@ def subset_anndata(
         returned handle is always opened in ``r+`` (read-write) mode,
         regardless of the mode of the input object.
         Ignored for in-memory objects and when ``inplace=True``.
-    backed_chunk_size : int, optional (default: 4096)
+    backed_write_chunk_size : int, optional (default: 16384)
         Rows per chunk during backed writes. Atlas-scale sparse rewrites may
         benefit from starting with ``32768``; larger values can increase
         temporary-memory use.
+
+        .. note::
+           The backed filtered-rewrite path currently uses a single coupled
+           read+write chunk stride internally; this parameter drives that
+           stride. Decoupling the read stride from the write stride is
+           tracked as a follow-up (see ``TODO`` in
+           ``src/actionet/io/subset.py::_write_subsetted_matrix``).
 
     Returns
     -------
     AnnData or None
         ``None`` when ``inplace=True``; modified copy otherwise.
     """
+    backed_write_chunk_size = validate_chunk_size(
+        backed_write_chunk_size,
+        name="backed_write_chunk_size",
+    )
     obs_int = (
         _coerce_to_int_idx(obs_idx, adata.n_obs, name="obs")
         if obs_idx is not None
@@ -312,7 +328,7 @@ def subset_anndata(
 
         if inplace:
             if is_view:
-                materialize_backed(adata, chunk_size=backed_chunk_size)
+                materialize_backed(adata, backed_write_chunk_size=backed_write_chunk_size)
                 no_extra_obs = obs_idx is None
                 no_extra_var = var_idx is None
                 if not (no_extra_obs and no_extra_var):
@@ -320,14 +336,14 @@ def subset_anndata(
                         adata,
                         obs_int,
                         var_int,
-                        chunk_size=backed_chunk_size,
+                        backed_write_chunk_size=backed_write_chunk_size,
                     )
             else:
                 subset_backed_inplace(
                     adata,
                     obs_int,
                     var_int,
-                    chunk_size=backed_chunk_size,
+                    backed_write_chunk_size=backed_write_chunk_size,
                 )
             return None
 
@@ -346,7 +362,7 @@ def subset_anndata(
                     combined_obs,
                     combined_var,
                     tmp_path,
-                    backed_chunk_size,
+                    backed_write_chunk_size,
                 )
                 return ad.read_h5ad(tmp_path)
             finally:
@@ -366,7 +382,7 @@ def subset_anndata(
                 combined_obs,
                 combined_var,
                 tmp_path,
-                backed_chunk_size,
+                backed_write_chunk_size,
             )
         except Exception:
             if os.path.exists(tmp_path):
@@ -396,7 +412,7 @@ def apply_filter(
     *,
     inplace: bool = True,
     output_file: str | None = None,
-    backed_chunk_size: int = 4096,
+    backed_write_chunk_size: int = DEFAULT_BACKED_WRITE_CHUNK_SIZE,
 ) -> AnnData | None:
     """Subset *adata* using precomputed boolean masks.
 
@@ -418,18 +434,29 @@ def apply_filter(
         ``inplace=False``, an in-memory AnnData is returned and the source
         backing file is left unchanged.
         Ignored for in-memory objects.
-    backed_chunk_size : int, optional (default: 4096)
+    backed_write_chunk_size : int, optional (default: 16384)
         Rows per chunk during backed writes. Atlas-scale sparse rewrites may
         benefit from starting with ``32768``; larger values can increase
         temporary-memory use.
+
+        .. note::
+           The backed filtered-rewrite path currently uses a single coupled
+           read+write chunk stride internally; this parameter drives that
+           stride. Decoupling the read stride from the write stride is
+           tracked as a follow-up (see ``TODO`` in
+           ``src/actionet/io/subset.py::_write_subsetted_matrix``).
     """
+    backed_write_chunk_size = validate_chunk_size(
+        backed_write_chunk_size,
+        name="backed_write_chunk_size",
+    )
     obs_idx = np.where(obs_mask)[0].astype(np.int64)
     var_idx = np.where(var_mask)[0].astype(np.int64)
     backed = is_backed_adata(adata)
 
     if backed:
         if inplace and output_file is None:
-            subset_backed_inplace(adata, obs_idx, var_idx, chunk_size=backed_chunk_size)
+            subset_backed_inplace(adata, obs_idx, var_idx, backed_write_chunk_size=backed_write_chunk_size)
             return None
 
         if not inplace and output_file is None:
@@ -440,7 +467,7 @@ def apply_filter(
             )
             os.close(tmp_fd)
             try:
-                _write_filtered_backed(adata, obs_idx, var_idx, tmp_path, backed_chunk_size)
+                _write_filtered_backed(adata, obs_idx, var_idx, tmp_path, backed_write_chunk_size)
                 return ad.read_h5ad(tmp_path)
             finally:
                 if os.path.exists(tmp_path):
@@ -454,7 +481,7 @@ def apply_filter(
         )
         os.close(tmp_fd)
         try:
-            _write_filtered_backed(adata, obs_idx, var_idx, tmp_path, backed_chunk_size)
+            _write_filtered_backed(adata, obs_idx, var_idx, tmp_path, backed_write_chunk_size)
         except Exception:
             if os.path.exists(tmp_path):
                 os.unlink(tmp_path)
@@ -493,7 +520,7 @@ def filter_anndata(
     max_umis_per_cell: int | None = None,
     inplace: bool = True,
     filter_adata: bool = True,
-    backed_chunk_size: int = 4096,
+    backed_chunk_size: int = DEFAULT_BACKED_READ_CHUNK_SIZE,
     backed_write_chunk_size: int | None = None,
 ) -> Union[AnnData, dict, None]:
     """Iterative QC filtering -- backed-safe, single-pass per iteration.
@@ -522,13 +549,14 @@ def filter_anndata(
         Subset ``adata`` in place.  When False, return a new object.
     filter_adata : bool, optional (default: True)
         If True, apply the filter.  If False, return a dict of masks.
-    backed_chunk_size : int, optional (default: 4096)
-        Rows per streaming chunk while computing backed filter statistics.
+    backed_chunk_size : int, optional (default: 8192)
+        Rows per streaming chunk while computing backed filter statistics
+        (read-only path).
     backed_write_chunk_size : int or None, optional (default: None)
-        Rows per chunk during the backed structural rewrite. ``None`` inherits
-        ``backed_chunk_size`` for backward compatibility. Atlas-scale writes
-        may benefit from starting with ``32768``; larger values use
-        proportionally more temporary memory.
+        Rows per chunk during the backed structural rewrite. ``None`` uses
+        the shared write default of ``16384``. Atlas-scale writes may benefit
+        from starting with ``32768``; larger values use proportionally more
+        temporary memory.
     """
     backed_chunk_size, backed_write_chunk_size = resolve_backed_write_chunk_size(
         backed_chunk_size,
@@ -551,7 +579,7 @@ def filter_anndata(
             obs_mask,
             var_mask,
             inplace=inplace,
-            backed_chunk_size=backed_write_chunk_size,
+            backed_write_chunk_size=backed_write_chunk_size,
         )
 
     obs_names = np.array(adata.obs_names)

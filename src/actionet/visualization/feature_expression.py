@@ -62,7 +62,7 @@ def _extract_expression(
     features_use: Optional[str],
     layer: Optional[str],
     lazy_transform: Optional[LazyTransform] = None,
-    backed_chunk_size: int = 4096,
+    backed_chunk_size: int = 8192,
 ) -> pd.DataFrame:
     from .._feature_lookup import resolve_feature_space
 
@@ -209,7 +209,7 @@ def plot_feature_expression(
     archetype_profile_key: str = "archetype_feat_profile",
     archetype_matrix_key: str = "H_merged",
     n_threads: int = 0,
-    backed_chunk_size: int = 4096,
+    backed_chunk_size: int = 8192,
     lazy_transform: Optional[LazyTransform] = None,
 ) -> Union[Any, dict[str, Any]]:
     """Plot feature expression values on the UMAP embedding.
@@ -272,7 +272,7 @@ def plot_feature_expression(
         Used only by ``method="archetypes"``.
     n_threads
         Number of threads for imputation.
-    backed_chunk_size : int, default 4096
+    backed_chunk_size : int, default 8192
         Number of rows per chunk when streaming backed AnnData.
         Ignored for in-memory objects.
     lazy_transform : LazyTransform, optional
@@ -351,7 +351,7 @@ def plot_feature_expression_raster(
     archetype_profile_key: str = "archetype_feat_profile",
     archetype_matrix_key: str = "H_merged",
     n_threads: int = 0,
-    backed_chunk_size: int = 4096,
+    backed_chunk_size: int = 8192,
     lazy_transform: Optional[LazyTransform] = None,
 ) -> Union[Any, dict[str, Any]]:
     """Plot feature expression values on the UMAP embedding using a raster backend.
@@ -414,7 +414,7 @@ def plot_feature_expression_raster(
         Used only by ``method="archetypes"``.
     n_threads
         Number of threads for imputation.
-    backed_chunk_size : int, default 4096
+    backed_chunk_size : int, default 8192
         Number of rows per chunk when streaming backed AnnData.
         Ignored for in-memory objects.
     lazy_transform : LazyTransform, optional

@@ -17,6 +17,10 @@ from ..io.persist import (
     is_writable_backed,
     _refresh_backed_handle,
 )
+from ..io.chunking import (
+    DEFAULT_BACKED_WRITE_CHUNK_SIZE,
+    validate_chunk_size,
+)
 from ..io.checkpoint import copy_h5_group
 
 from .filter import filter_anndata
@@ -207,7 +211,7 @@ def decompress_backed_storage(
     layer: str | None = None,
     scope: str = "matrix",
     output_file: str | None = None,
-    chunk_size: int = 4096,
+    backed_write_chunk_size: int = DEFAULT_BACKED_WRITE_CHUNK_SIZE,
     verbose: bool = True,
 ) -> AnnData | None:
     """Decompress backed AnnData storage in-place or into a copy.
@@ -224,7 +228,7 @@ def decompress_backed_storage(
     output_file : str or None, optional
         If provided, write decompressed output to this path and return a new
         backed AnnData opened in ``r+`` mode. If ``None``, mutate in-place.
-    chunk_size : int, optional (default: 4096)
+    backed_write_chunk_size : int, optional (default: 16384)
         Row/element chunk size used while copying dataset payloads.
         Atlas-scale rewrites may benefit from starting with ``32768``;
         larger values use proportionally more temporary memory.
@@ -245,7 +249,10 @@ def decompress_backed_storage(
     src_path = str(adata.filename)
     inplace = output_file is None or os.path.abspath(output_file) == os.path.abspath(src_path)
     dest_path = src_path if inplace else str(output_file)
-    chunk_size = int(max(1, chunk_size))
+    chunk_size = validate_chunk_size(
+        backed_write_chunk_size,
+        name="backed_write_chunk_size",
+    )
 
     if inplace and not is_writable_backed(adata):
         raise ValueError(

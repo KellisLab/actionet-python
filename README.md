@@ -280,9 +280,10 @@ New in OOM v1:
   (`0` = auto, `1` = serial debug path).
 - Backed workflows can tune write-heavy preparation independently from
   compute streaming. For example,
-  `an.run_svd(adata_backed, backed_chunk_size=4096, backed_write_chunk_size=32768)`
+  `an.run_svd(adata_backed, backed_chunk_size=8192, backed_write_chunk_size=32768)`
   keeps the tuned compute chunk while using larger HDF5 transfers for
-  automatic decompression. See the
+  automatic decompression. Python-side defaults are now `8192` for read/compute
+  and `16384` for write. See the
   [backed I/O guide](docs/api/io.md#readcompute-versus-write-chunks).
 
 Available algorithms:

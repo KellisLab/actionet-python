@@ -18,7 +18,11 @@ from ..io.lazy_transform import (
     _resolve_lazy_backed_transform,
     _validate_lazy_transform,
 )
-from ..io.chunking import resolve_backed_write_chunk_size
+from ..io.chunking import (
+    DEFAULT_BACKED_READ_CHUNK_SIZE,
+    DEFAULT_BACKED_WRITE_CHUNK_SIZE,
+    resolve_backed_write_chunk_size,
+)
 from ..io.matrix_source import MatrixSource
 from ..io.operator import open_backed_operator_for
 from ..io.persist import persist_updates
@@ -44,7 +48,7 @@ def reduce_kernel(
     seed: int = 0,
     verbose: bool = True,
     precomputed_svd: Optional[dict] = None,
-    backed_chunk_size: int = 4096,
+    backed_chunk_size: int = DEFAULT_BACKED_READ_CHUNK_SIZE,
     allow_compressed: bool = False,
     inplace: bool = True,
     backed_target_chunk_mb: Optional[float] = None,
@@ -81,7 +85,8 @@ def reduce_kernel(
     precomputed_svd : dict or None
         Pre-computed SVD with keys ``"u"``, ``"d"``, ``"v"``.
     backed_chunk_size : int
-        Row chunk size for backed sparse streaming.
+        Row/element chunk size for backed **read/compute** streaming
+        (default ``8192``).
     allow_compressed : bool
         If True, allow compressed backed storage (may be slower). If False
         (default), auto-decompresses to a temporary file.
@@ -95,8 +100,8 @@ def reduce_kernel(
         Pre-computed lazy transform for backed inputs on ``.X`` only.
     backed_write_chunk_size : int or None
         Row/element chunk size for write-heavy backed preparation, currently
-        automatic decompression. ``None`` (default) inherits
-        ``backed_chunk_size``. A first tuning value for atlas-scale rewrites
+        automatic decompression. ``None`` (default) uses the shared write
+        default of ``16384``. A first tuning value for atlas-scale rewrites
         is ``32768``, with proportional temporary-memory growth.
 
     Returns
@@ -274,7 +279,7 @@ def reduce_kernel_from_svd(
     layer: Optional[str] = None,
     key_added: str = "action",
     verbose: bool = True,
-    backed_chunk_size: int = 4096,
+    backed_chunk_size: int = DEFAULT_BACKED_READ_CHUNK_SIZE,
     inplace: bool = True,
     lazy_transform: Optional[LazyTransform] = None,
     backed_target_chunk_mb: Optional[float] = None,
@@ -286,7 +291,8 @@ def reduce_kernel_from_svd(
     Thin wrapper around :func:`reduce_kernel` that infers ``n_components``
     from the SVD result and passes it as ``precomputed_svd``. Its
     ``backed_write_chunk_size`` has the same auto-decompression semantics as
-    :func:`reduce_kernel`; ``None`` inherits ``backed_chunk_size``.
+    :func:`reduce_kernel`; ``None`` uses the shared write default of
+    ``16384`` (see :func:`reduce_kernel`).
     """
     return reduce_kernel(
         adata=adata,

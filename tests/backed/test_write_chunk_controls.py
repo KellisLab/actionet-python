@@ -11,6 +11,8 @@ import pytest
 import scipy.sparse as sp
 
 from actionet.io.chunking import (
+    DEFAULT_BACKED_READ_CHUNK_SIZE,
+    DEFAULT_BACKED_WRITE_CHUNK_SIZE,
     resolve_backed_write_chunk_size,
     validate_chunk_size,
 )
@@ -35,9 +37,21 @@ def test_validate_chunk_size_rejects_nonintegers(value):
         validate_chunk_size(value, name="backed_chunk_size")
 
 
-def test_write_chunk_none_preserves_legacy_compute_chunk():
-    assert resolve_backed_write_chunk_size(4096, None) == (4096, 4096)
+def test_write_chunk_none_uses_independent_write_default():
+    """None for the write chunk falls back to the shared write default,
+    not to the read/compute chunk value."""
+    assert resolve_backed_write_chunk_size(4096, None) == (
+        4096,
+        DEFAULT_BACKED_WRITE_CHUNK_SIZE,
+    )
     assert resolve_backed_write_chunk_size(4096, 32768) == (4096, 32768)
+
+
+def test_default_chunk_sizes_are_read_8192_write_16384():
+    """Regression guard: the shared Python defaults are read=8192 and
+    write=16384."""
+    assert DEFAULT_BACKED_READ_CHUNK_SIZE == 8192
+    assert DEFAULT_BACKED_WRITE_CHUNK_SIZE == 16384
 
 
 @pytest.mark.parametrize(
@@ -114,7 +128,7 @@ def test_run_svd_routes_compute_and_write_chunks(
 
     assert observed == {
         "compute": 17,
-        "write": 17 if write_chunk_size is None else write_chunk_size,
+        "write": DEFAULT_BACKED_WRITE_CHUNK_SIZE if write_chunk_size is None else write_chunk_size,
     }
     backed.file.close()
 
@@ -164,7 +178,7 @@ def test_reduce_kernel_routes_compute_and_write_chunks(
 
     assert observed == {
         "compute": 19,
-        "write": 19 if write_chunk_size is None else write_chunk_size,
+        "write": DEFAULT_BACKED_WRITE_CHUNK_SIZE if write_chunk_size is None else write_chunk_size,
     }
     backed.file.close()
 
@@ -199,7 +213,7 @@ def test_filter_routes_compute_and_write_chunks(monkeypatch, write_chunk_size):
         return np.ones(adata.n_obs, dtype=bool), np.ones(adata.n_vars, dtype=bool)
 
     def fake_apply(*args, **kwargs):
-        observed["write"] = kwargs["backed_chunk_size"]
+        observed["write"] = kwargs["backed_write_chunk_size"]
         return None
 
     monkeypatch.setattr(filter_module, "compute_filter_masks", fake_masks)
@@ -213,7 +227,7 @@ def test_filter_routes_compute_and_write_chunks(monkeypatch, write_chunk_size):
 
     assert observed == {
         "compute": 29,
-        "write": 29 if write_chunk_size is None else write_chunk_size,
+        "write": DEFAULT_BACKED_WRITE_CHUNK_SIZE if write_chunk_size is None else write_chunk_size,
     }
 
 
@@ -243,7 +257,7 @@ def test_normalize_routes_compute_and_write_chunks(monkeypatch, write_chunk_size
 
     assert observed == {
         "compute": 31,
-        "write": 31 if write_chunk_size is None else write_chunk_size,
+        "write": DEFAULT_BACKED_WRITE_CHUNK_SIZE if write_chunk_size is None else write_chunk_size,
     }
 
 

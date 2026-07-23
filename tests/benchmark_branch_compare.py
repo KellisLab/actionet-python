@@ -1372,7 +1372,7 @@ def internal_run_case(args: argparse.Namespace) -> int:
             adata = ad.read_h5ad(str(backed_case_path), backed="r+")
             if is_compressed_storage(get_storage_metadata_from_adata(adata)):
                 log(f"[run-case] Decompressing backed storage for {spec.case_id}")
-                an.decompress_backed_storage(adata, scope="file", chunk_size=spec.backed_chunk_size, verbose=False)
+                an.decompress_backed_storage(adata, scope="file", backed_write_chunk_size=spec.backed_chunk_size, verbose=False)
         else:
             adata = ad.read_h5ad(str(dataset_src))
 

@@ -150,7 +150,7 @@ class MatrixSource:
 
     def iter_row_chunks(
         self,
-        chunk_size: int = 4096,
+        chunk_size: int = 8192,
         col_indices: Optional[Sequence[int]] = None,
     ) -> Iterator[MatrixChunk]:
         """Iterate over contiguous row chunks of the matrix.
@@ -174,7 +174,7 @@ class MatrixSource:
     def iter_selected_row_chunks(
         self,
         row_indices: Sequence[int],
-        chunk_size: int = 4096,
+        chunk_size: int = 8192,
         col_indices: Optional[Sequence[int]] = None,
     ) -> Iterator[tuple[np.ndarray, object]]:
         """Iterate over chunks of explicitly selected rows.
@@ -356,7 +356,7 @@ class MatrixSource:
 
     def row_sums(
         self,
-        chunk_size: int = 4096,
+        chunk_size: int = 8192,
         col_indices: Optional[Sequence[int]] = None,
         row_indices: Optional[Sequence[int]] = None,
     ) -> np.ndarray:
@@ -400,7 +400,7 @@ class MatrixSource:
 
     def col_sums(
         self,
-        chunk_size: int = 4096,
+        chunk_size: int = 8192,
         col_indices: Optional[Sequence[int]] = None,
         row_indices: Optional[Sequence[int]] = None,
     ) -> np.ndarray:
@@ -439,7 +439,7 @@ class MatrixSource:
 
     def nnz_row_counts(
         self,
-        chunk_size: int = 4096,
+        chunk_size: int = 8192,
         col_indices: Optional[Sequence[int]] = None,
         row_indices: Optional[Sequence[int]] = None,
     ) -> np.ndarray:
@@ -472,7 +472,7 @@ class MatrixSource:
 
     def row_sum_of_squares(
         self,
-        chunk_size: int = 4096,
+        chunk_size: int = 8192,
         col_indices: Optional[Sequence[int]] = None,
         row_indices: Optional[Sequence[int]] = None,
     ) -> np.ndarray:
@@ -507,7 +507,7 @@ class MatrixSource:
 
     def nnz_col_counts(
         self,
-        chunk_size: int = 4096,
+        chunk_size: int = 8192,
         col_indices: Optional[Sequence[int]] = None,
         row_indices: Optional[Sequence[int]] = None,
     ) -> np.ndarray:
@@ -542,7 +542,7 @@ class MatrixSource:
         self,
         feature_indices: Sequence[int],
         *,
-        chunk_size: int = 4096,
+        chunk_size: int = 8192,
         prefer_sparse: bool | None = None,
         row_indices: Optional[Sequence[int]] = None,
     ):
@@ -600,7 +600,7 @@ class MatrixSource:
     def apply_rowwise(
         self,
         fn: Callable[[object, int, int], object],
-        chunk_size: int = 4096,
+        chunk_size: int = 8192,
     ) -> None:
         """Apply *fn* to each row chunk and write the result back in-place.
 

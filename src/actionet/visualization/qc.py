@@ -191,7 +191,7 @@ def get_feature_abundance(
     lazy_transform: Optional["LazyTransform"] = None,
     groupby: Optional[str] = None,
     groups_use: Optional[Sequence[str]] = None,
-    chunk_size: int = 4096,
+    chunk_size: int = 8192,
 ) -> Union[np.ndarray, dict[str, np.ndarray]]:
     """Compute per-cell feature abundance metrics, streaming over backed data.
 
@@ -578,7 +578,7 @@ def plot_qc_violin(
     layer: Optional[str] = None,
     lazy_transform: Optional["LazyTransform"] = None,
     groups_use: Optional[Sequence[str]] = None,
-    chunk_size: int = 4096,
+    chunk_size: int = 8192,
     # --- precomputed path (legacy / fast path) ---
     keys: Optional[Union[str, Sequence[Union[str, Sequence, np.ndarray, pd.Series]], np.ndarray, pd.Series]] = None,
     # --- visual options ---
@@ -901,7 +901,7 @@ def plot_mito_violin(
     layer: Optional[str] = None,
     lazy_transform: Optional["LazyTransform"] = None,
     groups_use: Optional[Sequence[str]] = None,
-    chunk_size: int = 4096,
+    chunk_size: int = 8192,
     palette: Optional[Union[str, Sequence[str], dict]] = None,
     title: Optional[str] = None,
     x_label: Optional[str] = None,
@@ -1209,7 +1209,7 @@ def plot_qc_violin_raster(
     layer: Optional[str] = None,
     lazy_transform: Optional["LazyTransform"] = None,
     groups_use: Optional[Sequence[str]] = None,
-    chunk_size: int = 4096,
+    chunk_size: int = 8192,
     # --- precomputed path ---
     keys: Optional[Union[str, Sequence[Union[str, Sequence, np.ndarray, pd.Series]], np.ndarray, pd.Series]] = None,
     # --- visual options ---
@@ -1385,7 +1385,7 @@ def plot_mito_violin_raster(
     layer: Optional[str] = None,
     lazy_transform: Optional["LazyTransform"] = None,
     groups_use: Optional[Sequence[str]] = None,
-    chunk_size: int = 4096,
+    chunk_size: int = 8192,
     palette: Optional[Union[str, Sequence[str], dict]] = None,
     title: Optional[str] = None,
     x_label: Optional[str] = None,

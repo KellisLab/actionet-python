@@ -254,7 +254,7 @@ def test_apply_filter_backed_output_file(tmp_path):
     out_path = str(tmp_path / "filtered.h5ad")
     result = an.apply_filter(
         adata, obs_m, var_m,
-        inplace=False, output_file=out_path, backed_chunk_size=32,
+        inplace=False, output_file=out_path, backed_write_chunk_size=32,
     )
     assert result is not None
     assert result.n_obs == int(obs_m.sum())

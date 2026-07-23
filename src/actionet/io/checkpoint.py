@@ -15,6 +15,10 @@ import anndata as ad
 from anndata import AnnData
 
 from . import anndata_io
+from .chunking import (
+    DEFAULT_BACKED_WRITE_CHUNK_SIZE,
+    validate_chunk_size,
+)
 from .persist import (
     _dirty_tracker,
     _ensure_backed_writable,
@@ -125,7 +129,7 @@ def copy_h5_group(
 def _repack_h5ad(
     adata: AnnData,
     *,
-    chunk_size: int = 4096,
+    chunk_size: int = DEFAULT_BACKED_WRITE_CHUNK_SIZE,
     verbose: bool = False,
 ) -> None:
     """Repack a backed H5AD file to reclaim dead space, then refresh the handle.
@@ -204,7 +208,7 @@ def checkpoint_backed(
     adata: AnnData,
     *,
     compact: bool = False,
-    chunk_size: int = 4096,
+    backed_write_chunk_size: int = DEFAULT_BACKED_WRITE_CHUNK_SIZE,
     validate: bool = False,
     verbose: bool = False,
 ) -> None:
@@ -224,7 +228,7 @@ def checkpoint_backed(
         If ``True``, repack the HDF5 file after writing to reclaim
         dead space from prior delete-then-create overwrites.  This
         requires a full file copy and is expensive for large files.
-    chunk_size : int, optional (default: 4096)
+    backed_write_chunk_size : int, optional (default: 16384)
         Row/element chunk size used only during the compact file copy.
         It has no effect when ``compact=False``. Atlas-scale compaction may
         benefit from starting with ``32768``; larger values use
@@ -241,6 +245,10 @@ def checkpoint_backed(
     RuntimeError
         If the annotation IO module is unavailable.
     """
+    backed_write_chunk_size = validate_chunk_size(
+        backed_write_chunk_size,
+        name="backed_write_chunk_size",
+    )
     if not is_backed_adata(adata):
         raise ValueError(
             "checkpoint_backed requires a backed AnnData object. "
@@ -280,4 +288,4 @@ def checkpoint_backed(
     _dirty_tracker.clear(adata)
 
     if compact:
-        _repack_h5ad(adata, chunk_size=chunk_size, verbose=verbose)
+        _repack_h5ad(adata, chunk_size=backed_write_chunk_size, verbose=verbose)

@@ -181,7 +181,7 @@ def run_workflow_in_process(
         )
         if is_compressed_storage(get_storage_metadata_from_adata(adata)):
             print(f"  [{case_id}] Decompressing backed storage ...", flush=True)
-            an.decompress_backed_storage(adata, scope="file", chunk_size=4096, verbose=False)
+            an.decompress_backed_storage(adata, scope="file", backed_write_chunk_size=4096, verbose=False)
         else:
             print(f"  [{case_id}] Backed storage already uncompressed — skipping decompress.", flush=True)
         execution_kind = "backed_streamed"
@@ -787,7 +787,7 @@ def run_reduction_sweep_in_process(
             get_storage_metadata_from_adata, is_compressed_storage,
         )
         if is_compressed_storage(get_storage_metadata_from_adata(adata)):
-            an.decompress_backed_storage(adata, scope="file", chunk_size=chunk_size, verbose=False)
+            an.decompress_backed_storage(adata, scope="file", backed_write_chunk_size=chunk_size, verbose=False)
         execution_kind = "backed_streamed"
     elif mode == "backed_compressed":
         import shutil

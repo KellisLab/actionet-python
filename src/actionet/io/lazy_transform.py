@@ -39,7 +39,7 @@ class LazyTransform:
         log_base: Optional[float] = None,
         pseudocount: float = 1.0,
         key: Optional[str] = None,
-        backed_chunk_size: int = 4096,
+        backed_chunk_size: int = 8192,
         validation_samples: int = 16,
     ) -> None:
         if int(backed_chunk_size) <= 0:
@@ -99,7 +99,7 @@ def create_lazy_transform(
     log_base: Optional[float] = None,
     pseudocount: float = 1.0,
     key_added: Optional[str] = None,
-    backed_chunk_size: int = 4096,
+    backed_chunk_size: int = 8192,
     validation_samples: int = 16,
 ) -> "LazyTransform":
     """Create and initialize a reusable lazy transform for a backed matrix source.
