@@ -572,7 +572,9 @@ def materialize_backed(
         Destination HDF5 path.  When ``None`` (default), the parent backing
         file is atomically rewritten in place.
     chunk_size : int
-        Rows per chunk during the backed write.
+        Rows per chunk during the backed write. Atlas-scale sparse rewrites
+        may benefit from starting with ``32768``; larger values can increase
+        temporary-memory use.
 
     Raises
     ------
@@ -653,7 +655,9 @@ def subset_backed_inplace(
     var_idx : ndarray of int64 or None
         Column (feature) indices to keep.  ``None`` keeps all columns.
     chunk_size : int
-        Rows per chunk during the backed write.
+        Rows per chunk during the backed write. Atlas-scale sparse rewrites
+        may benefit from starting with ``32768``; larger values can increase
+        temporary-memory use.
 
     Raises
     ------

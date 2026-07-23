@@ -21,6 +21,7 @@ from ..io.compression import (
     get_storage_metadata_from_adata,
     is_compressed_storage,
 )
+from ..io.chunking import resolve_backed_write_chunk_size
 from ..io.lazy_transform import (
     LazyTransform,
     _resolve_lazy_backed_transform,
@@ -28,7 +29,6 @@ from ..io.lazy_transform import (
 )
 from ..io.matrix_source import MatrixSource
 from ..io.operator import open_backed_operator_for
-
 
 _SVD_ALGORITHM_TO_ID = {
     "irlb": 0,
@@ -109,9 +109,7 @@ def _select_svd_algorithm_backed(algorithm: str, verbose: bool = True) -> int:
         return _SVD_ALGORITHM_TO_ID["halko"]
 
     if algorithm not in {"halko", "irlb"}:
-        raise ValueError(
-            "Backed matrices support only 'auto', 'halko', or 'irlb'"
-        )
+        raise ValueError("Backed matrices support only 'auto', 'halko', or 'irlb'")
     return _SVD_ALGORITHM_TO_ID[algorithm]
 
 
@@ -129,7 +127,7 @@ def _maybe_decompress_backed_path(
     *,
     layer: Optional[str],
     allow_compressed: bool,
-    chunk_size: int,
+    write_chunk_size: int,
     verbose: bool,
     context: str,
 ) -> Optional[str]:
@@ -168,7 +166,7 @@ def _maybe_decompress_backed_path(
         layer=layer,
         scope="matrix",
         output_file=tmp_path,
-        chunk_size=chunk_size,
+        chunk_size=write_chunk_size,
         verbose=verbose,
     )
     if decompressed is not None and getattr(decompressed, "file", None) is not None:
@@ -190,6 +188,7 @@ def run_svd(
     backed_target_chunk_mb: Optional[float] = None,
     backed_n_threads: int = 0,
     lazy_transform: Optional[LazyTransform] = None,
+    backed_write_chunk_size: Optional[int] = None,
 ) -> dict:
     """Compute truncated SVD decomposition.
 
@@ -227,6 +226,12 @@ def run_svd(
         Only used for backed (operator) execution paths.
     lazy_transform : LazyTransform or None
         Pre-computed lazy transform for backed AnnData inputs.
+    backed_write_chunk_size : int or None
+        Row/element chunk size for write-heavy backed preparation, currently
+        automatic decompression. ``None`` (default) inherits
+        ``backed_chunk_size`` for backward compatibility. Atlas-scale HDF5
+        rewrites may benefit from starting with ``32768``; larger values use
+        proportionally more temporary memory.
 
     Returns
     -------
@@ -245,13 +250,20 @@ def run_svd(
         - ``svd_backend_requested`` / ``svd_backend_resolved``: SVD backend
           slot for future GPU dispatch. Both are currently ``"cpu"``.
     """
+    backed_chunk_size, backed_write_chunk_size = resolve_backed_write_chunk_size(
+        backed_chunk_size,
+        backed_write_chunk_size,
+    )
+
     if backed_n_threads < 0:
         raise ValueError("`backed_n_threads` must be >= 0")
 
     algorithm_name = _normalize_algorithm(algorithm, context="algorithm")
 
     is_backed_anndata = isinstance(X, AnnData) and bool(getattr(X, "isbacked", False))
-    source_ctx: Optional[MatrixSource] = MatrixSource(X, layer=layer) if isinstance(X, AnnData) else None
+    source_ctx: Optional[MatrixSource] = (
+        MatrixSource(X, layer=layer) if isinstance(X, AnnData) else None
+    )
     matrix = source_ctx.matrix if source_ctx is not None else X
 
     if lazy_transform is not None:
@@ -278,7 +290,7 @@ def run_svd(
                 adata_ctx,
                 layer=layer,
                 allow_compressed=allow_compressed,
-                chunk_size=backed_chunk_size,
+                write_chunk_size=backed_write_chunk_size,
                 verbose=verbose,
                 context="run_svd",
             )

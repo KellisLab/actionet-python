@@ -18,6 +18,7 @@ from ..io.lazy_transform import (
     _resolve_lazy_backed_transform,
     _validate_lazy_transform,
 )
+from ..io.chunking import resolve_backed_write_chunk_size
 from ..io.matrix_source import MatrixSource
 from ..io.operator import open_backed_operator_for
 from ..io.persist import persist_updates
@@ -49,6 +50,7 @@ def reduce_kernel(
     backed_target_chunk_mb: Optional[float] = None,
     backed_n_threads: int = 0,
     lazy_transform: Optional[LazyTransform] = None,
+    backed_write_chunk_size: Optional[int] = None,
 ) -> Optional[AnnData]:
     """Compute low-rank kernel reduction and persist outputs to AnnData.
 
@@ -91,6 +93,11 @@ def reduce_kernel(
         Thread count for backed operator compute loops (0 = auto).
     lazy_transform : LazyTransform or None
         Pre-computed lazy transform for backed inputs on ``.X`` only.
+    backed_write_chunk_size : int or None
+        Row/element chunk size for write-heavy backed preparation, currently
+        automatic decompression. ``None`` (default) inherits
+        ``backed_chunk_size``. A first tuning value for atlas-scale rewrites
+        is ``32768``, with proportional temporary-memory growth.
 
     Returns
     -------
@@ -117,6 +124,11 @@ def reduce_kernel(
     - Lazy-transform provenance (``lazy_row_scale`` etc.) when
       ``lazy_transform`` is supplied.
     """
+    backed_chunk_size, backed_write_chunk_size = resolve_backed_write_chunk_size(
+        backed_chunk_size,
+        backed_write_chunk_size,
+    )
+
     if backed_n_threads < 0:
         raise ValueError("`backed_n_threads` must be >= 0")
 
@@ -148,7 +160,7 @@ def reduce_kernel(
                 adata,
                 layer=layer,
                 allow_compressed=allow_compressed,
-                chunk_size=backed_chunk_size,
+                write_chunk_size=backed_write_chunk_size,
                 verbose=verbose,
                 context="reduce_kernel",
             )
@@ -188,19 +200,29 @@ def reduce_kernel(
 
         if precomputed_svd is None:
             if sp.issparse(S):
-                result = _core.reduce_kernel_sparse(S, n_components, svd_algorithm_id, max_iter, seed, verbose)
+                result = _core.reduce_kernel_sparse(
+                    S, n_components, svd_algorithm_id, max_iter, seed, verbose
+                )
             else:
-                result = _core.reduce_kernel_dense(S, n_components, svd_algorithm_id, max_iter, seed, verbose)
+                result = _core.reduce_kernel_dense(
+                    S, n_components, svd_algorithm_id, max_iter, seed, verbose
+                )
         else:
             if sp.issparse(S):
                 result = _core.reduce_kernel_from_svd_sparse(
-                    S, precomputed_svd["u"], precomputed_svd["d"],
-                    precomputed_svd["v"], verbose,
+                    S,
+                    precomputed_svd["u"],
+                    precomputed_svd["d"],
+                    precomputed_svd["v"],
+                    verbose,
                 )
             else:
                 result = _core.reduce_kernel_from_svd_dense(
-                    S, precomputed_svd["u"], precomputed_svd["d"],
-                    precomputed_svd["v"], verbose,
+                    S,
+                    precomputed_svd["u"],
+                    precomputed_svd["d"],
+                    precomputed_svd["v"],
+                    verbose,
                 )
 
     used_precomputed_svd = precomputed_svd is not None
@@ -257,11 +279,14 @@ def reduce_kernel_from_svd(
     lazy_transform: Optional[LazyTransform] = None,
     backed_target_chunk_mb: Optional[float] = None,
     backed_n_threads: int = 0,
+    backed_write_chunk_size: Optional[int] = None,
 ) -> Optional[AnnData]:
     """Compute reduced kernel using a precomputed SVD result.
 
     Thin wrapper around :func:`reduce_kernel` that infers ``n_components``
-    from the SVD result and passes it as ``precomputed_svd``.
+    from the SVD result and passes it as ``precomputed_svd``. Its
+    ``backed_write_chunk_size`` has the same auto-decompression semantics as
+    :func:`reduce_kernel`; ``None`` inherits ``backed_chunk_size``.
     """
     return reduce_kernel(
         adata=adata,
@@ -278,6 +303,7 @@ def reduce_kernel_from_svd(
         backed_target_chunk_mb=backed_target_chunk_mb,
         backed_n_threads=backed_n_threads,
         lazy_transform=lazy_transform,
+        backed_write_chunk_size=backed_write_chunk_size,
     )
 
 

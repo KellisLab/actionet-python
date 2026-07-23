@@ -7,6 +7,8 @@ import h5py
 import pandas as pd
 import pytest
 
+import actionet.io.checkpoint as checkpoint_module
+
 from actionet.io.persist import (
     is_backed_adata,
     persist_updates,
@@ -14,7 +16,6 @@ from actionet.io.persist import (
 from actionet.io.checkpoint import checkpoint_backed
 
 from .conftest import make_test_adata, open_backed
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -130,6 +131,21 @@ class TestCheckpointBacked:
         assert keys_before == keys_after
         backed.file.close()
 
+    def test_chunk_size_only_reaches_compaction(self, backed_adata, monkeypatch):
+        """The transfer chunk is irrelevant unless compact=True."""
+        observed = []
+
+        def fake_repack(adata, *, chunk_size, verbose):
+            observed.append(chunk_size)
+
+        monkeypatch.setattr(checkpoint_module, "_repack_h5ad", fake_repack)
+
+        checkpoint_backed(backed_adata, compact=False, chunk_size=123)
+        assert observed == []
+
+        checkpoint_backed(backed_adata, compact=True, chunk_size=123)
+        assert observed == [123]
+
 
 class TestCheckpointCompact:
     """checkpoint_backed with compact=True reclaims dead space."""
@@ -158,8 +174,6 @@ class TestCheckpointCompact:
         for _ in range(10):
             _populate_slots(backed_adata, rng)
             checkpoint_backed(backed_adata)
-
-        size_before_compact = backed_adata.filename.stat().st_size
 
         # Compact should not raise.
         checkpoint_backed(backed_adata, compact=True)

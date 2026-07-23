@@ -225,7 +225,10 @@ def checkpoint_backed(
         dead space from prior delete-then-create overwrites.  This
         requires a full file copy and is expensive for large files.
     chunk_size : int, optional (default: 4096)
-        Row-chunk size used during the compact file copy.
+        Row/element chunk size used only during the compact file copy.
+        It has no effect when ``compact=False``. Atlas-scale compaction may
+        benefit from starting with ``32768``; larger values use
+        proportionally more temporary memory.
     validate : bool, optional (default: False)
         Run ``anndata_io`` validation before writing.
     verbose : bool, optional (default: False)

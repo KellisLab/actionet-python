@@ -9,6 +9,7 @@ from anndata import AnnData
 from scipy.sparse import issparse
 
 from ..io.compression import sparse_group_format
+from ..io.chunking import resolve_backed_write_chunk_size
 from ..io.persist import (
     is_writable_backed,
     _refresh_backed_handle,
@@ -49,6 +50,7 @@ def normalize_anndata(
     dtype_out: str = "float32",
     inplace: bool = True,
     layer_added: str | None = None,
+    backed_write_chunk_size: int | None = None,
 ) -> Optional[AnnData]:
     """Total-count normalization with optional log transform.
 
@@ -79,7 +81,7 @@ def normalize_anndata(
     layer : str or None, optional (default: None)
         Layer to normalize.  ``None`` uses ``adata.X``.
     backed_chunk_size : int, optional (default: 4096)
-        Number of rows per chunk when operating on backed AnnData.
+        Number of rows per chunk for backed row-stat computation.
         Ignored for in-memory objects.
     dtype_out : str, optional (default: "float32")
         Output dtype for backed normalization blocks.
@@ -91,6 +93,11 @@ def normalize_anndata(
         instead of overwriting the input matrix. In backed mode this requires
         a writable handle (``backed='r+'``), and any existing
         ``layers[layer_added]`` is overwritten.
+    backed_write_chunk_size : int or None, optional (default: None)
+        Number of rows per transform/write chunk in backed mode. ``None``
+        inherits ``backed_chunk_size`` for backward compatibility.
+        Atlas-scale HDF5 writes may benefit from starting with ``32768``;
+        larger values use proportionally more temporary memory.
 
     Returns
     -------
@@ -105,6 +112,11 @@ def normalize_anndata(
         equals ``layer``, or if ``layer_added`` is requested on a read-only
         backed AnnData object.
     """
+    backed_chunk_size, backed_write_chunk_size = resolve_backed_write_chunk_size(
+        backed_chunk_size,
+        backed_write_chunk_size,
+    )
+
     if target_sum <= 0:
         raise ValueError("target_sum must be positive.")
     if log_base is not None and log_base <= 0:
@@ -129,7 +141,7 @@ def normalize_anndata(
             if not is_writable_backed(adata):
                 raise ValueError(
                     "`layer_added` with backed AnnData requires writable mode 'r+'. "
-                    "Re-open with `ad.read_h5ad(path, backed=\"r+\")`."
+                    'Re-open with `ad.read_h5ad(path, backed="r+")`.'
                 )
             if source.is_sparse and source.backed_sparse_format() == "csc":
                 _normalize_backed_csc_via_csr_rewrite(
@@ -138,7 +150,8 @@ def normalize_anndata(
                     log_transform=log_transform,
                     log_base=log_base,
                     pseudocount=pseudocount,
-                    chunk_size=backed_chunk_size,
+                    read_chunk_size=backed_chunk_size,
+                    write_chunk_size=backed_write_chunk_size,
                     dtype_out=out_dtype,
                     layer_added=layer_added,
                 )
@@ -157,7 +170,8 @@ def normalize_anndata(
                     log_transform=log_transform,
                     log_base=log_base,
                     pseudocount=pseudocount,
-                    chunk_size=backed_chunk_size,
+                    read_chunk_size=backed_chunk_size,
+                    write_chunk_size=backed_write_chunk_size,
                     dtype_out=out_dtype,
                 )
                 _refresh_backed_handle(adata, str(adata.filename), mode="r+")
@@ -184,12 +198,13 @@ def normalize_anndata(
     else:
         _normalize_backed(
             source,
-            target_sum,
-            log_transform,
-            log_base,
-            pseudocount,
-            backed_chunk_size,
-            out_dtype,
+            target_sum=target_sum,
+            log_transform=log_transform,
+            log_base=log_base,
+            pseudocount=pseudocount,
+            read_chunk_size=backed_chunk_size,
+            write_chunk_size=backed_write_chunk_size,
+            dtype_out=out_dtype,
         )
 
     if inplace:
@@ -298,13 +313,15 @@ def _normalize_dense_block(
 # Backed (disk-backed) chunked path
 # ---------------------------------------------------------------------------
 
+
 def _normalize_backed(
     source: MatrixSource,
     target_sum: float,
     log_transform: bool,
     log_base: Optional[float],
     pseudocount: float,
-    chunk_size: int,
+    read_chunk_size: int,
+    write_chunk_size: int,
     dtype_out: np.dtype,
 ) -> None:
     """Normalize a backed AnnData matrix using chunked streaming I/O."""
@@ -315,13 +332,14 @@ def _normalize_backed(
             log_transform=log_transform,
             log_base=log_base,
             pseudocount=pseudocount,
-            chunk_size=chunk_size,
+            read_chunk_size=read_chunk_size,
+            write_chunk_size=write_chunk_size,
             dtype_out=dtype_out,
             layer_added=None,
         )
         return
 
-    row_sums = source.row_sums(chunk_size=chunk_size)
+    row_sums = source.row_sums(chunk_size=read_chunk_size)
     scaling = _safe_row_scale(target_sum, row_sums)
     log_scale = None if not log_transform else (1.0 if log_base is None else 1.0 / np.log(log_base))
 
@@ -345,12 +363,13 @@ def _normalize_backed(
             dtype_out=dtype_out,
         )
 
-    source.apply_rowwise(_normalize_block, chunk_size=chunk_size)
+    source.apply_rowwise(_normalize_block, chunk_size=write_chunk_size)
 
 
 # ---------------------------------------------------------------------------
 # Streamed backed layer_added path
 # ---------------------------------------------------------------------------
+
 
 def _create_backed_normalized_layer(
     adata: AnnData,
@@ -369,8 +388,6 @@ def _create_backed_normalized_layer(
     For dense input a new dataset of the correct shape and dtype is
     created.
     """
-    import h5py
-
     h5file = adata.file._file
     layers_group = h5file["layers"] if "layers" in h5file else h5file.create_group("layers")
 
@@ -392,7 +409,10 @@ def _create_backed_normalized_layer(
                 data_kwargs["compression_opts"] = src_compression_opts
 
         dest_grp.create_dataset(
-            "data", shape=(total_nnz,), dtype=dtype_out, **data_kwargs,
+            "data",
+            shape=(total_nnz,),
+            dtype=dtype_out,
+            **data_kwargs,
         )
 
         dest_grp["indices"] = src_grp["indices"]
@@ -406,7 +426,9 @@ def _create_backed_normalized_layer(
             if ipo is not None:
                 indptr_kwargs["compression_opts"] = ipo
         dest_grp.create_dataset(
-            "indptr", data=indptr_src[...], **indptr_kwargs,
+            "indptr",
+            data=indptr_src[...],
+            **indptr_kwargs,
         )
 
         for attr_name in ("shape", "encoding-type", "encoding-version"):
@@ -436,7 +458,8 @@ def _normalize_backed_streamed(
     log_transform: bool,
     log_base: Optional[float],
     pseudocount: float = 1.0,
-    chunk_size: int,
+    read_chunk_size: int,
+    write_chunk_size: int,
     dtype_out: np.dtype,
 ) -> None:
     """Streamed normalize: read from *source*, write to ``layers[layer_added]``.
@@ -448,7 +471,7 @@ def _normalize_backed_streamed(
 
     This avoids the full-file copy and dtype recast of the legacy path.
     """
-    row_sums = source.row_sums(chunk_size=chunk_size)
+    row_sums = source.row_sums(chunk_size=read_chunk_size)
     scaling = _safe_row_scale(target_sum, row_sums)
 
     log_scale = None
@@ -470,9 +493,9 @@ def _normalize_backed_streamed(
         dest_data_ds = dest_node["data"]
         dest_indptr_ds = dest_node["indptr"]
 
-        for chunk in source.iter_row_chunks(chunk_size=chunk_size):
+        for chunk in source.iter_row_chunks(chunk_size=write_chunk_size):
             block = chunk.block
-            scale = scaling[chunk.start:chunk.end]
+            scale = scaling[chunk.start : chunk.end]
 
             if issparse(block):
                 block = _normalize_sparse_block(
@@ -499,12 +522,13 @@ def _normalize_backed_streamed(
             ip_end = int(dest_indptr_ds[chunk.end])
             if ip_end > ip_start:
                 dest_data_ds[ip_start:ip_end] = block.data.astype(
-                    dtype_out, copy=False,
+                    dtype_out,
+                    copy=False,
                 )
     else:
-        for chunk in source.iter_row_chunks(chunk_size=chunk_size):
+        for chunk in source.iter_row_chunks(chunk_size=write_chunk_size):
             block = chunk.block
-            scale = scaling[chunk.start:chunk.end]
+            scale = scaling[chunk.start : chunk.end]
 
             if issparse(block):
                 block = block.toarray()
@@ -517,7 +541,7 @@ def _normalize_backed_streamed(
                 dtype_out=dtype_out,
             )
 
-            dest_node[chunk.start:chunk.end, :] = arr
+            dest_node[chunk.start : chunk.end, :] = arr
 
     h5file.flush()
 
@@ -538,7 +562,9 @@ def _dataset_create_kwargs_like(
         if src_ds.compression_opts is not None:
             kwargs["compression_opts"] = src_ds.compression_opts
     if getattr(src_ds, "chunks", None) is not None and all(dim > 0 for dim in shape):
-        chunks = tuple(min(int(src_chunk), int(dim)) for src_chunk, dim in zip(src_ds.chunks, shape))
+        chunks = tuple(
+            min(int(src_chunk), int(dim)) for src_chunk, dim in zip(src_ds.chunks, shape)
+        )
         if all(chunk > 0 for chunk in chunks):
             kwargs["chunks"] = chunks
     return kwargs
@@ -557,12 +583,14 @@ def _compute_backed_sparse_row_stats(
         block = chunk.block
         if issparse(block):
             block_csr = block.tocsr(copy=False)
-            row_sums[chunk.start:chunk.end] = np.asarray(block_csr.sum(axis=1)).ravel()
-            row_nnz[chunk.start:chunk.end] = np.diff(block_csr.indptr).astype(np.int64, copy=False)
+            row_sums[chunk.start : chunk.end] = np.asarray(block_csr.sum(axis=1)).ravel()
+            row_nnz[chunk.start : chunk.end] = np.diff(block_csr.indptr).astype(
+                np.int64, copy=False
+            )
         else:
             arr = np.asarray(block, dtype=np.float64)
-            row_sums[chunk.start:chunk.end] = arr.sum(axis=1)
-            row_nnz[chunk.start:chunk.end] = np.count_nonzero(arr, axis=1)
+            row_sums[chunk.start : chunk.end] = arr.sum(axis=1)
+            row_nnz[chunk.start : chunk.end] = np.count_nonzero(arr, axis=1)
 
     return row_sums, row_nnz
 
@@ -639,7 +667,7 @@ def _write_normalized_chunks_to_csr_group(
     dest_data_ds = dest_grp["data"]
 
     for chunk in source.iter_row_chunks(chunk_size=chunk_size):
-        scale = scaling[chunk.start:chunk.end]
+        scale = scaling[chunk.start : chunk.end]
         block_csr = _normalize_sparse_block(
             chunk.block,
             scale,
@@ -661,7 +689,9 @@ def _write_normalized_chunks_to_csr_group(
         if expected_nnz == 0:
             continue
 
-        dest_indices_ds[ip_start:ip_end] = block_csr.indices.astype(dest_indices_ds.dtype, copy=False)
+        dest_indices_ds[ip_start:ip_end] = block_csr.indices.astype(
+            dest_indices_ds.dtype, copy=False
+        )
         dest_data_ds[ip_start:ip_end] = block_csr.data.astype(dtype_out, copy=False)
 
 
@@ -672,7 +702,8 @@ def _normalize_backed_csc_via_csr_rewrite(
     log_transform: bool,
     log_base: Optional[float],
     pseudocount: float = 1.0,
-    chunk_size: int,
+    read_chunk_size: int,
+    write_chunk_size: int,
     dtype_out: np.dtype,
     layer_added: str | None,
 ) -> None:
@@ -689,7 +720,10 @@ def _normalize_backed_csc_via_csr_rewrite(
         target_name = layer_added
 
     temp_name = f"__actionet_normalize_tmp_{target_name}"
-    row_sums, row_nnz = _compute_backed_sparse_row_stats(source, chunk_size=chunk_size)
+    row_sums, row_nnz = _compute_backed_sparse_row_stats(
+        source,
+        chunk_size=read_chunk_size,
+    )
     scaling = _safe_row_scale(target_sum, row_sums)
     log_scale = None if not log_transform else (1.0 if log_base is None else 1.0 / np.log(log_base))
 
@@ -709,7 +743,7 @@ def _normalize_backed_csc_via_csr_rewrite(
             log_transform=log_transform,
             log_scale=log_scale,
             pseudocount=pseudocount,
-            chunk_size=chunk_size,
+            chunk_size=write_chunk_size,
             dtype_out=dtype_out,
         )
         h5file.flush()

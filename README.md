@@ -278,6 +278,12 @@ New in OOM v1:
   `an.run_svd(adata_backed, n_components=50, backed_n_threads=8)`
   `an.reduce_kernel(adata_backed, n_components=50, backed_n_threads=8)`
   (`0` = auto, `1` = serial debug path).
+- Backed workflows can tune write-heavy preparation independently from
+  compute streaming. For example,
+  `an.run_svd(adata_backed, backed_chunk_size=4096, backed_write_chunk_size=32768)`
+  keeps the tuned compute chunk while using larger HDF5 transfers for
+  automatic decompression. See the
+  [backed I/O guide](docs/api/io.md#readcompute-versus-write-chunks).
 
 Available algorithms:
 - **IRLB** (default for in-memory sparse): Implicitly Restarted Lanczos Bidiagonalization. Supports sparse `nnz > 2^31 - 1` directly (64-bit clean via Armadillo's `ARMA_64BIT_WORD`).

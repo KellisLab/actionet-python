@@ -26,6 +26,7 @@ from ..io.subset import (
     subset_backed_inplace,
 )
 from ..io.matrix_source import MatrixSource
+from ..io.chunking import resolve_backed_write_chunk_size
 
 
 def _compute_filter_stats(
@@ -47,13 +48,11 @@ def _compute_filter_stats(
     row_nnz = np.zeros(obs_idx.size, dtype=np.int64)
     col_nnz = np.zeros(var_idx.size, dtype=np.int64)
 
-    obs_is_full = (
-        obs_idx.size == source.n_obs
-        and np.array_equal(obs_idx, np.arange(source.n_obs, dtype=np.int64))
+    obs_is_full = obs_idx.size == source.n_obs and np.array_equal(
+        obs_idx, np.arange(source.n_obs, dtype=np.int64)
     )
-    var_is_full = (
-        var_idx.size == source.n_vars
-        and np.array_equal(var_idx, np.arange(source.n_vars, dtype=np.int64))
+    var_is_full = var_idx.size == source.n_vars and np.array_equal(
+        var_idx, np.arange(source.n_vars, dtype=np.int64)
     )
     col_indices = None if var_is_full else var_idx
 
@@ -63,28 +62,30 @@ def _compute_filter_stats(
             block = chunk.block
             sz = chunk.end - chunk.start
             if sp.issparse(block):
-                row_sums[pos:pos + sz] = np.asarray(block.sum(axis=1)).ravel()
-                row_nnz[pos:pos + sz] = np.asarray(block.getnnz(axis=1)).ravel()
+                row_sums[pos : pos + sz] = np.asarray(block.sum(axis=1)).ravel()
+                row_nnz[pos : pos + sz] = np.asarray(block.getnnz(axis=1)).ravel()
                 col_nnz += np.asarray(block.getnnz(axis=0)).ravel().astype(np.int64, copy=False)
             else:
                 arr = np.asarray(block, dtype=np.float64)
-                row_sums[pos:pos + sz] = arr.sum(axis=1)
-                row_nnz[pos:pos + sz] = np.count_nonzero(arr, axis=1)
+                row_sums[pos : pos + sz] = arr.sum(axis=1)
+                row_nnz[pos : pos + sz] = np.count_nonzero(arr, axis=1)
                 col_nnz += np.count_nonzero(arr, axis=0)
             pos += sz
     else:
         for _rows, block in source.iter_selected_row_chunks(
-            obs_idx, chunk_size=chunk_size, col_indices=col_indices,
+            obs_idx,
+            chunk_size=chunk_size,
+            col_indices=col_indices,
         ):
             sz = _rows.size
             if sp.issparse(block):
-                row_sums[pos:pos + sz] = np.asarray(block.sum(axis=1)).ravel()
-                row_nnz[pos:pos + sz] = np.asarray(block.getnnz(axis=1)).ravel()
+                row_sums[pos : pos + sz] = np.asarray(block.sum(axis=1)).ravel()
+                row_nnz[pos : pos + sz] = np.asarray(block.getnnz(axis=1)).ravel()
                 col_nnz += np.asarray(block.getnnz(axis=0)).ravel().astype(np.int64, copy=False)
             else:
                 arr = np.asarray(block, dtype=np.float64)
-                row_sums[pos:pos + sz] = arr.sum(axis=1)
-                row_nnz[pos:pos + sz] = np.count_nonzero(arr, axis=1)
+                row_sums[pos : pos + sz] = arr.sum(axis=1)
+                row_nnz[pos : pos + sz] = np.count_nonzero(arr, axis=1)
                 col_nnz += np.count_nonzero(arr, axis=0)
             pos += sz
 
@@ -156,7 +157,10 @@ def compute_filter_masks(
             )
 
         row_sums, row_nnz, col_nnz = _compute_filter_stats(
-            source, obs_idx, var_idx, chunk_size,
+            source,
+            obs_idx,
+            var_idx,
+            chunk_size,
         )
 
         if min_umis_per_cell is not None:
@@ -264,7 +268,9 @@ def subset_anndata(
         regardless of the mode of the input object.
         Ignored for in-memory objects and when ``inplace=True``.
     backed_chunk_size : int, optional (default: 4096)
-        Rows per chunk during backed writes.
+        Rows per chunk during backed writes. Atlas-scale sparse rewrites may
+        benefit from starting with ``32768``; larger values can increase
+        temporary-memory use.
 
     Returns
     -------
@@ -307,15 +313,21 @@ def subset_anndata(
         if inplace:
             if is_view:
                 materialize_backed(adata, chunk_size=backed_chunk_size)
-                no_extra_obs = (obs_idx is None)
-                no_extra_var = (var_idx is None)
+                no_extra_obs = obs_idx is None
+                no_extra_var = var_idx is None
                 if not (no_extra_obs and no_extra_var):
                     subset_backed_inplace(
-                        adata, obs_int, var_int, chunk_size=backed_chunk_size,
+                        adata,
+                        obs_int,
+                        var_int,
+                        chunk_size=backed_chunk_size,
                     )
             else:
                 subset_backed_inplace(
-                    adata, obs_int, var_int, chunk_size=backed_chunk_size,
+                    adata,
+                    obs_int,
+                    var_int,
+                    chunk_size=backed_chunk_size,
                 )
             return None
 
@@ -324,12 +336,17 @@ def subset_anndata(
         if output_file is None:
             # No destination given: load subset into memory and clean up temp.
             tmp_fd, tmp_path = tempfile.mkstemp(
-                dir=str(pathlib.Path(filepath).parent), suffix=".h5ad",
+                dir=str(pathlib.Path(filepath).parent),
+                suffix=".h5ad",
             )
             os.close(tmp_fd)
             try:
                 _write_filtered_backed(
-                    source, combined_obs, combined_var, tmp_path, backed_chunk_size,
+                    source,
+                    combined_obs,
+                    combined_var,
+                    tmp_path,
+                    backed_chunk_size,
                 )
                 return ad.read_h5ad(tmp_path)
             finally:
@@ -339,12 +356,17 @@ def subset_anndata(
         # output_file given: write to that path and return a backed handle.
         dest = str(output_file)
         tmp_fd, tmp_path = tempfile.mkstemp(
-            dir=str(pathlib.Path(dest).parent), suffix=".h5ad",
+            dir=str(pathlib.Path(dest).parent),
+            suffix=".h5ad",
         )
         os.close(tmp_fd)
         try:
             _write_filtered_backed(
-                source, combined_obs, combined_var, tmp_path, backed_chunk_size,
+                source,
+                combined_obs,
+                combined_var,
+                tmp_path,
+                backed_chunk_size,
             )
         except Exception:
             if os.path.exists(tmp_path):
@@ -365,6 +387,7 @@ def subset_anndata(
 # ---------------------------------------------------------------------------
 # apply_filter
 # ---------------------------------------------------------------------------
+
 
 def apply_filter(
     adata: AnnData,
@@ -396,7 +419,9 @@ def apply_filter(
         backing file is left unchanged.
         Ignored for in-memory objects.
     backed_chunk_size : int, optional (default: 4096)
-        Rows per chunk during backed writes.
+        Rows per chunk during backed writes. Atlas-scale sparse rewrites may
+        benefit from starting with ``32768``; larger values can increase
+        temporary-memory use.
     """
     obs_idx = np.where(obs_mask)[0].astype(np.int64)
     var_idx = np.where(var_mask)[0].astype(np.int64)
@@ -410,7 +435,8 @@ def apply_filter(
         if not inplace and output_file is None:
             filepath = str(adata.filename)
             tmp_fd, tmp_path = tempfile.mkstemp(
-                dir=str(pathlib.Path(filepath).parent), suffix=".h5ad",
+                dir=str(pathlib.Path(filepath).parent),
+                suffix=".h5ad",
             )
             os.close(tmp_fd)
             try:
@@ -423,7 +449,8 @@ def apply_filter(
         dest = str(output_file)
 
         tmp_fd, tmp_path = tempfile.mkstemp(
-            dir=str(pathlib.Path(dest).parent), suffix=".h5ad",
+            dir=str(pathlib.Path(dest).parent),
+            suffix=".h5ad",
         )
         os.close(tmp_fd)
         try:
@@ -456,6 +483,7 @@ def apply_filter(
 # filter_anndata (backward-compatible wrapper)
 # ---------------------------------------------------------------------------
 
+
 def filter_anndata(
     adata: AnnData,
     layer_name: str | None = None,
@@ -466,6 +494,7 @@ def filter_anndata(
     inplace: bool = True,
     filter_adata: bool = True,
     backed_chunk_size: int = 4096,
+    backed_write_chunk_size: int | None = None,
 ) -> Union[AnnData, dict, None]:
     """Iterative QC filtering -- backed-safe, single-pass per iteration.
 
@@ -494,8 +523,18 @@ def filter_anndata(
     filter_adata : bool, optional (default: True)
         If True, apply the filter.  If False, return a dict of masks.
     backed_chunk_size : int, optional (default: 4096)
-        Rows per streaming chunk (backed mode only).
+        Rows per streaming chunk while computing backed filter statistics.
+    backed_write_chunk_size : int or None, optional (default: None)
+        Rows per chunk during the backed structural rewrite. ``None`` inherits
+        ``backed_chunk_size`` for backward compatibility. Atlas-scale writes
+        may benefit from starting with ``32768``; larger values use
+        proportionally more temporary memory.
     """
+    backed_chunk_size, backed_write_chunk_size = resolve_backed_write_chunk_size(
+        backed_chunk_size,
+        backed_write_chunk_size,
+    )
+
     obs_mask, var_mask = compute_filter_masks(
         adata,
         layer_name=layer_name,
@@ -508,9 +547,11 @@ def filter_anndata(
 
     if filter_adata:
         return apply_filter(
-            adata, obs_mask, var_mask,
+            adata,
+            obs_mask,
+            var_mask,
             inplace=inplace,
-            backed_chunk_size=backed_chunk_size,
+            backed_chunk_size=backed_write_chunk_size,
         )
 
     obs_names = np.array(adata.obs_names)

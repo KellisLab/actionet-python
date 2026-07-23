@@ -225,7 +225,9 @@ def decompress_backed_storage(
         If provided, write decompressed output to this path and return a new
         backed AnnData opened in ``r+`` mode. If ``None``, mutate in-place.
     chunk_size : int, optional (default: 4096)
-        Chunk size used while copying dataset payloads.
+        Row/element chunk size used while copying dataset payloads.
+        Atlas-scale rewrites may benefit from starting with ``32768``;
+        larger values use proportionally more temporary memory.
     verbose : bool, optional (default: True)
         Print a brief status line when work is done.
 
