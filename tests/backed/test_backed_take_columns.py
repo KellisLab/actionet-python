@@ -66,6 +66,18 @@ class TestBackedTakeColumnsSparse:
         expected = X_mem[np.ix_(rows, cols)]
         np.testing.assert_allclose(result, expected, atol=1e-12)
 
+    def test_duplicate_row_indices_preserved(self, backed_sparse):
+        from actionet import _core
+        backed, X_mem, fmt = backed_sparse
+        op = _create_op(backed)
+        cols = np.array([0, 5, 10], dtype=np.int64)
+        rows = np.array([10, 2, 10, 90, 2], dtype=np.int64)
+        result = _core.backed_take_columns(
+            op, cols, row_indices=rows, prefer_sparse=False
+        )
+        expected = X_mem[np.ix_(rows, cols)]
+        np.testing.assert_allclose(result, expected, atol=1e-12)
+
     def test_empty_columns(self, backed_sparse):
         from actionet import _core
         backed, X_mem, fmt = backed_sparse
@@ -91,6 +103,22 @@ class TestBackedTakeColumnsSparse:
         result = _core.backed_take_columns(op, cols, prefer_sparse=False)
         expected = X_mem[:, cols]
         np.testing.assert_allclose(result, expected, atol=1e-12)
+
+    def test_out_of_range_indices_rejected(self, backed_sparse):
+        from actionet import _core
+        backed, _, _ = backed_sparse
+        op = _create_op(backed)
+        with pytest.raises(IndexError, match="column index out of range"):
+            _core.backed_take_columns(
+                op, np.array([72], dtype=np.int64), prefer_sparse=False
+            )
+        with pytest.raises(IndexError, match="row index out of range"):
+            _core.backed_take_columns(
+                op,
+                np.array([0], dtype=np.int64),
+                row_indices=np.array([96], dtype=np.int64),
+                prefer_sparse=False,
+            )
 
 
 class TestBackedTakeColumnsDense:
@@ -124,3 +152,19 @@ class TestBackedTakeColumnsDense:
         result = _core.backed_take_columns(op, cols, row_indices=rows, prefer_sparse=False)
         expected = X_mem[np.ix_(rows, cols)]
         np.testing.assert_allclose(result, expected, atol=1e-12)
+
+    def test_out_of_range_indices_rejected(self, backed_dense):
+        from actionet import _core
+        backed, _ = backed_dense
+        op = _create_op(backed)
+        with pytest.raises(IndexError, match="column index out of range"):
+            _core.backed_take_columns(
+                op, np.array([30], dtype=np.int64), prefer_sparse=False
+            )
+        with pytest.raises(IndexError, match="row index out of range"):
+            _core.backed_take_columns(
+                op,
+                np.array([0], dtype=np.int64),
+                row_indices=np.array([50], dtype=np.int64),
+                prefer_sparse=False,
+            )
