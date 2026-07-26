@@ -42,35 +42,8 @@ def _flush_backed_handle(adata: AnnData, *, context: str) -> None:
     if not bool(getattr(adata, "isbacked", False)):
         return
 
-    file_attr = getattr(adata, "file", None)
-    if file_attr is None:
-        return
-
-    if not getattr(file_attr, "is_open", False):
-        mode = getattr(file_attr, "_filemode", None) or "r+"
-        try:
-            file_attr.open(filemode=mode)
-        except Exception as exc:
-            warnings.warn(
-                f"{context}: backed AnnData file handle was closed and could not "
-                f"be reopened ({type(exc).__name__}: {exc}); "
-                "operator may read stale data",
-                UserWarning,
-                stacklevel=3,
-            )
-            return
-
-    file_obj = getattr(file_attr, "_file", None)
-    if file_obj is None:
-        return
-
-    try:
-        file_obj.flush()
-    except Exception as exc:
-        raise RuntimeError(
-            f"{context}: failed to flush backed AnnData handle before operator read "
-            f"({type(exc).__name__}: {exc})"
-        )
+    from .backed_adapter import BackedAnnDataAdapter
+    BackedAnnDataAdapter(adata).flush(context=context)
 
 
 def _is_lock_open_error(exc: BaseException) -> bool:
@@ -291,4 +264,3 @@ def open_backed_operator_for(
         retry_backoff_seconds=retry_backoff_seconds,
     ) as op:
         yield op
-

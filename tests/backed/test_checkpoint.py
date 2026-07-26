@@ -253,3 +253,39 @@ class TestCheckpointCompact:
         assert original_compression == after_compression
 
         backed.file.close()
+
+    def test_compact_preserves_unknown_top_level_object(self, tmp_path):
+        """Unknown top-level HDF5 objects use object-copy semantics."""
+        mem = make_test_adata(n_cells=24, n_genes=12, seed=8)
+        path = tmp_path / "unknown_object.h5ad"
+        mem.write_h5ad(path)
+        expected = np.arange(30, dtype=np.int64)
+        with h5py.File(path, "r+") as handle:
+            group = handle.create_group("vendor_extension")
+            group.attrs["schema"] = "example-1"
+            dataset = group.create_dataset(
+                "payload",
+                data=expected,
+                chunks=(10,),
+                compression="gzip",
+                compression_opts=4,
+                shuffle=True,
+                fletcher32=True,
+            )
+            dataset.attrs["meaning"] = "opaque-to-actionet"
+
+        backed = ad.read_h5ad(path, backed="r+")
+        checkpoint_backed(backed, compact=True)
+        backed.file.close()
+
+        with h5py.File(path, "r") as handle:
+            group = handle["vendor_extension"]
+            dataset = group["payload"]
+            assert group.attrs["schema"] == "example-1"
+            assert dataset.attrs["meaning"] == "opaque-to-actionet"
+            assert dataset.compression == "gzip"
+            assert dataset.compression_opts == 4
+            assert dataset.shuffle
+            assert dataset.fletcher32
+            assert dataset.chunks == (10,)
+            np.testing.assert_array_equal(dataset[:], expected)

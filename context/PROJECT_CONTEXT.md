@@ -19,6 +19,9 @@ This work aims to develop a multi-language computational biology data analysis t
 ## Current Status
 
 - All branches are usable but still in active development.
+- Backed H5AD numeric matrix I/O is implemented as a native, version-checked
+  `libactionet` data plane. AnnData remains the Python container and metadata
+  codec; Python owns crash-safe rewrite transactions and handle refresh.
 - Remaining work:
   - libactionet: Optimize and add critical features. Add GPU support.
   - actionet-python: Optimize and port remaining core R functions.

@@ -245,17 +245,21 @@ class TestBackedPersist:
         assert reloaded.obsm["str_embed"]["cluster"].tolist() == labels
 
     def test_persist_updates_backed_dataframe_rejected_in_obsp(self, tmp_path):
-        """Passing a DataFrame to obsp should raise TypeError."""
-        from actionet.io.anndata_io import _write_matrix
-        import h5py
+        """Passing a DataFrame to obsp should fail public validation."""
+        from actionet.io.anndata_io import (
+            ValidationError,
+            append_to_anndata,
+        )
 
         n = 6
         df = pd.DataFrame(np.eye(n))
-        tmp_h5 = tmp_path / "reject.h5"
-        with h5py.File(tmp_h5, "w") as f:
-            f.create_group("obsp")
-            with pytest.raises(TypeError, match="only supported in obsm/varm"):
-                _write_matrix(f, "obsp", "conn", df, verbose=False)
+        tmp_h5 = tmp_path / "reject.h5ad"
+        ad.AnnData(np.eye(n)).write_h5ad(tmp_h5)
+        with pytest.raises(ValidationError, match="Must be numpy array"):
+            append_to_anndata(
+                tmp_h5,
+                {"obsp_keys": {"conn": df}},
+            )
 
 
 # ---------------------------------------------------------------------------

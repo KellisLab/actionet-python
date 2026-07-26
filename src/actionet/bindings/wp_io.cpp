@@ -2,15 +2,23 @@
 
 #include "wp_utils.h"
 #include "libactionet.hpp"
+#ifndef LIBACTIONET_NO_HDF5
 #include "io/backed_h5ad/backed_sparse_matrix_operator.hpp"
 #include "io/backed_h5ad/backed_dense_matrix_operator.hpp"
 #include "io/backed_h5ad/create_backed_operator.hpp"
+#include "io/backed_h5ad/h5ad_matrix_io.hpp"
+#endif
 
 #include <algorithm>
+#include <cstdint>
 #include <memory>
+#include <stdexcept>
+#include <string>
 #include <vector>
 
 namespace py = pybind11;
+
+#ifndef LIBACTIONET_NO_HDF5
 
 namespace {
     py::dict svd_to_dict(const actionet::SVDResult& res) {
@@ -41,6 +49,141 @@ namespace {
     // matching the historical ``backed_take_columns`` error strings.
     arma::uvec int64_array_to_uvec(const py::array_t<int64_t>& arr) {
         return int_array_to_uvec(arr, "backed index array");
+    }
+
+    const char* matrix_encoding_name(actionet::h5ad::MatrixEncoding encoding) {
+        switch (encoding) {
+            case actionet::h5ad::MatrixEncoding::Dense:
+                return "dense";
+            case actionet::h5ad::MatrixEncoding::CSR:
+                return "csr";
+            case actionet::h5ad::MatrixEncoding::CSC:
+                return "csc";
+        }
+        throw std::runtime_error("unknown native H5AD matrix encoding");
+    }
+
+    py::dict dataset_info_to_dict(const actionet::h5ad::DatasetInfo& info) {
+        py::dict out;
+        out["name"] = info.name;
+        out["dtype"] = info.dtype;
+        out["shape"] = info.shape;
+        out["logical_bytes"] = info.logical_bytes;
+        out["stored_bytes"] = info.stored_bytes;
+        out["layout"] = info.layout;
+        out["chunks"] = info.chunks;
+
+        py::list filters;
+        for (const auto& filter : info.filters) {
+            py::dict item;
+            item["id"] = filter.id;
+            item["flags"] = filter.flags;
+            item["name"] = filter.name;
+            item["client_data"] = filter.client_data;
+            item["decode_available"] = filter.decode_available;
+            item["encode_available"] = filter.encode_available;
+            filters.append(std::move(item));
+        }
+        out["filters"] = std::move(filters);
+        return out;
+    }
+
+    py::dict matrix_info_to_dict(const actionet::h5ad::MatrixInfo& info) {
+        py::dict out;
+        out["encoding"] = matrix_encoding_name(info.encoding);
+        out["encoding_type"] = info.encoding_type;
+        out["encoding_version"] = info.encoding_version;
+        out["shape"] = py::make_tuple(info.rows, info.cols);
+        out["nnz"] = info.nnz;
+        out["data_item_size"] = info.data_item_size;
+        out["indices_item_size"] = info.indices_item_size;
+        out["indptr_item_size"] = info.indptr_item_size;
+        out["chunked"] = info.chunked;
+        out["filtered"] = info.filtered;
+        out["logical_bytes"] = info.logical_bytes;
+        out["stored_bytes"] = info.stored_bytes;
+        py::list datasets;
+        for (const auto& dataset : info.datasets) {
+            datasets.append(dataset_info_to_dict(dataset));
+        }
+        out["datasets"] = std::move(datasets);
+        return out;
+    }
+
+    py::dict transfer_stats_to_dict(const actionet::h5ad::TransferStats& stats) {
+        py::dict out;
+        out["source"] = matrix_info_to_dict(stats.source);
+        out["destination"] = matrix_info_to_dict(stats.destination);
+        out["selected_source_bytes"] = stats.selected_source_bytes;
+        out["source_bytes_read"] = stats.source_bytes_read;
+        out["gap_bytes_read"] = stats.gap_bytes_read;
+        out["destination_bytes_written"] = stats.destination_bytes_written;
+        out["hdf5_read_calls"] = stats.hdf5_read_calls;
+        out["hdf5_write_calls"] = stats.hdf5_write_calls;
+        out["span_count"] = stats.span_count;
+        out["peak_buffer_bytes"] = stats.peak_buffer_bytes;
+        out["planning_seconds"] = stats.planning_seconds;
+        out["source_read_seconds"] = stats.source_read_seconds;
+        out["packing_seconds"] = stats.packing_seconds;
+        out["destination_write_seconds"] = stats.destination_write_seconds;
+        out["flush_seconds"] = stats.flush_seconds;
+
+        py::list spans;
+        for (const auto& span : stats.spans) {
+            py::dict item;
+            item["major_start"] = span.major_start;
+            item["major_end"] = span.major_end;
+            item["selected_major_entries"] = span.selected_major_entries;
+            item["source_elements"] = span.source_elements;
+            item["source_bytes"] = span.source_bytes;
+            item["source_read_seconds"] = span.source_read_seconds;
+            item["packing_seconds"] = span.packing_seconds;
+            spans.append(std::move(item));
+        }
+        out["spans"] = std::move(spans);
+        return out;
+    }
+
+    actionet::h5ad::AxisSelection axis_selection_from_python(
+        const py::object& value,
+        const char* argument_name) {
+        if (value.is_none()) {
+            return actionet::h5ad::AxisSelection::all();
+        }
+
+        py::array_t<std::int64_t, py::array::c_style | py::array::forcecast> arr(value);
+        const py::buffer_info buffer = arr.request();
+        if (buffer.ndim != 1) {
+            throw std::runtime_error(std::string(argument_name) + " must be a 1D integer array or None");
+        }
+
+        const auto* values = static_cast<const std::int64_t*>(buffer.ptr);
+        std::vector<std::uint64_t> converted;
+        converted.reserve(static_cast<std::size_t>(buffer.shape[0]));
+        for (py::ssize_t i = 0; i < buffer.shape[0]; ++i) {
+            if (values[i] < 0) {
+                throw std::runtime_error(std::string(argument_name) + " cannot contain negative indices");
+            }
+            converted.push_back(static_cast<std::uint64_t>(values[i]));
+        }
+        return actionet::h5ad::AxisSelection::from_indices(std::move(converted));
+    }
+
+    actionet::h5ad::TransferOptions transfer_options_from_python(
+        std::size_t max_buffer_bytes,
+        std::size_t gap_merge_bytes,
+        std::size_t max_rows_per_batch,
+        bool preserve_layout,
+        bool collect_span_stats) {
+        actionet::h5ad::TransferOptions options;
+        options.max_buffer_bytes = max_buffer_bytes;
+        options.gap_merge_bytes = gap_merge_bytes;
+        options.max_rows_per_batch = max_rows_per_batch;
+        options.layout_policy = preserve_layout
+            ? actionet::h5ad::LayoutPolicy::Preserve
+            : actionet::h5ad::LayoutPolicy::Uncompressed;
+        options.collect_span_stats = collect_span_stats;
+        return options;
     }
 } // namespace
 
@@ -232,4 +375,197 @@ void init_io(py::module_ &m) {
           py::arg("col_indices"),
           py::arg("row_indices") = py::none(),
           py::arg("prefer_sparse") = false);
+
+    m.def("h5ad_inspect_matrix",
+          [](const std::string& file_path, const std::string& group_path) {
+              actionet::h5ad::MatrixInfo info;
+              {
+                  py::gil_scoped_release release;
+                  info = actionet::h5ad::inspect_matrix(file_path, group_path);
+              }
+              return matrix_info_to_dict(info);
+          },
+          "Inspect a version-checked H5AD dense/CSR/CSC matrix",
+          py::arg("file_path"), py::arg("group_path"));
+
+    m.def("h5ad_validate_matrix",
+          [](const std::string& file_path,
+             const std::string& group_path,
+             bool full) {
+              actionet::h5ad::ValidationReport report;
+              {
+                  py::gil_scoped_release release;
+                  report = actionet::h5ad::validate_matrix(
+                      file_path,
+                      group_path,
+                      full ? actionet::h5ad::ValidationLevel::Full
+                           : actionet::h5ad::ValidationLevel::Structural);
+              }
+              py::dict out;
+              out["valid"] = report.valid;
+              out["info"] = matrix_info_to_dict(report.info);
+              out["indices_scanned"] = report.indices_scanned;
+              out["error"] = report.error;
+              return out;
+          },
+          "Validate a version-checked H5AD dense/CSR/CSC matrix",
+          py::arg("file_path"), py::arg("group_path"), py::arg("full") = false);
+
+    m.def("h5ad_subset_matrix",
+          [](const std::string& source_file_path,
+             const std::string& source_group_path,
+             const std::string& destination_file_path,
+             const std::string& destination_group_path,
+             py::object row_indices,
+             py::object column_indices,
+             std::size_t max_buffer_bytes,
+             std::size_t gap_merge_bytes,
+             std::size_t max_rows_per_batch,
+             bool preserve_layout,
+             bool collect_span_stats) {
+              const auto rows = axis_selection_from_python(row_indices, "row_indices");
+              const auto columns = axis_selection_from_python(column_indices, "column_indices");
+              const auto options = transfer_options_from_python(
+                  max_buffer_bytes,
+                  gap_merge_bytes,
+                  max_rows_per_batch,
+                  preserve_layout,
+                  collect_span_stats);
+              actionet::h5ad::TransferStats stats;
+              {
+                  py::gil_scoped_release release;
+                  stats = actionet::h5ad::subset_matrix(
+                      source_file_path,
+                      source_group_path,
+                      destination_file_path,
+                      destination_group_path,
+                      rows,
+                      columns,
+                      options);
+              }
+              return transfer_stats_to_dict(stats);
+          },
+          "Subset a supported H5AD matrix with the native transfer engine",
+          py::arg("source_file_path"),
+          py::arg("source_group_path"),
+          py::arg("destination_file_path"),
+          py::arg("destination_group_path"),
+          py::arg("row_indices") = py::none(),
+          py::arg("column_indices") = py::none(),
+          py::arg("max_buffer_bytes") = 128ULL * 1024ULL * 1024ULL,
+          py::arg("gap_merge_bytes") = 64ULL * 1024ULL,
+          py::arg("max_rows_per_batch") = 16384,
+          py::arg("preserve_layout") = true,
+          py::arg("collect_span_stats") = false);
+
+    m.def("h5ad_copy_matrix",
+          [](const std::string& source_file_path,
+             const std::string& source_group_path,
+             const std::string& destination_file_path,
+             const std::string& destination_group_path,
+             std::size_t max_buffer_bytes,
+             std::size_t max_rows_per_batch,
+             bool preserve_layout,
+             bool collect_span_stats) {
+              const auto options = transfer_options_from_python(
+                  max_buffer_bytes,
+                  64ULL * 1024ULL,
+                  max_rows_per_batch,
+                  preserve_layout,
+                  collect_span_stats);
+              actionet::h5ad::TransferStats stats;
+              {
+                  py::gil_scoped_release release;
+                  stats = actionet::h5ad::copy_matrix(
+                      source_file_path,
+                      source_group_path,
+                      destination_file_path,
+                      destination_group_path,
+                      options);
+              }
+              return transfer_stats_to_dict(stats);
+          },
+          "Copy a supported H5AD matrix with the native transfer engine",
+          py::arg("source_file_path"),
+          py::arg("source_group_path"),
+          py::arg("destination_file_path"),
+          py::arg("destination_group_path"),
+          py::arg("max_buffer_bytes") = 128ULL * 1024ULL * 1024ULL,
+          py::arg("max_rows_per_batch") = 16384,
+          py::arg("preserve_layout") = true,
+          py::arg("collect_span_stats") = false);
+
+    m.def("h5ad_transform_matrix",
+          [](const std::string& source_file_path,
+             const std::string& source_group_path,
+             const std::string& destination_file_path,
+             const std::string& destination_group_path,
+             py::object row_scale,
+             bool apply_log,
+             double pseudocount,
+             double log_scale,
+             const std::string& output_dtype,
+             std::size_t max_buffer_bytes,
+             std::size_t max_rows_per_batch,
+             bool preserve_layout,
+             py::object destination_structure_path,
+             bool destination_structure_is_exact_copy) {
+              actionet::h5ad::TransformOptions options;
+              options.row_scale = optional_row_scale(std::move(row_scale));
+              options.apply_log = apply_log;
+              options.pseudocount = pseudocount;
+              options.log_scale = log_scale;
+              if (output_dtype == "float32") {
+                  options.output_dtype = actionet::h5ad::TransformDType::Float32;
+              } else if (output_dtype == "float64") {
+                  options.output_dtype = actionet::h5ad::TransformDType::Float64;
+              } else {
+                  throw std::invalid_argument(
+                      "output_dtype must be 'float32' or 'float64'");
+              }
+              options.transfer = transfer_options_from_python(
+                  max_buffer_bytes,
+                  64ULL * 1024ULL,
+                  max_rows_per_batch,
+                  preserve_layout,
+                  false);
+              if (!destination_structure_path.is_none()) {
+                  options.destination_structure_path =
+                      destination_structure_path.cast<std::string>();
+              }
+              options.destination_structure_is_exact_copy =
+                  destination_structure_is_exact_copy;
+              actionet::h5ad::TransferStats stats;
+              {
+                  py::gil_scoped_release release;
+                  stats = actionet::h5ad::transform_matrix(
+                      source_file_path,
+                      source_group_path,
+                      destination_file_path,
+                      destination_group_path,
+                      options);
+              }
+              return transfer_stats_to_dict(stats);
+          },
+          "Persist a row-scaled/log-transformed H5AD matrix natively",
+          py::arg("source_file_path"),
+          py::arg("source_group_path"),
+          py::arg("destination_file_path"),
+          py::arg("destination_group_path"),
+          py::arg("row_scale"),
+          py::arg("apply_log") = false,
+          py::arg("pseudocount") = 1.0,
+          py::arg("log_scale") = 1.0,
+          py::arg("output_dtype") = "float32",
+          py::arg("max_buffer_bytes") = 128ULL * 1024ULL * 1024ULL,
+          py::arg("max_rows_per_batch") = 16384,
+          py::arg("preserve_layout") = true,
+          py::arg("destination_structure_path") = py::none(),
+          py::arg("destination_structure_is_exact_copy") = false);
 }
+
+#else
+
+void init_io(py::module_&) {}
+
+#endif

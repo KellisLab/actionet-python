@@ -158,6 +158,46 @@ class TestSubsetAnndataBacked:
         assert backed_adata.n_obs == 200
         result.file.close()
 
+    @pytest.mark.parametrize("storage", ["dense", "csr"])
+    def test_native_backed_subset_preserves_duplicates_and_large_integers(
+        self,
+        tmp_path,
+        storage,
+    ):
+        values = np.array(
+            [
+                [0, 2**53 + 3, 2, 3],
+                [4, 5, 6, 7],
+                [8, 9, 10, 11],
+                [12, 13, 14, 15],
+            ],
+            dtype=np.int64,
+        )
+        matrix = values if storage == "dense" else sp.csr_matrix(values)
+        source_path = tmp_path / f"native_{storage}.h5ad"
+        output_path = tmp_path / f"native_{storage}_subset.h5ad"
+        ad.AnnData(matrix).write_h5ad(source_path)
+        backed = ad.read_h5ad(source_path, backed="r")
+        rows = np.array([3, 0, 0], dtype=np.int64)
+        columns = np.array([2, 1, 1], dtype=np.int64)
+
+        with pytest.warns(UserWarning, match="duplicate"):
+            result = actionet.subset_anndata(
+                backed,
+                obs_idx=rows,
+                var_idx=columns,
+                inplace=False,
+                output_file=output_path,
+            )
+
+        observed = result.X[:]
+        if sp.issparse(observed):
+            observed = observed.toarray()
+        np.testing.assert_array_equal(observed, values[rows][:, columns])
+        assert observed.dtype == np.int64
+        result.file.close()
+        backed.file.close()
+
     def test_obs_dataframe_preserved(self, backed_adata):
         obs_sel = np.array([0, 1, 2], dtype=np.int64)
         expected_index = list(backed_adata.obs_names[obs_sel])

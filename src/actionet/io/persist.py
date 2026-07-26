@@ -29,6 +29,7 @@ import anndata as ad
 from anndata import AnnData
 
 from . import anndata_io
+from .backed_adapter import BackedAnnDataAdapter, init_from_reopened
 
 
 # ---------------------------------------------------------------------------
@@ -70,6 +71,8 @@ def is_backed_adata(adata: AnnData) -> bool:
 
 def _real_layer_keys(adata: AnnData) -> list:
     """Return real layer keys, filtering out the anndata >= 0.13 None alias for X."""
+    if is_backed_adata(adata):
+        return BackedAnnDataAdapter(adata).real_layer_keys()
     return [k for k in adata.layers.keys() if k is not None]
 
 
@@ -126,13 +129,10 @@ def is_writable_backed(adata: AnnData) -> bool:
     """
     if not bool(getattr(adata, "isbacked", False) and getattr(adata, "filename", None)):
         return False
-    file_handle = getattr(getattr(adata, "file", None), "_file", None)
-    if file_handle is None:
+    try:
+        return BackedAnnDataAdapter(adata).writable
+    except Exception:
         return False
-    mode = getattr(file_handle, "mode", None)
-    if not mode:
-        return False
-    return "+" in mode
 
 
 def _ensure_backed_writable(adata: AnnData) -> None:
@@ -140,9 +140,7 @@ def _ensure_backed_writable(adata: AnnData) -> None:
     if not is_backed_adata(adata):
         return
 
-    file_handle = getattr(getattr(adata, "file", None), "_file", None)
-    mode = getattr(file_handle, "mode", None)
-    if mode == "r":
+    if not BackedAnnDataAdapter(adata).writable:
         raise ValueError(
             "Backed AnnData was opened read-only (mode='r'). "
             "Re-open with backed='r+' to persist updates."
@@ -151,10 +149,9 @@ def _ensure_backed_writable(adata: AnnData) -> None:
 
 def _refresh_backed_handle(adata: AnnData, path: str, mode: str = "r+") -> None:
     """Close and re-open a backed AnnData handle in-place."""
-    if hasattr(adata, "file") and adata.file is not None:
-        adata.file.close()
+    BackedAnnDataAdapter(adata).close()
     reopened = ad.read_h5ad(path, backed=mode)
-    _init_from_reopened(adata, reopened)
+    init_from_reopened(adata, reopened)
 
 
 def _init_from_reopened(adata: AnnData, reopened: AnnData) -> None:
@@ -179,41 +176,7 @@ def _init_from_reopened(adata: AnnData, reopened: AnnData) -> None:
     ``{"var": raw.var, "varm": raw.varm}`` mapping and let the file-init
     branch resolve ``raw.X`` from disk.
     """
-    reopened_raw = getattr(reopened, "raw", None)
-    if reopened_raw is not None and getattr(reopened_raw, "_X", None) is None:
-        try:
-            reopened_raw._X = reopened_raw.X
-        except Exception:
-            pass
-    if reopened_raw is None:
-        raw_arg = None
-    else:
-        raw_varm = getattr(reopened_raw, "varm", None)
-        raw_arg = {
-            "var": reopened_raw.var,
-            "varm": dict(raw_varm) if raw_varm else None,
-        }
-    real_layers = {k: v for k, v in reopened.layers.items() if k is not None}
-    reopened_filemode = getattr(getattr(reopened, "file", None), "_filemode", None)
-    adata._init_as_actual(
-        None,
-        obs=reopened.obs,
-        var=reopened.var,
-        uns=reopened.uns,
-        obsm=reopened.obsm,
-        varm=reopened.varm,
-        obsp=reopened.obsp,
-        varp=reopened.varp,
-        layers=real_layers,
-        raw=raw_arg,
-        filename=reopened.filename,
-        filemode=reopened_filemode,
-    )
-    try:
-        adata.file.close()
-    except Exception:
-        pass
-    adata.file = reopened.file
+    init_from_reopened(adata, reopened)
 
 
 def _as_mapping(values: Mapping[str, Any] | None) -> dict[str, Any]:
