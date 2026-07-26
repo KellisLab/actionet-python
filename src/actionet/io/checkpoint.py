@@ -37,9 +37,8 @@ from .persist import (
 
 
 def _copy_h5_attrs(src, dst) -> None:
-    """Copy all HDF5 attrs from *src* to *dst*."""
-    for key, value in src.attrs.items():
-        dst.attrs[key] = value
+    """Copy all HDF5 attrs from *src* to *dst* (shared helper)."""
+    anndata_io.copy_h5_attrs(src, dst)
 
 
 def _copy_h5_dataset_chunked(src_ds, dst_ds, chunk_size: int) -> None:

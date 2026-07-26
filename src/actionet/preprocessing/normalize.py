@@ -28,12 +28,12 @@ from ..io.native_h5ad import (
 )
 from ..io.rewrite import RewriteTransaction
 from ..io.matrix_source import MatrixSource
+from ..io import anndata_io
 
 
 def _copy_h5_attrs(src, dst) -> None:
-    """Copy all attributes from one h5py object to another."""
-    for key, value in src.attrs.items():
-        dst.attrs[key] = value
+    """Copy all attributes from one h5py object to another (shared helper)."""
+    anndata_io.copy_h5_attrs(src, dst)
 
 
 def _safe_row_scale(target_sum: float, row_sums: np.ndarray) -> np.ndarray:

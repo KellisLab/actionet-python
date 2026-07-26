@@ -35,9 +35,9 @@ Write-only APIs expose their transfer size directly under the write name:
 
 `checkpoint_backed(..., compact=False)` does not compact the file, but it
 still performs a same-directory atomic rewrite whenever there are pending
-annotation updates. That rewrite currently uses a fixed internal row batch
-of `16384`; the user-supplied `backed_write_chunk_size` only takes effect
-when `compact=True`.
+annotation updates. The user-supplied `backed_write_chunk_size` governs the
+row batch of that annotation-append rewrite on every checkpoint, and
+additionally governs the repack when `compact=True`.
 
 Hybrid compute/write APIs expose an independent `backed_write_chunk_size`
 alongside `backed_chunk_size`. Leaving `backed_write_chunk_size` as `None`

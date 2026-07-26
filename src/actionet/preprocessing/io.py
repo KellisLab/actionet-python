@@ -204,7 +204,7 @@ def decompress_backed_storage(
         transaction.commit(
             close_source=adapter.close if inplace else None,
             restore_source=(
-                lambda: adapter.reopen(mode=original_mode)
+                (lambda: adapter.reopen(mode=original_mode))
                 if inplace
                 else None
             ),

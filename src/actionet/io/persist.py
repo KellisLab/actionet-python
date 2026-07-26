@@ -154,31 +154,6 @@ def _refresh_backed_handle(adata: AnnData, path: str, mode: str = "r+") -> None:
     init_from_reopened(adata, reopened)
 
 
-def _init_from_reopened(adata: AnnData, reopened: AnnData) -> None:
-    """Reinitialize *adata* from *reopened*, handling backed-raw edge cases.
-
-    Passing *reopened* directly as ``X`` to ``_init_as_actual`` triggers a
-    ValueError under ``anndata >= 0.13`` when the source is backed:
-    ``reopened.X`` and ``reopened.layers[None]`` are distinct wrapper
-    instances returned freshly from the file each access, so anndata's
-    ``X is layers[None]`` identity check inside ``_init_as_actual``
-    always fails.
-
-    Route around it by unpacking *reopened* into explicit kwargs, driving
-    the "init from file" branch (so ``layers.isbacked`` becomes ``True``
-    and ``X`` is served from the on-disk dataset), and then adopting the
-    reopened file handle so we don't leak the auxiliary one that
-    ``_init_as_actual`` opens.
-
-    ``raw`` handling: passing a :class:`~anndata.Raw` instance alongside
-    ``filename`` trips an anndata assertion, and passing ``None`` when
-    the file has a raw group crashes on ``dict(X=None, **None)``. Pass a
-    ``{"var": raw.var, "varm": raw.varm}`` mapping and let the file-init
-    branch resolve ``raw.X`` from disk.
-    """
-    init_from_reopened(adata, reopened)
-
-
 def _as_mapping(values: Mapping[str, Any] | None) -> dict[str, Any]:
     return {} if values is None else dict(values)
 
@@ -264,29 +239,13 @@ def apply_inmemory_updates(
 
 
 def _is_live_backed_wrapper(value: Any) -> bool:
-    """Return True for a live HDF5-backed matrix wrapper (never a snapshot).
+    """Backwards-compatible alias for :func:`anndata_io.is_live_backed_wrapper`.
 
-    AnnData exposes ``CSRDataset`` / ``CSCDataset`` (and, in some releases,
-    experimental variants) that hold an open ``h5py`` handle rather than an
-    in-memory array. Such a wrapper must never be captured into the results
-    dict: ``persist_updates`` closes the source file before
-    ``append_to_anndata`` re-serializes the results, at which point the
-    wrapper's handle is orphaned. These matrices are already carried through
-    the rewrite by the full-file ``rewrite_h5ad_payload`` copy, so they need
-    no re-serialization here.
+    The canonical implementation now lives in ``anndata_io`` so that
+    ``collect_annotation_results`` can apply the same filter at collection
+    time (see the ``checkpoint_backed`` orphaned-handle path).
     """
-    csr_type = getattr(getattr(ad, "abc", None), "CSRDataset", ())
-    csc_type = getattr(getattr(ad, "abc", None), "CSCDataset", ())
-    backed_sparse_types = tuple(
-        cls for cls in (csr_type, csc_type) if isinstance(cls, type)
-    )
-    if backed_sparse_types and isinstance(value, backed_sparse_types):
-        return True
-    # Experimental / unversioned backed wrappers: identify by a live HDF5
-    # group or dataset handle rather than a stable base class.
-    if hasattr(value, "group") and getattr(value, "group", None) is not None:
-        return True
-    return False
+    return anndata_io.is_live_backed_wrapper(value)
 
 
 def _include_all_inmemory_annotations(adata: AnnData, results: dict) -> None:

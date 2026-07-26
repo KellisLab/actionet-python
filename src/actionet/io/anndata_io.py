@@ -5,6 +5,8 @@ Functions for collecting annotation results from an in-memory AnnData object
 and writing them back to backed H5AD files on disk.
 """
 
+from typing import Any
+
 import numpy as np
 import pandas as pd
 import h5py
@@ -14,6 +16,40 @@ import warnings
 class ValidationError(Exception):
     """Raised when data validation fails."""
     pass
+
+
+def copy_h5_attrs(src, dst) -> None:
+    """Copy all HDF5 attributes from one h5py object to another."""
+    for key, value in src.attrs.items():
+        dst.attrs[key] = value
+
+
+def is_live_backed_wrapper(value: Any) -> bool:
+    """Return True for a live HDF5-backed matrix wrapper (never a snapshot).
+
+    AnnData exposes ``CSRDataset`` / ``CSCDataset`` (and, in some releases,
+    experimental variants) that hold an open ``h5py`` handle rather than an
+    in-memory array. Such a wrapper must never be captured into a results
+    dict destined for :func:`append_to_anndata`: the caller closes the source
+    file before the results are re-serialized, at which point the wrapper's
+    handle is orphaned. These matrices are already carried through the rewrite
+    by the full-file ``rewrite_h5ad_payload`` copy, so they need no
+    re-serialization here.
+    """
+    import anndata as ad
+
+    csr_type = getattr(getattr(ad, "abc", None), "CSRDataset", ())
+    csc_type = getattr(getattr(ad, "abc", None), "CSCDataset", ())
+    backed_sparse_types = tuple(
+        cls for cls in (csr_type, csc_type) if isinstance(cls, type)
+    )
+    if backed_sparse_types and isinstance(value, backed_sparse_types):
+        return True
+    # Experimental / unversioned backed wrappers: identify by a live HDF5
+    # group or dataset handle rather than a stable base class.
+    if hasattr(value, "group") and getattr(value, "group", None) is not None:
+        return True
+    return False
 
 
 def _validate_results(h5_path, results, verbose=False):
@@ -436,7 +472,10 @@ def collect_annotation_results(
     if obsm_keys:
         for key in obsm_keys:
             if key in adata.obsm.keys():
-                results['obsm_keys'][key] = adata.obsm[key]
+                value = adata.obsm[key]
+                if is_live_backed_wrapper(value):
+                    continue
+                results['obsm_keys'][key] = value
                 if verbose:
                     print(f"[INFO]   Collected obsm['{key}']")
     
@@ -444,7 +483,10 @@ def collect_annotation_results(
     if varm_keys:
         for key in varm_keys:
             if key in adata.varm.keys():
-                results['varm_keys'][key] = adata.varm[key]
+                value = adata.varm[key]
+                if is_live_backed_wrapper(value):
+                    continue
+                results['varm_keys'][key] = value
                 if verbose:
                     print(f"[INFO]   Collected varm['{key}']")
 
@@ -452,7 +494,10 @@ def collect_annotation_results(
     if obsp_keys:
         for key in obsp_keys:
             if key in adata.obsp.keys():
-                results['obsp_keys'][key] = adata.obsp[key]
+                value = adata.obsp[key]
+                if is_live_backed_wrapper(value):
+                    continue
+                results['obsp_keys'][key] = value
                 if verbose:
                     print(f"[INFO]   Collected obsp['{key}']")
     
@@ -460,7 +505,10 @@ def collect_annotation_results(
     if varp_keys:
         for key in varp_keys:
             if key in adata.varp.keys():
-                results['varp_keys'][key] = adata.varp[key]
+                value = adata.varp[key]
+                if is_live_backed_wrapper(value):
+                    continue
+                results['varp_keys'][key] = value
                 if verbose:
                     print(f"[INFO]   Collected varp['{key}']")
 
@@ -473,7 +521,10 @@ def collect_annotation_results(
             if key is None:
                 continue
             if key in adata.layers.keys():
-                results['layers_keys'][key] = adata.layers[key]
+                value = adata.layers[key]
+                if is_live_backed_wrapper(value):
+                    continue
+                results['layers_keys'][key] = value
                 if verbose:
                     print(f"[INFO]   Collected layers['{key}']")
 

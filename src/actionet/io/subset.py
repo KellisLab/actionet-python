@@ -42,14 +42,17 @@ from .compression import (
     get_matrix_compression_policy,
     write_sparse_csr_group_attrs,
 )
-from .backed_adapter import BackedAnnDataAdapter, backed_view_selection
+from .backed_adapter import (
+    BackedAnnDataAdapter,
+    backed_view_selection,
+    init_from_reopened,
+)
 from .native_h5ad import execute_native_subset, plan_native_subset
 from .rewrite import RewriteTransaction
 from .persist import (
     _ensure_backed_open,
     _ensure_backed_writable,
     _flush_pending,
-    _init_from_reopened,
     _real_layer_keys,
     _refresh_backed_handle,
     is_backed_adata,
@@ -1156,7 +1159,7 @@ def _atomic_filtered_rewrite(
         commit_stats = transaction.commit(
             close_source=adapter.close if in_place else None,
             restore_source=(
-                lambda: adapter.reopen(mode=original_mode)
+                (lambda: adapter.reopen(mode=original_mode))
                 if in_place
                 else None
             ),
@@ -1249,7 +1252,7 @@ def materialize_backed(
         return
 
     reopened = ad.read_h5ad(dest_path, backed="r+")
-    _init_from_reopened(adata, reopened)
+    init_from_reopened(adata, reopened)
 
 
 def subset_backed_inplace(

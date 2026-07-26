@@ -115,6 +115,69 @@ class TestCheckpointBacked:
 
         reloaded.file.close()
 
+    def test_checkpoint_preserves_ondisk_sparse_aux_matrices(self, tmp_path):
+        """checkpoint_backed on a file with on-disk sparse obsp/varp matrices
+        round-trips them correctly through the collect-all rewrite path.
+
+        Guards the collect_annotation_results -> checkpoint_backed path against
+        the orphaned-handle class fixed for persist_updates (Q7): any live
+        backed matrix wrapper captured into the results dict would be handed to
+        ad.io.write_elem after the source file is closed. The filter now lives
+        in collect_annotation_results (via is_live_backed_wrapper). This test
+        also pins the user-facing guarantee that aux matrices survive a no-op
+        (nothing-dirty) checkpoint.
+        """
+        mem = make_test_adata(n_cells=40, n_genes=24, seed=5)
+        graph = sp.random(40, 40, density=0.08, format="csr", random_state=1)
+        var_graph = sp.random(24, 24, density=0.08, format="csr", random_state=2)
+        mem.obsp["graph"] = graph
+        mem.varp["gene_graph"] = var_graph
+
+        backed = open_backed(tmp_path, mem)
+
+        # No prior persist_updates -> collect-all path. Must not raise even if
+        # any container yields a live backed wrapper.
+        checkpoint_backed(backed)
+
+        path = str(backed.filename)
+        backed.file.close()
+
+        reloaded = ad.read_h5ad(path, backed="r")
+        reloaded_graph = reloaded.obsp["graph"]
+        if sp.issparse(reloaded_graph):
+            reloaded_graph = reloaded_graph.toarray()
+        np.testing.assert_allclose(reloaded_graph, graph.toarray(), rtol=1e-6)
+        reloaded_vg = reloaded.varp["gene_graph"]
+        if sp.issparse(reloaded_vg):
+            reloaded_vg = reloaded_vg.toarray()
+        np.testing.assert_allclose(reloaded_vg, var_graph.toarray(), rtol=1e-6)
+        reloaded.file.close()
+
+    def test_collect_annotation_results_skips_live_backed_wrappers(
+        self, tmp_path
+    ):
+        """collect_annotation_results must not capture a live backed matrix
+        wrapper (CSRDataset/CSCDataset) into the results dict, regardless of
+        which container AnnData happens to serve it from. Simulate a backed
+        wrapper in obsm to lock the filter in place across AnnData versions.
+        """
+        import actionet.io.anndata_io as anndata_io
+
+        mem = make_test_adata(n_cells=20, n_genes=12, seed=3)
+        backed = open_backed(tmp_path, mem)
+        try:
+            # .X is a genuine live backed wrapper on AnnData >= 0.13.
+            live_wrapper = backed.X
+            assert anndata_io.is_live_backed_wrapper(live_wrapper)
+            backed.obsm["backed_like"] = live_wrapper
+
+            results = anndata_io.collect_annotation_results(
+                backed, obsm_keys=["backed_like"]
+            )
+            assert "backed_like" not in results["obsm_keys"]
+        finally:
+            backed.file.close()
+
     def test_noop_checkpoint(self, tmp_path):
         """Checkpoint with no in-memory annotations does not error."""
         mem = make_test_adata(n_cells=10, n_genes=8)

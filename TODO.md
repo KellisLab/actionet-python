@@ -18,11 +18,11 @@
   * Currently `src/actionet/io/persist.py`, `src/actionet/io/subset.py`, and `src/actionet/io/checkpoint.py`
     filter out the `None` key from `adata.layers.keys()` via a `_real_layer_keys` helper to avoid writing
     spurious `layers/None` HDF5 groups (anndata 0.13 aliases `.X` as `layers[None]`).
-  * `_init_from_reopened` in `src/actionet/io/persist.py` also unpacks the reopened AnnData into explicit
+  * `init_from_reopened` in `src/actionet/io/backed_adapter.py` also unpacks the reopened AnnData into explicit
     kwargs (and drives the "init from file" branch via `filename=`) to sidestep the `X is layers[None]`
     identity check that fails when backed `_CSRDataset` wrappers are recreated per attribute access.
   * When we drop `anndata<0.13` support, revisit both workarounds: the `_real_layer_keys` helper can
-    likely be inlined or removed entirely, and `_init_from_reopened` can be simplified now that
+    likely be inlined or removed entirely, and `init_from_reopened` can be simplified now that
     `layers[None]` is a stable, documented alias for `.X`.
 ## Secondary
 * Consolidate normalization code-paths
