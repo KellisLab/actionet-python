@@ -78,6 +78,38 @@ class TestBackedTakeColumnsSparse:
         expected = X_mem[np.ix_(rows, cols)]
         np.testing.assert_allclose(result, expected, atol=1e-12)
 
+    def test_duplicate_row_indices_preserved_sparse(self, backed_sparse):
+        """Sparse output must scatter a repeated source row to every slot.
+
+        Regression for the takeColumnsSparse row_map bug that recorded only
+        the first output slot per source row, silently dropping duplicates.
+        """
+        from actionet import _core
+        backed, X_mem, fmt = backed_sparse
+        op = _create_op(backed)
+        cols = np.array([0, 5, 10], dtype=np.int64)
+        rows = np.array([10, 2, 10, 90, 2], dtype=np.int64)
+        result = _core.backed_take_columns(
+            op, cols, row_indices=rows, prefer_sparse=True
+        )
+        assert sp.issparse(result)
+        expected = X_mem[np.ix_(rows, cols)]
+        np.testing.assert_allclose(result.toarray(), expected, atol=1e-12)
+
+    def test_duplicate_rows_and_columns_sparse(self, backed_sparse):
+        """Sparse output preserves duplicates on both axes simultaneously."""
+        from actionet import _core
+        backed, X_mem, fmt = backed_sparse
+        op = _create_op(backed)
+        cols = np.array([5, 5, 0, 5], dtype=np.int64)
+        rows = np.array([3, 3, 20, 3], dtype=np.int64)
+        result = _core.backed_take_columns(
+            op, cols, row_indices=rows, prefer_sparse=True
+        )
+        assert sp.issparse(result)
+        expected = X_mem[np.ix_(rows, cols)]
+        np.testing.assert_allclose(result.toarray(), expected, atol=1e-12)
+
     def test_empty_columns(self, backed_sparse):
         from actionet import _core
         backed, X_mem, fmt = backed_sparse

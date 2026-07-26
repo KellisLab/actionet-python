@@ -263,6 +263,32 @@ def apply_inmemory_updates(
     _assign_mapping(adata.uns, uns, tolerate_errors=tolerate_errors)
 
 
+def _is_live_backed_wrapper(value: Any) -> bool:
+    """Return True for a live HDF5-backed matrix wrapper (never a snapshot).
+
+    AnnData exposes ``CSRDataset`` / ``CSCDataset`` (and, in some releases,
+    experimental variants) that hold an open ``h5py`` handle rather than an
+    in-memory array. Such a wrapper must never be captured into the results
+    dict: ``persist_updates`` closes the source file before
+    ``append_to_anndata`` re-serializes the results, at which point the
+    wrapper's handle is orphaned. These matrices are already carried through
+    the rewrite by the full-file ``rewrite_h5ad_payload`` copy, so they need
+    no re-serialization here.
+    """
+    csr_type = getattr(getattr(ad, "abc", None), "CSRDataset", ())
+    csc_type = getattr(getattr(ad, "abc", None), "CSCDataset", ())
+    backed_sparse_types = tuple(
+        cls for cls in (csr_type, csc_type) if isinstance(cls, type)
+    )
+    if backed_sparse_types and isinstance(value, backed_sparse_types):
+        return True
+    # Experimental / unversioned backed wrappers: identify by a live HDF5
+    # group or dataset handle rather than a stable base class.
+    if hasattr(value, "group") and getattr(value, "group", None) is not None:
+        return True
+    return False
+
+
 def _include_all_inmemory_annotations(adata: AnnData, results: dict) -> None:
     """Augment *results* with all in-memory annotations not already present.
 
@@ -274,6 +300,11 @@ def _include_all_inmemory_annotations(adata: AnnData, results: dict) -> None:
 
     Keys already present in *results* (freshly computed by the calling ACTIONet
     function) take priority and are never overwritten.
+
+    Live HDF5-backed matrix wrappers (``CSRDataset`` / ``CSCDataset`` and
+    experimental variants) are skipped: the full-file rewrite already copies
+    them, and snapshotting them here would hand an orphaned handle to
+    ``ad.io.write_elem`` after the source file is closed.
     """
     for col in adata.obs.columns:
         if col not in results["obs_columns"]:
@@ -287,12 +318,20 @@ def _include_all_inmemory_annotations(adata: AnnData, results: dict) -> None:
                       ("obsp", "obsp_keys"), ("varp", "varp_keys")]:
         container = getattr(adata, slot)
         for k in container.keys():
-            if k not in results[key]:
-                results[key][k] = container[k]
+            if k in results[key]:
+                continue
+            value = container[k]
+            if _is_live_backed_wrapper(value):
+                continue
+            results[key][k] = value
 
     for k in _real_layer_keys(adata):
-        if k not in results["layers_keys"]:
-            results["layers_keys"][k] = adata.layers[k]
+        if k in results["layers_keys"]:
+            continue
+        value = adata.layers[k]
+        if _is_live_backed_wrapper(value):
+            continue
+        results["layers_keys"][k] = value
 
     for k, v in adata.uns.items():
         if k not in results["uns_keys"]:

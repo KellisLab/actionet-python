@@ -817,7 +817,21 @@ def _write_filtered_backed(
 
         for k in keys:
             component = f"{name}/{k}"
-            if is_identity and name in h5file and k in h5file[name]:
+            mat = container[k]
+            if mat is None:
+                continue
+
+            # Only fast-copy when the in-memory value is still the live
+            # backed handle at the same logical path. Any in-memory
+            # replacement (e.g. ``adata.obsm[k] = np.array(...)``) must go
+            # through the codec/native writer so the on-disk stale value
+            # is never silently republished.
+            if (
+                is_identity
+                and name in h5file
+                and k in h5file[name]
+                and adapter.matrix_location(mat, f"{name}/{k}") is not None
+            ):
                 _write_profiled_component(
                     f,
                     component,
@@ -828,18 +842,14 @@ def _write_filtered_backed(
                 )
                 continue
 
-            mat = container[k]
-            if mat is None:
-                continue
-
             if isinstance(mat, pd.DataFrame):
                 mat_sub = mat.iloc[row_idx]
                 _write_profiled_component(
                     f,
                     component,
                     "dataframe",
-                    lambda component=component, mat_sub=mat_sub: ad.io.write_elem(
-                        f, component, mat_sub
+                    lambda k=k, group=group, mat_sub=mat_sub: ad.io.write_elem(
+                        group, k, mat_sub
                     ),
                 )
                 continue
@@ -940,14 +950,64 @@ def _write_filtered_backed(
                 None,
                 compression_policy=raw_policy,
             )
+            raw_var = raw.var.copy()
             _write_profiled_component(
                 f,
                 "raw/var",
                 "dataframe",
-                lambda: ad.io.write_elem(f, "raw/var", raw.var.copy()),
+                lambda: ad.io.write_elem(raw_grp, "var", raw_var),
             )
 
-            if "raw" in h5file and "varm" in h5file["raw"]:
+            raw_varm = getattr(raw, "varm", None)
+            raw_varm_keys = (
+                list(raw_varm.keys()) if raw_varm is not None else []
+            )
+            if raw_varm_keys:
+                varm_grp = raw_grp.create_group("varm")
+                varm_grp.attrs["encoding-type"] = "dict"
+                varm_grp.attrs["encoding-version"] = "0.1.0"
+                for vk in raw_varm_keys:
+                    varm_component = f"raw/varm/{vk}"
+                    vmat = raw_varm[vk]
+                    if vmat is None:
+                        continue
+                    # h5copy only when the in-memory value is still the
+                    # live backed handle at the same logical path;
+                    # otherwise the in-memory replacement is authoritative.
+                    if (
+                        "raw" in h5file
+                        and "varm" in h5file["raw"]
+                        and vk in h5file["raw"]["varm"]
+                        and adapter.matrix_location(vmat, f"raw/varm/{vk}")
+                        is not None
+                    ):
+                        _write_profiled_component(
+                            f,
+                            varm_component,
+                            "h5copy",
+                            lambda vk=vk, varm_grp=varm_grp: h5file[
+                                "raw"
+                            ]["varm"].copy(vk, varm_grp, name=vk),
+                        )
+                        continue
+                    if isinstance(vmat, pd.DataFrame):
+                        _write_profiled_component(
+                            f,
+                            varm_component,
+                            "dataframe",
+                            lambda vk=vk, varm_grp=varm_grp, vmat=vmat: ad.io.write_elem(
+                                varm_grp, vk, vmat
+                            ),
+                        )
+                        continue
+                    _write_or_defer_matrix(
+                        f,
+                        varm_component,
+                        vmat,
+                        np.arange(vmat.shape[0], dtype=np.int64),
+                        None,
+                    )
+            elif "raw" in h5file and "varm" in h5file["raw"]:
                 _write_profiled_component(
                     f,
                     "raw/varm",
@@ -1036,10 +1096,16 @@ def _write_filtered_backed(
             )
 
     # AnnData performs the final whole-file structural check. Keep the object
-    # backed so validation never materializes the numeric payloads.
+    # backed so validation never materializes the numeric payloads. The
+    # close is best-effort so an unexpected handle-shape does not leak
+    # exceptions into the caller after validation already succeeded.
     validated = ad.read_h5ad(dest_path, backed="r")
-    if getattr(validated, "file", None) is not None:
-        validated.file.close()
+    file_handle = getattr(validated, "file", None)
+    if file_handle is not None:
+        try:
+            file_handle.close()
+        except Exception:
+            pass
 
     if profile_callback is not None:
         output_bytes = os.path.getsize(dest_path)

@@ -21,6 +21,7 @@ from ..io.persist import (
 from ..io.backed_adapter import BackedAnnDataAdapter
 from ..io.checkpoint import rewrite_h5ad_payload
 from ..io.native_h5ad import (
+    NativeCapabilityError,
     backed_io_engine,
     native_layout_capability,
     native_transform_matrix,
@@ -371,7 +372,7 @@ def _normalize_backed_native_transaction(
         return False
     if np.dtype(dtype_out) not in {np.dtype(np.float32), np.dtype(np.float64)}:
         if engine == "native":
-            raise ValueError(
+            raise NativeCapabilityError(
                 "The native backed normalization engine supports float32 "
                 "or float64 output"
             )
@@ -386,7 +387,7 @@ def _normalize_backed_native_transaction(
     location = adapter.matrix_location(source.matrix, source_h5_path)
     if location is None:
         if engine == "native":
-            raise ValueError(
+            raise NativeCapabilityError(
                 f"{source_h5_path} is not a genuinely file-backed matrix"
             )
         return False
@@ -407,7 +408,7 @@ def _normalize_backed_native_transaction(
     )
     if not supported:
         if engine == "native":
-            raise ValueError(
+            raise NativeCapabilityError(
                 f"Native backed normalization rejected {source_h5_path}: "
                 f"{reason}"
             )
@@ -456,7 +457,12 @@ def _normalize_backed_native_transaction(
         import anndata as ad
 
         validated = ad.read_h5ad(transaction.temp_path, backed="r")
-        validated.file.close()
+        file_handle = getattr(validated, "file", None)
+        if file_handle is not None:
+            try:
+                file_handle.close()
+            except Exception:
+                pass
         transaction.commit(
             close_source=adapter.close,
             restore_source=lambda: adapter.reopen(mode=original_mode),

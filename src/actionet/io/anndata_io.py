@@ -8,7 +8,6 @@ and writing them back to backed H5AD files on disk.
 import numpy as np
 import pandas as pd
 import h5py
-from pandas.api.types import is_string_dtype
 from scipy import sparse
 import warnings
 
@@ -489,41 +488,12 @@ def collect_annotation_results(
     return results
 
 
-def coerce_series_to_legacy_strings(s: pd.Series) -> pd.Series:
-    """Convert pandas StringDtype series to object for legacy AnnData/anndataR writes."""
-    if is_string_dtype(s.dtype):
-        return s.astype(object)
-    return s
-
-
-def coerce_legacy_string_dtypes(df: pd.DataFrame) -> pd.DataFrame:
-    """Convert pandas StringDtype columns/index to object to keep HDF5 writes backward compatible."""
-    if is_string_dtype(df.index.dtype):
-        df.index = df.index.astype(object)
-    str_cols = [c for c in df.columns if is_string_dtype(df[c].dtype)]
-    if str_cols:
-        df[str_cols] = df[str_cols].astype(object)
-    return df
-
-
-def sanitize_for_legacy_anndata(adata_obj):
-    """Normalize obs/var string-like data to be writable by older AnnData/anndataR.
-
-    Converts pandas StringDtype columns and indices to object dtype for compatibility
-    with AnnData < 0.11 and anndataR. Using astype(object) instead of astype(str)
-    ensures correct conversion even when pandas future.infer_string=True (pandas 3.0+).
-    """
-    adata_obj.obs = coerce_legacy_string_dtypes(adata_obj.obs)
-    adata_obj.var = coerce_legacy_string_dtypes(adata_obj.var)
-    adata_obj.obs_names = adata_obj.obs_names.astype(object)
-    adata_obj.var_names = adata_obj.var_names.astype(object)
-
-
 def append_to_anndata(
     h5_path,
     results,
     verbose=False,
-    validate=True
+    validate=True,
+    chunk_size=None,
 ):
     """
     Append annotation results through the shared atomic H5AD rewrite.
@@ -542,6 +512,9 @@ def append_to_anndata(
         Print progress messages
     validate : bool, optional
         Validate data before writing (default: True)
+    chunk_size : int or None, optional
+        Row/element chunk size for the full-file payload copy. When ``None``
+        the shared default (:data:`DEFAULT_BACKED_WRITE_CHUNK_SIZE`) is used.
 
     Returns
     -------
@@ -560,10 +533,14 @@ def append_to_anndata(
     import anndata as ad
 
     from .checkpoint import rewrite_h5ad_payload
+    from .chunking import DEFAULT_BACKED_WRITE_CHUNK_SIZE
     from .rewrite import RewriteTransaction
 
     if not os.path.exists(h5_path):
         raise FileNotFoundError(f"H5AD file not found: {h5_path}")
+
+    if chunk_size is None:
+        chunk_size = DEFAULT_BACKED_WRITE_CHUNK_SIZE
 
     if validate:
         _validate_results(h5_path, results, verbose)
@@ -593,7 +570,7 @@ def append_to_anndata(
         rewrite_h5ad_payload(
             source_path,
             transaction.temp_path,
-            chunk_size=16384,
+            chunk_size=chunk_size,
         )
         with h5py.File(transaction.temp_path, 'r+') as destination:
             for frame_name, updated_columns in (
@@ -635,5 +612,10 @@ def append_to_anndata(
             destination.flush()
 
         validated = ad.read_h5ad(transaction.temp_path, backed='r')
-        validated.file.close()
+        file_handle = getattr(validated, "file", None)
+        if file_handle is not None:
+            try:
+                file_handle.close()
+            except Exception:
+                pass
         transaction.commit()

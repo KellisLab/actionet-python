@@ -45,12 +45,6 @@ namespace {
         return std::vector<double>(ptr, ptr + static_cast<size_t>(buf.shape[0]));
     }
 
-    // Copy a 1-D int64 numpy array into an arma::uvec, with a message-name
-    // matching the historical ``backed_take_columns`` error strings.
-    arma::uvec int64_array_to_uvec(const py::array_t<int64_t>& arr) {
-        return int_array_to_uvec(arr, "backed index array");
-    }
-
     const char* matrix_encoding_name(actionet::h5ad::MatrixEncoding encoding) {
         switch (encoding) {
             case actionet::h5ad::MatrixEncoding::Dense:
@@ -197,11 +191,15 @@ std::shared_ptr<actionet::MatrixOperator> create_backed_operator(
     size_t io_target_chunk_bytes,
     double io_target_chunk_fraction_of_cap,
     int n_threads) {
+    // ``optional_row_scale`` touches Python objects and must run under the
+    // GIL; the actual HDF5 open+inspect below can execute without it.
+    auto row_scale = optional_row_scale(std::move(row_scale_factors));
+    py::gil_scoped_release release;
     return actionet::createBackedOperator(
         file_path,
         group_path,
         static_cast<arma::uword>(std::max(1, chunk_size)),
-        optional_row_scale(std::move(row_scale_factors)),
+        std::move(row_scale),
         apply_log1p,
         log_scale,
         io_target_chunk_bytes,
@@ -336,12 +334,12 @@ void init_io(py::module_ &m) {
                   throw std::runtime_error("backed_take_columns: operator is null");
               }
 
-              arma::uvec col_indices = int64_array_to_uvec(col_indices_arr);
+              arma::uvec col_indices = int_array_to_uvec(col_indices_arr, "backed index array");
 
               arma::uvec row_indices;
               if (!row_indices_obj.is_none()) {
                   py::array_t<int64_t> row_arr = row_indices_obj.cast<py::array_t<int64_t>>();
-                  row_indices = int64_array_to_uvec(row_arr);
+                  row_indices = int_array_to_uvec(row_arr, "backed index array");
               }
 
               if (prefer_sparse) {

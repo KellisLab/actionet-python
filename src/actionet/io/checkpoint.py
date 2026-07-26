@@ -20,6 +20,7 @@ from .chunking import (
 )
 from .backed_adapter import BackedAnnDataAdapter
 from .native_h5ad import (
+    NativeCapabilityError,
     backed_io_engine,
     native_copy_matrix,
     native_layout_capability,
@@ -215,14 +216,15 @@ def rewrite_h5ad_payload(
     )
     allowed_native.difference_update(omitted)
     native_paths: set[str] = set()
-    if backed_io_engine() != "python":
+    engine = backed_io_engine()
+    if engine != "python":
         from .. import _core
 
         for path in sorted(allowed_native):
             try:
                 info = dict(_core.h5ad_inspect_matrix(source_path, path))
             except Exception:
-                if backed_io_engine() == "native":
+                if engine == "native":
                     raise
             else:
                 supported, reason = native_layout_capability(
@@ -231,8 +233,8 @@ def rewrite_h5ad_payload(
                 )
                 if supported:
                     native_paths.add(path)
-                elif backed_io_engine() == "native":
-                    raise RuntimeError(
+                elif engine == "native":
+                    raise NativeCapabilityError(
                         f"native H5AD transfer rejected {path}: {reason}"
                     )
 
@@ -316,7 +318,12 @@ def _repack_h5ad(
             chunk_size=chunk_size,
         )
         validated = ad.read_h5ad(transaction.temp_path, backed="r")
-        validated.file.close()
+        file_handle = getattr(validated, "file", None)
+        if file_handle is not None:
+            try:
+                file_handle.close()
+            except Exception:
+                pass
         transaction.commit(
             close_source=adapter.close,
             restore_source=lambda: adapter.reopen(mode=original_mode),
@@ -384,10 +391,11 @@ def checkpoint_backed(
         dead space from prior delete-then-create overwrites.  This
         requires a full file copy and is expensive for large files.
     backed_write_chunk_size : int, optional (default: 16384)
-        Row/element chunk size used only during the compact file copy.
-        It has no effect when ``compact=False``. Atlas-scale compaction may
-        benefit from starting with ``32768``; larger values use
-        proportionally more temporary memory.
+        Row/element chunk size for the full-file payload copy. It applies
+        both to the annotation-append rewrite performed on every checkpoint
+        and to the optional ``compact`` repack. Atlas-scale files may benefit
+        from starting with ``32768``; larger values use proportionally more
+        temporary memory.
     validate : bool, optional (default: False)
         Run ``anndata_io`` validation before writing.
     verbose : bool, optional (default: False)
@@ -436,6 +444,7 @@ def checkpoint_backed(
             results,
             verbose=verbose,
             validate=validate,
+            chunk_size=backed_write_chunk_size,
         )
 
         _refresh_backed_handle(adata, filepath, mode="r+")

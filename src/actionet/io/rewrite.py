@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import stat
 import tempfile
 from dataclasses import dataclass
 from time import perf_counter
@@ -78,6 +79,38 @@ class RewriteTransaction:
         finally:
             os.close(descriptor)
 
+    def _copy_source_metadata_best_effort(self) -> None:
+        """Preserve file mode (and, when possible, ownership) across replace.
+
+        For in-place rewrites the intent is that the published H5AD retains
+        the original file's access permissions. For cross-file rewrites we
+        still prefer to mirror the source rather than the ``0600`` temp mode
+        that ``mkstemp`` produced. Failures here are non-fatal: a permission
+        or filesystem restriction must not abort a successful rewrite.
+        """
+        try:
+            source_stat = os.stat(self.source_path)
+        except OSError:
+            return
+        try:
+            os.chmod(self.temp_path, stat.S_IMODE(source_stat.st_mode))
+        except OSError:
+            pass
+        # ``os.chown`` typically requires elevated privileges when changing
+        # the owning uid, so we only attempt it when the uid or gid differs
+        # and swallow the resulting ``PermissionError`` if we lack them.
+        try:
+            temp_stat = os.stat(self.temp_path)
+            if (
+                temp_stat.st_uid != source_stat.st_uid
+                or temp_stat.st_gid != source_stat.st_gid
+            ):
+                os.chown(
+                    self.temp_path, source_stat.st_uid, source_stat.st_gid
+                )
+        except (OSError, AttributeError):
+            pass
+
     def assert_source_unchanged(self) -> None:
         current = FileFingerprint.capture(self.source_path)
         if current != self.source_fingerprint:
@@ -123,6 +156,13 @@ class RewriteTransaction:
                     raise
                 source_close_seconds = perf_counter() - started
 
+        # ``mkstemp`` creates the file with mode 0600, so a straight
+        # ``os.replace`` would strip any group/other read bits from the
+        # published H5AD. Mirror the source's mode (and, when we have the
+        # privilege, its ownership) before publication so shared HPC
+        # directories keep their existing access permissions.
+        self._copy_source_metadata_best_effort()
+
         started = perf_counter()
         try:
             os.replace(self.temp_path, self.destination_path)
@@ -137,11 +177,15 @@ class RewriteTransaction:
                     )
             raise
         replace_seconds = perf_counter() - started
+        # The rename is durable at this point; setting the flag before the
+        # parent ``fsync`` prevents ``cleanup`` from unlinking a temp path
+        # that a rare filesystem might still surface if the process is
+        # interrupted between ``os.replace`` and directory ``fsync``.
+        self._committed = True
 
         started = perf_counter()
         self._fsync_parent_best_effort()
         parent_fsync_seconds = perf_counter() - started
-        self._committed = True
         return CommitStats(
             temp_fsync_seconds=temp_fsync_seconds,
             fingerprint_seconds=fingerprint_seconds,

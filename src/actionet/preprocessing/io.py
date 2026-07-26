@@ -195,7 +195,12 @@ def decompress_backed_storage(
             native_matrix_paths=native_paths,
         )
         validated = ad.read_h5ad(transaction.temp_path, backed="r")
-        validated.file.close()
+        file_handle = getattr(validated, "file", None)
+        if file_handle is not None:
+            try:
+                file_handle.close()
+            except Exception:
+                pass
         transaction.commit(
             close_source=adapter.close if inplace else None,
             restore_source=(

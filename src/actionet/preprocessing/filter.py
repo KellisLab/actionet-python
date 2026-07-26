@@ -11,6 +11,7 @@ import scipy.sparse as sp
 from anndata import AnnData
 
 from ..io.persist import (
+    _ensure_backed_writable,
     is_backed_adata,
     _refresh_backed_handle,
 )
@@ -412,12 +413,14 @@ def apply_filter(
         If True, modify *adata* in place (returns ``None``).
         If False, return a new (possibly in-memory) AnnData.
     output_file : str or None, optional
-        For backed AnnData, write the filtered result to this path using
-        chunked h5py I/O (constant-memory).  If ``None`` and ``inplace=True``,
-        the backing file is overwritten in place.  If ``None`` and
-        ``inplace=False``, an in-memory AnnData is returned and the source
-        backing file is left unchanged.
-        Ignored for in-memory objects.
+        For backed AnnData, write the filtered result to this path. Bulk
+        matrix transfer runs through the native H5AD engine when supported
+        and falls back to the constant-memory Python writer otherwise
+        (see :envvar:`ACTIONET_BACKED_IO_ENGINE`). If ``None`` and
+        ``inplace=True``, the backing file is overwritten in place. If
+        ``None`` and ``inplace=False``, an in-memory AnnData is returned
+        and the source backing file is left unchanged. Ignored for
+        in-memory objects.
     backed_write_chunk_size : int, optional (default: 16384)
         Maximum rows per native transfer batch. The native byte-buffer limit
         may reduce the effective batch size. The rollback Python engine uses
@@ -451,6 +454,17 @@ def apply_filter(
                     os.unlink(tmp_path)
 
         dest = str(output_file)
+        source_path = str(adata.filename)
+        same_path = os.path.realpath(dest) == os.path.realpath(source_path)
+        if not inplace and same_path:
+            raise ValueError(
+                "output_file must differ from the source when inplace=False"
+            )
+        # An in-place rewrite (either implicit or via same-path
+        # ``output_file``) atomically replaces the backing store, so require
+        # a writable handle up front instead of failing mid-transaction.
+        if inplace and same_path:
+            _ensure_backed_writable(adata)
         _atomic_filtered_rewrite(
             adata,
             obs_idx,

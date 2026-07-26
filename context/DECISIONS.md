@@ -327,6 +327,11 @@ This document records **deliberate architectural and operational decisions** for
 - `ACTIONET_BACKED_IO_ENGINE=auto|native|python` is a private one-release
   rollback switch. Only pre-transfer capability rejection can fall back;
   runtime transfer failures abort the rewrite.
+- Pre-transfer capability rejection raises a single canonical exception type,
+  `actionet.io.native_h5ad.NativeCapabilityError` (a `RuntimeError` subclass),
+  across the subset, normalization, and checkpoint/repack paths. Callers that
+  fall back rely on the boolean return of the native-transaction helpers, not
+  on catching a specific exception type.
 
 **Rationale:**
 

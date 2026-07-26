@@ -36,8 +36,18 @@ def _fingerprint(path: Path) -> tuple[int, int, int]:
 
 
 def _process_io() -> dict[str, int]:
+    """Return process I/O counters when available.
+
+    ``/proc/self/io`` only exists on Linux. On macOS and any other host that
+    lacks it the benchmark still runs; we simply omit the corresponding
+    deltas from the reported timings.
+    """
     values: dict[str, int] = {}
-    with open("/proc/self/io", encoding="utf-8") as handle:
+    try:
+        handle = open("/proc/self/io", encoding="utf-8")
+    except OSError:
+        return values
+    with handle:
         for line in handle:
             key, value = line.rstrip().split(": ", maxsplit=1)
             values[key] = int(value)

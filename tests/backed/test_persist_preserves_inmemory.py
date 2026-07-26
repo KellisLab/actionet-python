@@ -186,3 +186,35 @@ class TestPersistPreservesInmemoryState:
         reloaded = ad.read_h5ad(path, backed="r+")
         np.testing.assert_array_equal(reloaded.obs["score"].values, new_scores)
         reloaded.file.close()
+
+    def test_persist_with_untouched_backed_layer(self, backed_adata):
+        """A backed layer left as a live HDF5 wrapper must not break persist.
+
+        The fixture stores a ``logcounts`` layer, which is a live
+        ``CSRDataset`` wrapper on a backed object. ``persist_updates`` closes
+        the source file before re-serializing results, so snapshotting that
+        wrapper into results would hand an orphaned handle to
+        ``ad.io.write_elem``. The full-file rewrite already copies the layer,
+        so it must survive untouched without being re-serialized.
+        """
+        n = backed_adata.n_obs
+        assert "logcounts" in backed_adata.layers
+
+        # Capture the on-disk layer values before the rewrite.
+        expected_layer = np.asarray(backed_adata.layers["logcounts"][...].todense())
+
+        persist_updates(
+            backed_adata,
+            obs={"new_score": np.arange(n, dtype=np.float64)},
+        )
+
+        assert "new_score" in backed_adata.obs.columns
+
+        path = str(backed_adata.filename)
+        backed_adata.file.close()
+        reloaded = ad.read_h5ad(path, backed="r+")
+        assert "logcounts" in reloaded.layers
+        assert "new_score" in reloaded.obs.columns
+        actual_layer = np.asarray(reloaded.layers["logcounts"][...].todense())
+        np.testing.assert_allclose(actual_layer, expected_layer)
+        reloaded.file.close()

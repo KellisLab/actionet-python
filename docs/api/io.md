@@ -15,12 +15,13 @@ the function does. The two directions have independent shared defaults:
 | Read / compute streaming | `backed_chunk_size` | `8192` |
 | HDF5 write / rewrite | `backed_write_chunk_size` | `16384` |
 
-`backed_write_chunk_size` remains a row-count ceiling for compatibility.
-Native transfers may use fewer rows to stay within a 128 MiB buffer bound.
-They inspect the physical HDF5 layout, merge nearby sparse ranges, and choose
+`backed_write_chunk_size` is a row-count ceiling in the native engine. Native
+transfers may use fewer rows to stay within a 128 MiB buffer bound. They
+inspect the physical HDF5 layout, merge nearby sparse ranges, and choose
 between selected-range reads and a bounded sequential scan. Increasing the
-row ceiling can still reduce overhead, but it no longer permits an
-unbounded temporary matrix.
+row ceiling can still reduce overhead, but it no longer permits an unbounded
+temporary matrix. Under `ACTIONET_BACKED_IO_ENGINE=python` the same knob
+continues to act as the historical coupled read/write stride.
 
 Write-only APIs expose their transfer size directly under the write name:
 
@@ -29,10 +30,14 @@ Write-only APIs expose their transfer size directly under the write name:
 | `checkpoint_backed(..., compact=True)` | `backed_write_chunk_size` |
 | `decompress_backed_storage(...)` | `backed_write_chunk_size` |
 | `subset_anndata(...)`, `apply_filter(...)` | `backed_write_chunk_size` |
+| `filter_anndata(...)`, `normalize_anndata(...)` | `backed_write_chunk_size` |
 | `materialize_backed(...)`, `subset_backed_inplace(...)` | `backed_write_chunk_size` |
 
-`checkpoint_backed(..., compact=False)` does not repack the file, so its
-`backed_write_chunk_size` is unused.
+`checkpoint_backed(..., compact=False)` does not compact the file, but it
+still performs a same-directory atomic rewrite whenever there are pending
+annotation updates. That rewrite currently uses a fixed internal row batch
+of `16384`; the user-supplied `backed_write_chunk_size` only takes effect
+when `compact=True`.
 
 Hybrid compute/write APIs expose an independent `backed_write_chunk_size`
 alongside `backed_chunk_size`. Leaving `backed_write_chunk_size` as `None`
