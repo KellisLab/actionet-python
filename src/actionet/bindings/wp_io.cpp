@@ -121,6 +121,7 @@ namespace {
         out["packing_seconds"] = stats.packing_seconds;
         out["destination_write_seconds"] = stats.destination_write_seconds;
         out["flush_seconds"] = stats.flush_seconds;
+        out["destination_fsync_seconds"] = stats.destination_fsync_seconds;
 
         py::list spans;
         for (const auto& span : stats.spans) {

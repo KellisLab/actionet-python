@@ -825,6 +825,69 @@ class TestBackedRewriteRegressions:
         assert backed.obsp["obs_graph"].shape == (30, 30)
         assert backed.varp["var_graph"].shape == (18, 18)
 
+    def test_native_column_subset_reports_fsync_and_bounded_chunks(self, tmp_path):
+        """Non-regression for the post-write linger fix.
+
+        A column subset produces an extendable/chunked CSR output. The native
+        writer must (1) expose ``destination_fsync_seconds`` so the durable
+        writeback tail is attributable, and (2) size the destination data
+        chunk to a bounded byte budget instead of the former tiny 64K-element
+        default (which built an enormous chunk B-tree) or an inherited
+        oversized source chunk.
+        """
+        from actionet import _core
+
+        rng = np.random.default_rng(7)
+        matrix = sp.random(
+            400, 200, density=0.25, random_state=rng, format="csr", dtype=np.float64
+        )
+        matrix.data = np.abs(matrix.data) + 1.0
+        source_path = tmp_path / "fsync_source.h5ad"
+        dest_path = tmp_path / "fsync_dest.h5ad"
+        ad.AnnData(matrix).write_h5ad(source_path)
+        with h5py.File(dest_path, "w"):
+            pass
+
+        rows = np.arange(400, dtype=np.int64)
+        cols = np.arange(0, 200, 2, dtype=np.int64)
+        stats = dict(
+            _core.h5ad_subset_matrix(
+                str(source_path),
+                "/X",
+                str(dest_path),
+                "/X",
+                rows,
+                cols,
+                max_buffer_bytes=128 * 1024 * 1024,
+                gap_merge_bytes=64 * 1024,
+                max_rows_per_batch=16384,
+                preserve_layout=True,
+                collect_span_stats=False,
+            )
+        )
+
+        # (1) The durable-flush attribution must be present and non-negative.
+        assert "destination_fsync_seconds" in stats
+        assert stats["destination_fsync_seconds"] >= 0.0
+
+        # (2) The output data chunk must be bounded: not the old 64K default,
+        # and small relative to a 16 MiB byte budget for float64 elements.
+        with h5py.File(dest_path, "r") as handle:
+            data = handle["X"]["data"]
+            assert data.chunks is not None
+            chunk_elems = int(data.chunks[0])
+            budget_elems = (16 * 1024 * 1024) // 8
+            assert chunk_elems != 65536
+            assert chunk_elems <= budget_elems
+            # Correctness: the subset round-trips exactly.
+            actual = sp.csr_matrix(
+                (data[:], handle["X"]["indices"][:], handle["X"]["indptr"][:]),
+                shape=tuple(handle["X"].attrs["shape"]),
+            )
+        np.testing.assert_array_equal(
+            actual.toarray(), matrix.toarray()[rows][:, cols]
+        )
+
 
 # ---------------------------------------------------------------------------
 # Regression: anndata 0.12+ closes the parent's HDF5 handle when

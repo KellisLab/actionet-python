@@ -23,6 +23,7 @@ Companion modules under :mod:`actionet.io` handle annotation persistence
 
 from __future__ import annotations
 
+import logging
 import os
 import warnings
 from collections.abc import Callable
@@ -61,6 +62,8 @@ from .persist import (
 
 _INT32_MAX = int(np.iinfo(np.int32).max)
 _WriteProfileCallback = Callable[[dict[str, object]], None]
+
+_logger = logging.getLogger("actionet.io.subset")
 
 
 def _emit_write_profile(
@@ -1174,6 +1177,19 @@ def _atomic_filtered_rewrite(
             replace_s=commit_stats.replace_seconds,
             parent_fsync_s=commit_stats.parent_fsync_seconds,
             total_s=commit_stats.total_seconds,
+        )
+        # Surface the durable-publication tail even without a profile callback.
+        # The trailing temporary-file fsync is the dominant "post-write linger"
+        # on atlas-scale rewrites; logging it lets deployments detect a
+        # writeback regression without attaching a profiling harness.
+        _logger.debug(
+            "backed rewrite commit tail: temp_fsync=%.3fs replace=%.3fs "
+            "parent_fsync=%.3fs total=%.3fs (%s)",
+            commit_stats.temp_fsync_seconds,
+            commit_stats.replace_seconds,
+            commit_stats.parent_fsync_seconds,
+            commit_stats.total_seconds,
+            destination_path,
         )
 
     if refresh_source:
