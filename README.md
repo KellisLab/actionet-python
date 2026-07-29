@@ -593,7 +593,7 @@ The following R package components are **not implemented** in this Python transl
 
 ## License
 
-GPL-3.0 (same as R package)
+MIT
 
 ## Links
 
