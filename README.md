@@ -574,10 +574,6 @@ The following R package components are **not implemented** in this Python transl
 ✅ **Plotting**: UMAP, feature expression overlays, QC violin plots (lets-plot, matplotlib, Plotly)  
 ✅ **Pipeline**: End-to-end `run_actionet()` orchestration
 
-## License
-
-GPL-3.0 (same as R package)
-
 ## Links
 
 - **C++ Backend**: https://github.com/KellisLab/libactionet
