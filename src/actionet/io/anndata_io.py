@@ -624,6 +624,8 @@ def append_to_anndata(
             chunk_size=chunk_size,
         )
         with h5py.File(transaction.temp_path, 'r+') as destination:
+            from .persist import coerce_nullable_strings_for_write
+
             for frame_name, updated_columns in (
                 ('obs', obs_columns),
                 ('var', var_columns),
@@ -634,7 +636,11 @@ def append_to_anndata(
                 for column, values in updated_columns.items():
                     frame[column] = values
                 del destination[frame_name]
-                ad.io.write_elem(destination, frame_name, frame)
+                ad.io.write_elem(
+                    destination,
+                    frame_name,
+                    coerce_nullable_strings_for_write(frame),
+                )
 
             for container_name, updated_mapping in matrix_mappings.items():
                 if not updated_mapping:

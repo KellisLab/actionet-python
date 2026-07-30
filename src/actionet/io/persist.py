@@ -26,6 +26,7 @@ from collections import defaultdict
 from typing import Any, Mapping, MutableMapping
 
 import anndata as ad
+import pandas as pd
 from anndata import AnnData
 
 from . import anndata_io
@@ -74,6 +75,64 @@ def _real_layer_keys(adata: AnnData) -> list:
     if is_backed_adata(adata):
         return BackedAnnDataAdapter(adata).real_layer_keys()
     return [k for k in adata.layers.keys() if k is not None]
+
+
+def _is_nullable_string_dtype(dtype: Any) -> bool:
+    """Return True for pandas ``StringDtype`` (python or pyarrow storage).
+
+    We deliberately do *not* use :func:`pandas.api.types.is_string_dtype`,
+    which also returns True for numpy ``object`` dtype. Only the nullable
+    ``StringDtype`` (backed by :class:`pd.arrays.StringArray` or
+    :class:`pd.arrays.ArrowStringArray`) trips anndata's
+    ``allow_write_nullable_strings`` guard.
+    """
+    return isinstance(dtype, pd.StringDtype)
+
+
+def _coerce_categorical_object_categories(series: pd.Series) -> pd.Series:
+    """Rebuild a categorical whose ``.categories`` are StringDtype as object.
+
+    anndata's write_categorical path in 0.12+ dispatches on the categories
+    array. If ``.categories`` is a :class:`pd.arrays.StringArray`, the
+    per-category writer routes back to ``write_nullable`` and hits the same
+    ``allow_write_nullable_strings`` guard as bare string columns.
+    """
+    cats = series.cat.categories
+    if not _is_nullable_string_dtype(cats.dtype):
+        return series
+    new_cats = cats.astype(object)
+    return series.cat.rename_categories(new_cats)
+
+
+def coerce_nullable_strings_for_write(df: pd.DataFrame) -> pd.DataFrame:
+    """Return a shallow copy of ``df`` with StringDtype columns/index cast to object.
+
+    Restores the pre-747435c behaviour for ``anndata.io.write_elem`` so that
+    pandas ``StringArray`` / ``ArrowStringArray`` (the default in anndata
+    >= 0.12 on read) don't trip
+    ``anndata.settings.allow_write_nullable_strings``. Uses
+    ``astype(object)`` (never ``astype(str)``) so ``pd.NA`` survives the
+    cast as :data:`None`, which the legacy string writer handles.
+
+    Numeric, boolean, datetime, and existing ``object`` columns are left
+    untouched. Categorical columns whose ``.categories`` are StringDtype
+    are rebuilt with an object-dtype categories index.
+    """
+    result = df.copy(deep=False)
+
+    if _is_nullable_string_dtype(result.index.dtype):
+        result.index = result.index.astype(object)
+
+    for col in result.columns:
+        series = result[col]
+        dtype = series.dtype
+        if _is_nullable_string_dtype(dtype):
+            result[col] = series.astype(object)
+            continue
+        if isinstance(dtype, pd.CategoricalDtype):
+            result[col] = _coerce_categorical_object_categories(series)
+
+    return result
 
 
 def _ensure_backed_open(adata: AnnData) -> None:

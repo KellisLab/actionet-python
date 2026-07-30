@@ -56,6 +56,7 @@ from .persist import (
     _flush_pending,
     _real_layer_keys,
     _refresh_backed_handle,
+    coerce_nullable_strings_for_write,
     is_backed_adata,
 )
 
@@ -733,8 +734,8 @@ def _write_filtered_backed(
     _ensure_backed_open(adata)
 
     adapter = BackedAnnDataAdapter(adata)
-    obs_sub = adata.obs.iloc[obs_idx].copy()
-    var_sub = adata.var.iloc[var_idx].copy()
+    obs_sub = coerce_nullable_strings_for_write(adata.obs.iloc[obs_idx])
+    var_sub = coerce_nullable_strings_for_write(adata.var.iloc[var_idx])
     h5file = adapter.file_handle
     native_jobs: list[tuple[str, object]] = []
 
@@ -849,7 +850,7 @@ def _write_filtered_backed(
                 continue
 
             if isinstance(mat, pd.DataFrame):
-                mat_sub = mat.iloc[row_idx]
+                mat_sub = coerce_nullable_strings_for_write(mat.iloc[row_idx])
                 _write_profiled_component(
                     f,
                     component,
@@ -956,7 +957,7 @@ def _write_filtered_backed(
                 None,
                 compression_policy=raw_policy,
             )
-            raw_var = raw.var.copy()
+            raw_var = coerce_nullable_strings_for_write(raw.var)
             _write_profiled_component(
                 f,
                 "raw/var",
@@ -997,12 +998,13 @@ def _write_filtered_backed(
                         )
                         continue
                     if isinstance(vmat, pd.DataFrame):
+                        vmat_sub = coerce_nullable_strings_for_write(vmat)
                         _write_profiled_component(
                             f,
                             varm_component,
                             "dataframe",
-                            lambda vk=vk, varm_grp=varm_grp, vmat=vmat: ad.io.write_elem(
-                                varm_grp, vk, vmat
+                            lambda vk=vk, varm_grp=varm_grp, vmat_sub=vmat_sub: ad.io.write_elem(
+                                varm_grp, vk, vmat_sub
                             ),
                         )
                         continue
