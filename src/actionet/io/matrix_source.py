@@ -257,7 +257,9 @@ class MatrixSource:
         ``file["layers/<name>"]``.  Accesses the underlying ``h5py.File``
         directly, bypassing anndata's dataset wrappers.
         """
-        h5file = self.adata.file._file
+        from .backed_adapter import BackedAnnDataAdapter
+
+        h5file = BackedAnnDataAdapter(self.adata).file_handle
         if self.layer is None:
             return h5file["X"]
         return h5file["layers"][self.layer]

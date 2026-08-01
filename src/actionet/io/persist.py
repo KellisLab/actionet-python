@@ -26,9 +26,11 @@ from collections import defaultdict
 from typing import Any, Mapping, MutableMapping
 
 import anndata as ad
+import pandas as pd
 from anndata import AnnData
 
 from . import anndata_io
+from .backed_adapter import BackedAnnDataAdapter, init_from_reopened
 
 
 # ---------------------------------------------------------------------------
@@ -70,7 +72,67 @@ def is_backed_adata(adata: AnnData) -> bool:
 
 def _real_layer_keys(adata: AnnData) -> list:
     """Return real layer keys, filtering out the anndata >= 0.13 None alias for X."""
+    if is_backed_adata(adata):
+        return BackedAnnDataAdapter(adata).real_layer_keys()
     return [k for k in adata.layers.keys() if k is not None]
+
+
+def _is_nullable_string_dtype(dtype: Any) -> bool:
+    """Return True for pandas ``StringDtype`` (python or pyarrow storage).
+
+    We deliberately do *not* use :func:`pandas.api.types.is_string_dtype`,
+    which also returns True for numpy ``object`` dtype. Only the nullable
+    ``StringDtype`` (backed by :class:`pd.arrays.StringArray` or
+    :class:`pd.arrays.ArrowStringArray`) trips anndata's
+    ``allow_write_nullable_strings`` guard.
+    """
+    return isinstance(dtype, pd.StringDtype)
+
+
+def _coerce_categorical_object_categories(series: pd.Series) -> pd.Series:
+    """Rebuild a categorical whose ``.categories`` are StringDtype as object.
+
+    anndata's write_categorical path in 0.12+ dispatches on the categories
+    array. If ``.categories`` is a :class:`pd.arrays.StringArray`, the
+    per-category writer routes back to ``write_nullable`` and hits the same
+    ``allow_write_nullable_strings`` guard as bare string columns.
+    """
+    cats = series.cat.categories
+    if not _is_nullable_string_dtype(cats.dtype):
+        return series
+    new_cats = cats.astype(object)
+    return series.cat.rename_categories(new_cats)
+
+
+def coerce_nullable_strings_for_write(df: pd.DataFrame) -> pd.DataFrame:
+    """Return a shallow copy of ``df`` with StringDtype columns/index cast to object.
+
+    Restores the pre-747435c behaviour for ``anndata.io.write_elem`` so that
+    pandas ``StringArray`` / ``ArrowStringArray`` (the default in anndata
+    >= 0.12 on read) don't trip
+    ``anndata.settings.allow_write_nullable_strings``. Uses
+    ``astype(object)`` (never ``astype(str)``) so ``pd.NA`` survives the
+    cast as :data:`None`, which the legacy string writer handles.
+
+    Numeric, boolean, datetime, and existing ``object`` columns are left
+    untouched. Categorical columns whose ``.categories`` are StringDtype
+    are rebuilt with an object-dtype categories index.
+    """
+    result = df.copy(deep=False)
+
+    if _is_nullable_string_dtype(result.index.dtype):
+        result.index = result.index.astype(object)
+
+    for col in result.columns:
+        series = result[col]
+        dtype = series.dtype
+        if _is_nullable_string_dtype(dtype):
+            result[col] = series.astype(object)
+            continue
+        if isinstance(dtype, pd.CategoricalDtype):
+            result[col] = _coerce_categorical_object_categories(series)
+
+    return result
 
 
 def _ensure_backed_open(adata: AnnData) -> None:
@@ -126,13 +188,10 @@ def is_writable_backed(adata: AnnData) -> bool:
     """
     if not bool(getattr(adata, "isbacked", False) and getattr(adata, "filename", None)):
         return False
-    file_handle = getattr(getattr(adata, "file", None), "_file", None)
-    if file_handle is None:
+    try:
+        return BackedAnnDataAdapter(adata).writable
+    except Exception:
         return False
-    mode = getattr(file_handle, "mode", None)
-    if not mode:
-        return False
-    return "+" in mode
 
 
 def _ensure_backed_writable(adata: AnnData) -> None:
@@ -140,9 +199,7 @@ def _ensure_backed_writable(adata: AnnData) -> None:
     if not is_backed_adata(adata):
         return
 
-    file_handle = getattr(getattr(adata, "file", None), "_file", None)
-    mode = getattr(file_handle, "mode", None)
-    if mode == "r":
+    if not BackedAnnDataAdapter(adata).writable:
         raise ValueError(
             "Backed AnnData was opened read-only (mode='r'). "
             "Re-open with backed='r+' to persist updates."
@@ -151,69 +208,9 @@ def _ensure_backed_writable(adata: AnnData) -> None:
 
 def _refresh_backed_handle(adata: AnnData, path: str, mode: str = "r+") -> None:
     """Close and re-open a backed AnnData handle in-place."""
-    if hasattr(adata, "file") and adata.file is not None:
-        adata.file.close()
+    BackedAnnDataAdapter(adata).close()
     reopened = ad.read_h5ad(path, backed=mode)
-    _init_from_reopened(adata, reopened)
-
-
-def _init_from_reopened(adata: AnnData, reopened: AnnData) -> None:
-    """Reinitialize *adata* from *reopened*, handling backed-raw edge cases.
-
-    Passing *reopened* directly as ``X`` to ``_init_as_actual`` triggers a
-    ValueError under ``anndata >= 0.13`` when the source is backed:
-    ``reopened.X`` and ``reopened.layers[None]`` are distinct wrapper
-    instances returned freshly from the file each access, so anndata's
-    ``X is layers[None]`` identity check inside ``_init_as_actual``
-    always fails.
-
-    Route around it by unpacking *reopened* into explicit kwargs, driving
-    the "init from file" branch (so ``layers.isbacked`` becomes ``True``
-    and ``X`` is served from the on-disk dataset), and then adopting the
-    reopened file handle so we don't leak the auxiliary one that
-    ``_init_as_actual`` opens.
-
-    ``raw`` handling: passing a :class:`~anndata.Raw` instance alongside
-    ``filename`` trips an anndata assertion, and passing ``None`` when
-    the file has a raw group crashes on ``dict(X=None, **None)``. Pass a
-    ``{"var": raw.var, "varm": raw.varm}`` mapping and let the file-init
-    branch resolve ``raw.X`` from disk.
-    """
-    reopened_raw = getattr(reopened, "raw", None)
-    if reopened_raw is not None and getattr(reopened_raw, "_X", None) is None:
-        try:
-            reopened_raw._X = reopened_raw.X
-        except Exception:
-            pass
-    if reopened_raw is None:
-        raw_arg = None
-    else:
-        raw_varm = getattr(reopened_raw, "varm", None)
-        raw_arg = {
-            "var": reopened_raw.var,
-            "varm": dict(raw_varm) if raw_varm else None,
-        }
-    real_layers = {k: v for k, v in reopened.layers.items() if k is not None}
-    reopened_filemode = getattr(getattr(reopened, "file", None), "_filemode", None)
-    adata._init_as_actual(
-        None,
-        obs=reopened.obs,
-        var=reopened.var,
-        uns=reopened.uns,
-        obsm=reopened.obsm,
-        varm=reopened.varm,
-        obsp=reopened.obsp,
-        varp=reopened.varp,
-        layers=real_layers,
-        raw=raw_arg,
-        filename=reopened.filename,
-        filemode=reopened_filemode,
-    )
-    try:
-        adata.file.close()
-    except Exception:
-        pass
-    adata.file = reopened.file
+    init_from_reopened(adata, reopened)
 
 
 def _as_mapping(values: Mapping[str, Any] | None) -> dict[str, Any]:
@@ -300,6 +297,16 @@ def apply_inmemory_updates(
     _assign_mapping(adata.uns, uns, tolerate_errors=tolerate_errors)
 
 
+def _is_live_backed_wrapper(value: Any) -> bool:
+    """Backwards-compatible alias for :func:`anndata_io.is_live_backed_wrapper`.
+
+    The canonical implementation now lives in ``anndata_io`` so that
+    ``collect_annotation_results`` can apply the same filter at collection
+    time (see the ``checkpoint_backed`` orphaned-handle path).
+    """
+    return anndata_io.is_live_backed_wrapper(value)
+
+
 def _include_all_inmemory_annotations(adata: AnnData, results: dict) -> None:
     """Augment *results* with all in-memory annotations not already present.
 
@@ -311,6 +318,11 @@ def _include_all_inmemory_annotations(adata: AnnData, results: dict) -> None:
 
     Keys already present in *results* (freshly computed by the calling ACTIONet
     function) take priority and are never overwritten.
+
+    Live HDF5-backed matrix wrappers (``CSRDataset`` / ``CSCDataset`` and
+    experimental variants) are skipped: the full-file rewrite already copies
+    them, and snapshotting them here would hand an orphaned handle to
+    ``ad.io.write_elem`` after the source file is closed.
     """
     for col in adata.obs.columns:
         if col not in results["obs_columns"]:
@@ -324,12 +336,20 @@ def _include_all_inmemory_annotations(adata: AnnData, results: dict) -> None:
                       ("obsp", "obsp_keys"), ("varp", "varp_keys")]:
         container = getattr(adata, slot)
         for k in container.keys():
-            if k not in results[key]:
-                results[key][k] = container[k]
+            if k in results[key]:
+                continue
+            value = container[k]
+            if _is_live_backed_wrapper(value):
+                continue
+            results[key][k] = value
 
     for k in _real_layer_keys(adata):
-        if k not in results["layers_keys"]:
-            results["layers_keys"][k] = adata.layers[k]
+        if k in results["layers_keys"]:
+            continue
+        value = adata.layers[k]
+        if _is_live_backed_wrapper(value):
+            continue
+        results["layers_keys"][k] = value
 
     for k, v in adata.uns.items():
         if k not in results["uns_keys"]:

@@ -8,7 +8,6 @@ group/dataset copy primitives it uses.
 from __future__ import annotations
 
 import os
-import tempfile
 from typing import Any
 
 import anndata as ad
@@ -19,11 +18,18 @@ from .chunking import (
     DEFAULT_BACKED_WRITE_CHUNK_SIZE,
     validate_chunk_size,
 )
+from .backed_adapter import BackedAnnDataAdapter
+from .native_h5ad import (
+    NativeCapabilityError,
+    backed_io_engine,
+    native_copy_matrix,
+    native_layout_capability,
+)
+from .rewrite import RewriteTransaction
 from .persist import (
     _dirty_tracker,
     _ensure_backed_writable,
     _include_all_inmemory_annotations,
-    _init_from_reopened,
     _real_layer_keys,
     _refresh_backed_handle,
     is_backed_adata,
@@ -31,13 +37,16 @@ from .persist import (
 
 
 def _copy_h5_attrs(src, dst) -> None:
-    """Copy all HDF5 attrs from *src* to *dst*."""
-    for key, value in src.attrs.items():
-        dst.attrs[key] = value
+    """Copy all HDF5 attrs from *src* to *dst* (shared helper)."""
+    anndata_io.copy_h5_attrs(src, dst)
 
 
 def _copy_h5_dataset_chunked(src_ds, dst_ds, chunk_size: int) -> None:
     """Copy an h5py dataset's contents into an existing dataset in chunks."""
+    if src_ds.shape is None:
+        # HDF5 null dataspace: the destination was created with shape=None and
+        # deliberately has no value to transfer.
+        return
     if src_ds.shape == () or src_ds.ndim == 0:
         dst_ds[()] = src_ds[()]
         return
@@ -87,23 +96,15 @@ def copy_h5_group(
     chunk_size: int,
     preserve_compression: bool,
 ) -> None:
-    """Recursively copy an HDF5 group into *dst_group*.
+    """Compatibility wrapper for recursively copying a generic HDF5 group.
 
-    Parameters
-    ----------
-    src_group, dst_group
-        h5py groups (or files) — source and destination.
-    chunk_size
-        Row chunk size for streaming dataset copies (axis-0).
-    preserve_compression
-        When True, faithfully preserves compression codec, opts, shuffle
-        and fletcher32 filters. When False, destination datasets are
-        written uncompressed but keep the original ``chunks``/``maxshape``.
+    ACTIONet's H5AD rewrite paths use :func:`rewrite_h5ad_payload`; this
+    helper remains available for callers that imported the previous public
+    utility.
     """
     import h5py
 
     _copy_h5_attrs(src_group, dst_group)
-
     for name, obj in src_group.items():
         if isinstance(obj, h5py.Group):
             child = dst_group.create_group(name)
@@ -115,15 +116,184 @@ def copy_h5_group(
             )
         elif isinstance(obj, h5py.Dataset):
             kwargs = _dataset_kwargs_mirror(
-                obj, preserve_compression=preserve_compression
+                obj,
+                preserve_compression=preserve_compression,
             )
-            dst_ds = dst_group.create_dataset(name, **kwargs)
-            _copy_h5_dataset_chunked(obj, dst_ds, chunk_size=chunk_size)
-            _copy_h5_attrs(obj, dst_ds)
+            destination = dst_group.create_dataset(name, **kwargs)
+            _copy_h5_dataset_chunked(
+                obj,
+                destination,
+                chunk_size=chunk_size,
+            )
+            _copy_h5_attrs(obj, destination)
         else:
             raise TypeError(
                 f"Unsupported HDF5 object type for key '{name}': {type(obj)}"
             )
+
+
+def _h5ad_matrix_candidate(obj) -> bool:
+    """Recognize only versioned numeric H5AD matrix encodings."""
+    import h5py
+    import numpy as np
+
+    encoding = obj.attrs.get("encoding-type", "")
+    version = obj.attrs.get("encoding-version", "")
+    if isinstance(encoding, bytes):
+        encoding = encoding.decode("utf-8", errors="replace")
+    if isinstance(version, bytes):
+        version = version.decode("utf-8", errors="replace")
+
+    if isinstance(obj, h5py.Dataset):
+        return bool(
+            encoding == "array"
+            and version == "0.2.0"
+            and obj.ndim == 2
+            and np.issubdtype(obj.dtype, np.number)
+        )
+    return bool(
+        isinstance(obj, h5py.Group)
+        and encoding in {"csr_matrix", "csc_matrix"}
+        and version == "0.1.0"
+        and {"data", "indices", "indptr"}.issubset(obj.keys())
+    )
+
+
+def _collect_h5ad_matrix_paths(group, prefix: str = "") -> list[str]:
+    import h5py
+
+    paths: list[str] = []
+    for name, obj in group.items():
+        path = f"{prefix}/{name}" if prefix else f"/{name}"
+        if _h5ad_matrix_candidate(obj):
+            paths.append(path)
+        elif isinstance(obj, h5py.Group):
+            paths.extend(_collect_h5ad_matrix_paths(obj, path))
+    return paths
+
+
+def rewrite_h5ad_payload(
+    source_path: str,
+    destination_path: str,
+    *,
+    chunk_size: int,
+    uncompressed_paths: set[str] | None = None,
+    native_matrix_paths: set[str] | None = None,
+    omit_paths: set[str] | None = None,
+) -> None:
+    """Copy one H5AD payload, deferring supported matrices to libactionet.
+
+    ``uncompressed_paths=None`` preserves every dataset layout. A set
+    decompresses only those matrix/group paths; ``{"/"}`` decompresses the
+    complete file. ``native_matrix_paths=None`` allows every discovered matrix
+    to use the native engine, while a set restricts native transfer to those
+    paths.
+    """
+    import h5py
+
+    source_path = os.path.realpath(os.fspath(source_path))
+    destination_path = os.path.realpath(os.fspath(destination_path))
+    requested_uncompressed = set(uncompressed_paths or ())
+    omitted = set(omit_paths or ())
+    decompress_all = "/" in requested_uncompressed
+
+    def _is_uncompressed(path: str) -> bool:
+        if decompress_all:
+            return True
+        return any(
+            path == target or path.startswith(target.rstrip("/") + "/")
+            for target in requested_uncompressed
+        )
+
+    with h5py.File(source_path, "r") as source:
+        matrix_paths = _collect_h5ad_matrix_paths(source)
+
+    allowed_native = (
+        set(matrix_paths)
+        if native_matrix_paths is None
+        else set(matrix_paths).intersection(native_matrix_paths)
+    )
+    allowed_native.difference_update(omitted)
+    native_paths: set[str] = set()
+    engine = backed_io_engine()
+    if engine != "python":
+        from .. import _core
+
+        for path in sorted(allowed_native):
+            try:
+                info = dict(_core.h5ad_inspect_matrix(source_path, path))
+            except Exception:
+                if engine == "native":
+                    raise
+            else:
+                supported, reason = native_layout_capability(
+                    info,
+                    preserve_layout=not _is_uncompressed(path),
+                )
+                if supported:
+                    native_paths.add(path)
+                elif engine == "native":
+                    raise NativeCapabilityError(
+                        f"native H5AD transfer rejected {path}: {reason}"
+                    )
+
+    def _copy_group(source_group, destination_group, prefix: str = "") -> None:
+        _copy_h5_attrs(source_group, destination_group)
+        known_top_level = {
+            "X",
+            "obs",
+            "var",
+            "layers",
+            "obsm",
+            "varm",
+            "obsp",
+            "varp",
+            "uns",
+            "raw",
+        }
+        for name, obj in source_group.items():
+            path = f"{prefix}/{name}" if prefix else f"/{name}"
+            if path in omitted:
+                continue
+            if path in native_paths:
+                continue
+            if not prefix and name not in known_top_level:
+                source_group.copy(name, destination_group, name=name)
+                continue
+            if isinstance(obj, h5py.Group):
+                child = destination_group.create_group(name)
+                _copy_group(obj, child, path)
+                continue
+            if not isinstance(obj, h5py.Dataset):
+                raise TypeError(
+                    f"Unsupported HDF5 object type for key '{path}': {type(obj)}"
+                )
+            kwargs = _dataset_kwargs_mirror(
+                obj,
+                preserve_compression=not _is_uncompressed(path),
+            )
+            destination_dataset = destination_group.create_dataset(name, **kwargs)
+            _copy_h5_dataset_chunked(
+                obj,
+                destination_dataset,
+                chunk_size=chunk_size,
+            )
+            _copy_h5_attrs(obj, destination_dataset)
+
+    with h5py.File(source_path, "r") as source, h5py.File(
+        destination_path, "w"
+    ) as destination:
+        _copy_group(source, destination)
+
+    for path in sorted(native_paths):
+        native_copy_matrix(
+            source_path,
+            path,
+            destination_path,
+            path,
+            max_rows_per_batch=chunk_size,
+            preserve_layout=not _is_uncompressed(path),
+        )
 
 
 def _repack_h5ad(
@@ -137,36 +307,27 @@ def _repack_h5ad(
     Performs an atomic copy to a temp file, replaces the original, and
     re-opens the AnnData handle so it points at the compacted file.
     """
-    import h5py
-
-    src_path = str(adata.filename)
-
-    parent_dir = os.path.dirname(src_path) or "."
-    fd, tmp_path = tempfile.mkstemp(
-        suffix=".h5ad", dir=parent_dir, prefix=".compact_"
-    )
-    os.close(fd)
-
-    try:
-        with h5py.File(src_path, "r") as src_f, h5py.File(tmp_path, "w") as dst_f:
-            copy_h5_group(
-                src_f,
-                dst_f,
-                chunk_size=chunk_size,
-                preserve_compression=True,
-            )
-
-        if hasattr(adata, "file") and adata.file is not None:
-            adata.file.close()
-
-        os.replace(tmp_path, src_path)
-    except BaseException:
-        if os.path.exists(tmp_path):
-            os.unlink(tmp_path)
-        raise
-
-    reopened = ad.read_h5ad(src_path, backed="r+")
-    _init_from_reopened(adata, reopened)
+    adapter = BackedAnnDataAdapter(adata)
+    src_path = adapter.filename
+    original_mode = adapter.mode
+    with RewriteTransaction(src_path, src_path) as transaction:
+        rewrite_h5ad_payload(
+            src_path,
+            transaction.temp_path,
+            chunk_size=chunk_size,
+        )
+        validated = ad.read_h5ad(transaction.temp_path, backed="r")
+        file_handle = getattr(validated, "file", None)
+        if file_handle is not None:
+            try:
+                file_handle.close()
+            except Exception:
+                pass
+        transaction.commit(
+            close_source=adapter.close,
+            restore_source=lambda: adapter.reopen(mode=original_mode),
+        )
+    adapter.reopen(mode=original_mode)
 
     if verbose:
         print(f"[INFO] Compacted {src_path}")
@@ -229,10 +390,11 @@ def checkpoint_backed(
         dead space from prior delete-then-create overwrites.  This
         requires a full file copy and is expensive for large files.
     backed_write_chunk_size : int, optional (default: 16384)
-        Row/element chunk size used only during the compact file copy.
-        It has no effect when ``compact=False``. Atlas-scale compaction may
-        benefit from starting with ``32768``; larger values use
-        proportionally more temporary memory.
+        Row/element chunk size for the full-file payload copy. It applies
+        both to the annotation-append rewrite performed on every checkpoint
+        and to the optional ``compact`` repack. Atlas-scale files may benefit
+        from starting with ``32768``; larger values use proportionally more
+        temporary memory.
     validate : bool, optional (default: False)
         Run ``anndata_io`` validation before writing.
     verbose : bool, optional (default: False)
@@ -281,6 +443,7 @@ def checkpoint_backed(
             results,
             verbose=verbose,
             validate=validate,
+            chunk_size=backed_write_chunk_size,
         )
 
         _refresh_backed_handle(adata, filepath, mode="r+")

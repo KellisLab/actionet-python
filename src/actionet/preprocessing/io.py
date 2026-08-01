@@ -1,9 +1,6 @@
 """Data import and backed HDF5 decompression utilities for AnnData."""
 
 import os
-import pathlib
-import shutil
-import tempfile
 
 import anndata as ad
 import numpy as np
@@ -14,14 +11,15 @@ from scipy.io import mmread
 from scipy.sparse import csr_matrix
 
 from ..io.persist import (
-    is_writable_backed,
-    _refresh_backed_handle,
+    _flush_pending,
 )
 from ..io.chunking import (
     DEFAULT_BACKED_WRITE_CHUNK_SIZE,
     validate_chunk_size,
 )
-from ..io.checkpoint import copy_h5_group
+from ..io.backed_adapter import BackedAnnDataAdapter
+from ..io.checkpoint import rewrite_h5ad_payload
+from ..io.rewrite import RewriteTransaction
 
 from .filter import filter_anndata
 
@@ -82,127 +80,30 @@ def import_anndata_generic(
 # ---------------------------------------------------------------------------
 
 
-def _copy_h5_attrs(src, dst) -> None:
-    """Copy all attributes from one h5py object to another."""
-    for key, value in src.attrs.items():
-        dst.attrs[key] = value
-
-
-def _copy_dataset_chunked(src_ds, dst_ds, chunk_size: int) -> None:
-    """Copy dataset contents in chunks along axis-0."""
-    if src_ds.shape == ():
-        dst_ds[()] = src_ds[()]
-        return
-
-    if src_ds.ndim == 0:
-        dst_ds[()] = src_ds[()]
-        return
-
-    n_rows = src_ds.shape[0]
-    if n_rows == 0:
-        return
-
-    step = int(max(1, chunk_size))
-    for start in range(0, n_rows, step):
-        end = min(start + step, n_rows)
-        dst_ds[start:end, ...] = src_ds[start:end, ...]
-
-
-def _dataset_create_kwargs_uncompressed(src_ds) -> dict:
-    """Build create_dataset kwargs that preserve shape/chunking but drop compression."""
-    kwargs = {
-        "shape": src_ds.shape,
-        "dtype": src_ds.dtype,
-    }
-    if src_ds.chunks is not None:
-        kwargs["chunks"] = src_ds.chunks
-    if src_ds.maxshape is not None:
-        kwargs["maxshape"] = src_ds.maxshape
-    return kwargs
-
-
-def _replace_dataset_with_uncompressed(parent, name: str, chunk_size: int) -> bool:
-    """Replace one dataset with an uncompressed copy in-place."""
-    src_ds = parent[name]
-    if getattr(src_ds, "compression", None) is None:
-        return False
-
-    tmp_name = f"__tmp_uncompressed_{name}"
-    if tmp_name in parent:
-        del parent[tmp_name]
-
-    dst_ds = parent.create_dataset(tmp_name, **_dataset_create_kwargs_uncompressed(src_ds))
-    _copy_dataset_chunked(src_ds, dst_ds, chunk_size=chunk_size)
-    _copy_h5_attrs(src_ds, dst_ds)
-
-    del parent[name]
-    parent.move(tmp_name, name)
-    return True
-
-
-def _decompress_sparse_group_inplace(group, chunk_size: int) -> bool:
-    """Decompress sparse `data/indices/indptr` datasets in-place."""
-    changed = False
-    for dataset_name in ("data", "indices", "indptr"):
-        if dataset_name in group:
-            changed = _replace_dataset_with_uncompressed(
-                group,
-                dataset_name,
-                chunk_size=chunk_size,
-            ) or changed
-    return changed
-
-
-def _resolve_backed_matrix_node(adata: AnnData, layer: str | None):
-    """Resolve the HDF5 node backing `.X` or one layer."""
-    h5file = adata.file._file
-    if layer is None:
-        return h5file["X"], "X"
-
-    if "layers" not in h5file or layer not in h5file["layers"]:
-        raise KeyError(f"Layer '{layer}' not found in backed file")
-    return h5file["layers"][layer], f"layers/{layer}"
-
-
-def _decompress_matrix_in_adata(
-    adata: AnnData,
-    *,
+def _matrix_path_and_filter_state(
+    adapter: BackedAnnDataAdapter,
     layer: str | None,
-    chunk_size: int,
-) -> tuple[bool, str]:
-    """Decompress one backed matrix target (`.X` or one layer)."""
-    node, matrix_key = _resolve_backed_matrix_node(adata, layer)
-    if hasattr(node, "keys") and {"data", "indices", "indptr"}.issubset(set(node.keys())):
-        changed = _decompress_sparse_group_inplace(node, chunk_size=chunk_size)
-        return changed, matrix_key
-
-    # Dense backed matrix (h5py Dataset).
-    parent = node.parent
-    ds_name = node.name.rsplit("/", 1)[-1]
-    changed = _replace_dataset_with_uncompressed(parent, ds_name, chunk_size=chunk_size)
-    return changed, matrix_key
-
-
-def _copy_h5_group_uncompressed(src_group, dst_group, chunk_size: int) -> None:
-    """Recursively copy an HDF5 group without compression.
-
-    Thin wrapper around :func:`copy_h5_group` that drops codec settings while
-    preserving shape/chunks/maxshape.
-    """
-    copy_h5_group(
-        src_group,
-        dst_group,
-        chunk_size=chunk_size,
-        preserve_compression=False,
-    )
-
-
-def _rewrite_h5ad_uncompressed(src_path: str, dest_path: str, chunk_size: int) -> None:
-    """Rewrite a full .h5ad file with all datasets uncompressed."""
+) -> tuple[str, bool]:
+    """Resolve a matrix and report whether any of its datasets are filtered."""
     import h5py
 
-    with h5py.File(src_path, "r") as src_f, h5py.File(dest_path, "w") as dst_f:
-        _copy_h5_group_uncompressed(src_f, dst_f, chunk_size=chunk_size)
+    path = "/X" if layer is None else f"/layers/{layer}"
+    handle = adapter.file_handle
+    if path not in handle:
+        if layer is None:
+            raise KeyError("X not found in backed file")
+        raise KeyError(f"Layer '{layer}' not found in backed file")
+    node = handle[path]
+    datasets = (
+        [node]
+        if isinstance(node, h5py.Dataset)
+        else [node[name] for name in ("data", "indices", "indptr")]
+    )
+    filtered = False
+    for dataset in datasets:
+        creation = dataset.id.get_create_plist()
+        filtered = filtered or creation.get_nfilters() > 0
+    return path, filtered
 
 
 def decompress_backed_storage(
@@ -212,6 +113,7 @@ def decompress_backed_storage(
     scope: str = "matrix",
     output_file: str | None = None,
     backed_write_chunk_size: int = DEFAULT_BACKED_WRITE_CHUNK_SIZE,
+    chunk_size: int | None = None,
     verbose: bool = True,
 ) -> AnnData | None:
     """Decompress backed AnnData storage in-place or into a copy.
@@ -246,68 +148,76 @@ def decompress_backed_storage(
     if not bool(getattr(adata, "isbacked", False) and getattr(adata, "filename", None)):
         raise ValueError("decompress_backed_storage requires a backed AnnData object")
 
-    src_path = str(adata.filename)
+    _flush_pending(adata)
+    adapter = BackedAnnDataAdapter(adata)
+    src_path = adapter.filename
     inplace = output_file is None or os.path.abspath(output_file) == os.path.abspath(src_path)
-    dest_path = src_path if inplace else str(output_file)
+    dest_path = src_path if inplace else os.path.realpath(os.fspath(output_file))
+    effective_chunk_size = (
+        backed_write_chunk_size if chunk_size is None else chunk_size
+    )
     chunk_size = validate_chunk_size(
-        backed_write_chunk_size,
+        effective_chunk_size,
         name="backed_write_chunk_size",
     )
 
-    if inplace and not is_writable_backed(adata):
+    if inplace and not adapter.writable:
         raise ValueError(
             "In-place decompression requires backed mode 'r+'. "
             "Re-open with `ad.read_h5ad(path, backed=\"r+\")` or pass `output_file`."
         )
 
+    original_mode = adapter.mode
     if scope == "matrix":
-        if not inplace:
-            shutil.copy2(src_path, dest_path)
-            target = ad.read_h5ad(dest_path, backed="r+")
-            changed, matrix_key = _decompress_matrix_in_adata(
-                target,
-                layer=layer,
-                chunk_size=chunk_size,
+        matrix_path, changed = _matrix_path_and_filter_state(adapter, layer)
+        uncompressed_paths = {matrix_path}
+        native_paths = {matrix_path}
+    else:
+        matrix_path = "/"
+        changed = True
+        uncompressed_paths = {"/"}
+        native_paths = None
+
+    if inplace and scope == "matrix" and not changed:
+        if verbose:
+            print(
+                f"[decompress_backed_storage] already uncompressed: "
+                f"{matrix_path.lstrip('/')}"
             )
-            if verbose:
-                status = "decompressed" if changed else "already uncompressed"
-                print(f"[decompress_backed_storage] {status}: {matrix_key} -> {dest_path}")
-            return target
+        return None
 
-        changed, matrix_key = _decompress_matrix_in_adata(
-            adata,
-            layer=layer,
+    with RewriteTransaction(src_path, dest_path) as transaction:
+        rewrite_h5ad_payload(
+            src_path,
+            transaction.temp_path,
             chunk_size=chunk_size,
+            uncompressed_paths=uncompressed_paths,
+            native_matrix_paths=native_paths,
         )
-        # Dense-backed wrappers and sparse dataset handles are safest to refresh.
-        _refresh_backed_handle(adata, src_path, mode="r+")
-        if verbose:
-            status = "decompressed" if changed else "already uncompressed"
-            print(f"[decompress_backed_storage] {status}: {matrix_key}")
-        return None
+        validated = ad.read_h5ad(transaction.temp_path, backed="r")
+        file_handle = getattr(validated, "file", None)
+        if file_handle is not None:
+            try:
+                file_handle.close()
+            except Exception:
+                pass
+        transaction.commit(
+            close_source=adapter.close if inplace else None,
+            restore_source=(
+                (lambda: adapter.reopen(mode=original_mode))
+                if inplace
+                else None
+            ),
+        )
 
-    # scope == "file"
     if inplace:
-        tmp_fd, tmp_path = tempfile.mkstemp(
-            dir=str(pathlib.Path(src_path).parent),
-            suffix=".h5ad",
-        )
-        os.close(tmp_fd)
-        try:
-            if hasattr(adata, "file") and adata.file is not None:
-                adata.file.close()
-            _rewrite_h5ad_uncompressed(src_path, tmp_path, chunk_size=chunk_size)
-            shutil.move(tmp_path, src_path)
-            _refresh_backed_handle(adata, src_path, mode="r+")
-        except Exception:
-            if os.path.exists(tmp_path):
-                os.unlink(tmp_path)
-            raise
+        adapter.reopen(mode=original_mode)
         if verbose:
-            print(f"[decompress_backed_storage] decompressed full file in place: {src_path}")
+            label = "full file" if scope == "file" else matrix_path.lstrip("/")
+            print(f"[decompress_backed_storage] decompressed: {label}")
         return None
 
-    _rewrite_h5ad_uncompressed(src_path, dest_path, chunk_size=chunk_size)
     if verbose:
-        print(f"[decompress_backed_storage] decompressed full file copy: {dest_path}")
+        label = "full file" if scope == "file" else matrix_path.lstrip("/")
+        print(f"[decompress_backed_storage] decompressed: {label} -> {dest_path}")
     return ad.read_h5ad(dest_path, backed="r+")

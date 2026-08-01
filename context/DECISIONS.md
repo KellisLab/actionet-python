@@ -308,6 +308,51 @@ This document records **deliberate architectural and operational decisions** for
 
 ## Change management
 
+### Native H5AD backed-I/O boundary
+
+**Decision:**
+
+- AnnData remains the sole public Python data model, but bulk backed dense,
+  CSR, and CSC transfers are owned by a path-based `actionet::h5ad` C++ API.
+- Native readers accept only explicitly supported H5AD matrix encoding
+  versions and never depend on AnnData backed wrapper classes or SciPy
+  indexing behavior.
+- Transfer operations preserve exact source dtypes and values. Compute
+  operators may continue to convert values to `double`.
+- Python owns metadata serialization, AnnData-version adaptation, and one
+  same-directory atomic rewrite transaction shared by subset, materialize,
+  repack/decompress, normalization, checkpoint, and persistence paths.
+- `backed_write_chunk_size` remains public as a maximum rows-per-batch. Native
+  byte limits may lower the effective batch size.
+- `ACTIONET_BACKED_IO_ENGINE=auto|native|python` is a private one-release
+  rollback switch. Only pre-transfer capability rejection can fall back;
+  runtime transfer failures abort the rewrite.
+- Pre-transfer capability rejection raises a single canonical exception type,
+  `actionet.io.native_h5ad.NativeCapabilityError` (a `RuntimeError` subclass),
+  across the subset, normalization, and checkpoint/repack paths. Callers that
+  fall back rely on the boolean return of the native-transaction helpers, not
+  on catching a specific exception type.
+
+**Rationale:**
+
+- Historical AnnData and SciPy backed internals have changed independently of
+  the stable HDF5 storage contract, causing version-sensitive behavior and
+  position-dependent sparse-read performance.
+- Workloads legitimately retain any fraction of either axis. A gap-aware
+  selected-range/sequential-scan planner gives a bounded performance floor
+  across that space while preserving arbitrary selector semantics.
+- Keeping native code restricted to numeric matrix payloads avoids
+  reimplementing AnnData metadata semantics and leaves a reusable C++ boundary
+  for a future R binding.
+
+**Related:**
+
+- `plans/NATIVE_HDF5_BACKED_IO_IMPLEMENTATION_HANDOFF.md`
+- `plans/NATIVE_HDF5_BACKED_IO_ROLLOUT.md`
+- `src/libactionet/include/io/backed_h5ad/h5ad_matrix_io.hpp`
+- `src/actionet/io/backed_adapter.py`
+- `src/actionet/io/rewrite.py`
+
 ### Backward compatibility
 
 **Decision:**

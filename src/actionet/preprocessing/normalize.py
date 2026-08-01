@@ -14,16 +14,26 @@ from ..io.chunking import (
     resolve_backed_write_chunk_size,
 )
 from ..io.persist import (
+    _flush_pending,
     is_writable_backed,
     _refresh_backed_handle,
 )
+from ..io.backed_adapter import BackedAnnDataAdapter
+from ..io.checkpoint import rewrite_h5ad_payload
+from ..io.native_h5ad import (
+    NativeCapabilityError,
+    backed_io_engine,
+    native_layout_capability,
+    native_transform_matrix,
+)
+from ..io.rewrite import RewriteTransaction
 from ..io.matrix_source import MatrixSource
+from ..io import anndata_io
 
 
 def _copy_h5_attrs(src, dst) -> None:
-    """Copy all attributes from one h5py object to another."""
-    for key, value in src.attrs.items():
-        dst.attrs[key] = value
+    """Copy all attributes from one h5py object to another (shared helper)."""
+    anndata_io.copy_h5_attrs(src, dst)
 
 
 def _safe_row_scale(target_sum: float, row_sums: np.ndarray) -> np.ndarray:
@@ -146,7 +156,19 @@ def normalize_anndata(
                     "`layer_added` with backed AnnData requires writable mode 'r+'. "
                     'Re-open with `ad.read_h5ad(path, backed="r+")`.'
                 )
-            if source.is_sparse and source.backed_sparse_format() == "csc":
+            if _normalize_backed_native_transaction(
+                source,
+                target_sum=target_sum,
+                log_transform=log_transform,
+                log_base=log_base,
+                pseudocount=pseudocount,
+                read_chunk_size=backed_chunk_size,
+                write_chunk_size=backed_write_chunk_size,
+                dtype_out=out_dtype,
+                layer_added=layer_added,
+            ):
+                pass
+            elif source.is_sparse and source.backed_sparse_format() == "csc":
                 _normalize_backed_csc_via_csr_rewrite(
                     source,
                     target_sum=target_sum,
@@ -199,7 +221,7 @@ def normalize_anndata(
         else:
             adata.layers[layer] = normalized
     else:
-        _normalize_backed(
+        if not _normalize_backed_native_transaction(
             source,
             target_sum=target_sum,
             log_transform=log_transform,
@@ -208,7 +230,18 @@ def normalize_anndata(
             read_chunk_size=backed_chunk_size,
             write_chunk_size=backed_write_chunk_size,
             dtype_out=out_dtype,
-        )
+            layer_added=None,
+        ):
+            _normalize_backed(
+                source,
+                target_sum=target_sum,
+                log_transform=log_transform,
+                log_base=log_base,
+                pseudocount=pseudocount,
+                read_chunk_size=backed_chunk_size,
+                write_chunk_size=backed_write_chunk_size,
+                dtype_out=out_dtype,
+            )
 
     if inplace:
         return None
@@ -317,6 +350,127 @@ def _normalize_dense_block(
 # ---------------------------------------------------------------------------
 
 
+def _normalize_backed_native_transaction(
+    source: MatrixSource,
+    *,
+    target_sum: float,
+    log_transform: bool,
+    log_base: Optional[float],
+    pseudocount: float,
+    read_chunk_size: int,
+    write_chunk_size: int,
+    dtype_out: np.dtype,
+    layer_added: str | None,
+) -> bool:
+    """Persist a backed normalization through the native atomic rewrite."""
+    engine = backed_io_engine()
+    if engine == "python":
+        return False
+    if not hasattr(source, "adata") or not bool(
+        getattr(source.adata, "isbacked", False)
+    ):
+        return False
+    if np.dtype(dtype_out) not in {np.dtype(np.float32), np.dtype(np.float64)}:
+        if engine == "native":
+            raise NativeCapabilityError(
+                "The native backed normalization engine supports float32 "
+                "or float64 output"
+            )
+        return False
+
+    adata = source.adata
+    _flush_pending(adata)
+    adapter = BackedAnnDataAdapter(adata)
+    source_h5_path = (
+        "/X" if source.layer is None else f"/layers/{source.layer}"
+    )
+    location = adapter.matrix_location(source.matrix, source_h5_path)
+    if location is None:
+        if engine == "native":
+            raise NativeCapabilityError(
+                f"{source_h5_path} is not a genuinely file-backed matrix"
+            )
+        return False
+
+    from .. import _core
+
+    try:
+        info = dict(
+            _core.h5ad_inspect_matrix(location.filename, location.h5_path)
+        )
+    except Exception:
+        if engine == "native":
+            raise
+        return False
+    supported, reason = native_layout_capability(
+        info,
+        preserve_layout=True,
+    )
+    if not supported:
+        if engine == "native":
+            raise NativeCapabilityError(
+                f"Native backed normalization rejected {source_h5_path}: "
+                f"{reason}"
+            )
+        return False
+
+    row_sums = source.row_sums(chunk_size=read_chunk_size)
+    scaling = _safe_row_scale(target_sum, row_sums)
+    log_scale = (
+        1.0
+        if log_base is None
+        else 1.0 / np.log(log_base)
+    )
+    destination_h5_path = (
+        source_h5_path
+        if layer_added is None
+        else f"/layers/{layer_added}"
+    )
+    omit_paths = {destination_h5_path}
+    structure_path = (
+        source_h5_path
+        if layer_added is not None and info["encoding"] in {"csr", "csc"}
+        else None
+    )
+    original_mode = adapter.mode
+
+    with RewriteTransaction(adapter.filename, adapter.filename) as transaction:
+        rewrite_h5ad_payload(
+            adapter.filename,
+            transaction.temp_path,
+            chunk_size=write_chunk_size,
+            omit_paths=omit_paths,
+        )
+        native_transform_matrix(
+            adapter.filename,
+            source_h5_path,
+            transaction.temp_path,
+            destination_h5_path,
+            row_scale=scaling,
+            apply_log=log_transform,
+            pseudocount=pseudocount,
+            log_scale=log_scale,
+            output_dtype=dtype_out,
+            max_rows_per_batch=write_chunk_size,
+            destination_structure_path=structure_path,
+        )
+        import anndata as ad
+
+        validated = ad.read_h5ad(transaction.temp_path, backed="r")
+        file_handle = getattr(validated, "file", None)
+        if file_handle is not None:
+            try:
+                file_handle.close()
+            except Exception:
+                pass
+        transaction.commit(
+            close_source=adapter.close,
+            restore_source=lambda: adapter.reopen(mode=original_mode),
+        )
+    adapter.reopen(mode=original_mode)
+    return True
+
+
 def _normalize_backed(
     source: MatrixSource,
     target_sum: float,
@@ -391,7 +545,7 @@ def _create_backed_normalized_layer(
     For dense input a new dataset of the correct shape and dtype is
     created.
     """
-    h5file = adata.file._file
+    h5file = BackedAnnDataAdapter(adata).file_handle
     layers_group = h5file["layers"] if "layers" in h5file else h5file.create_group("layers")
 
     if layer_added in layers_group:
@@ -481,7 +635,7 @@ def _normalize_backed_streamed(
     if log_transform:
         log_scale = 1.0 if log_base is None else 1.0 / np.log(log_base)
 
-    h5file = adata.file._file
+    h5file = BackedAnnDataAdapter(adata).file_handle
     dest_node = h5file["layers"][layer_added]
 
     is_sparse_dest = hasattr(dest_node, "keys") and "data" in dest_node
@@ -712,7 +866,7 @@ def _normalize_backed_csc_via_csr_rewrite(
 ) -> None:
     """Normalize one backed CSC source by rewriting the destination as CSR."""
     adata = source.adata
-    h5file = adata.file._file
+    h5file = BackedAnnDataAdapter(adata).file_handle
     source_grp = source._resolve_h5_group()
 
     if layer_added is None:

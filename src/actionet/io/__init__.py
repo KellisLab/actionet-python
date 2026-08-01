@@ -28,6 +28,7 @@ from .operator import open_backed_operator_for
 from .lazy_transform import LazyTransform, create_lazy_transform
 from .persist import (
     apply_inmemory_updates,
+    coerce_nullable_strings_for_write,
     get_auto_persist,
     is_backed_adata,
     is_writable_backed,
@@ -44,6 +45,7 @@ __all__ = [
     "MatrixSource",
     "apply_inmemory_updates",
     "checkpoint_backed",
+    "coerce_nullable_strings_for_write",
     "copy_h5_group",
     "create_lazy_transform",
     "format_compression_summary",

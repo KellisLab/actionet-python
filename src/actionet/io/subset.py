@@ -23,8 +23,8 @@ Companion modules under :mod:`actionet.io` handle annotation persistence
 
 from __future__ import annotations
 
+import logging
 import os
-import tempfile
 import warnings
 from collections.abc import Callable
 from time import perf_counter
@@ -43,19 +43,28 @@ from .compression import (
     get_matrix_compression_policy,
     write_sparse_csr_group_attrs,
 )
+from .backed_adapter import (
+    BackedAnnDataAdapter,
+    backed_view_selection,
+    init_from_reopened,
+)
+from .native_h5ad import execute_native_subset, plan_native_subset
+from .rewrite import RewriteTransaction
 from .persist import (
     _ensure_backed_open,
     _ensure_backed_writable,
     _flush_pending,
-    _init_from_reopened,
     _real_layer_keys,
     _refresh_backed_handle,
+    coerce_nullable_strings_for_write,
     is_backed_adata,
 )
 
 
 _INT32_MAX = int(np.iinfo(np.int32).max)
 _WriteProfileCallback = Callable[[dict[str, object]], None]
+
+_logger = logging.getLogger("actionet.io.subset")
 
 
 def _emit_write_profile(
@@ -641,28 +650,15 @@ def _write_subsetted_matrix(
     compression_policy: CompressionPolicy | dict | None = None,
     profile_callback: _WriteProfileCallback | None = None,
 ):
-    """Dispatch to sparse or dense chunked writer.
+    """Dispatch to the legacy Python sparse or dense chunked writer.
 
     Emits (via ``profile_callback``) exactly one ``sparse_component`` or
     ``dense_component`` event per call, followed by one ``component_flush``
     event that measures the HDF5 flush after the chunked writer completes.
 
-    .. todo::
-       The current sparse/dense writers use ``chunk_size`` as a single
-       coupled read+write stride: each iteration reads a block from the
-       source matrix and immediately writes it to HDF5 without buffering
-       across iterations. The public Python API exposes this control as
-       ``backed_write_chunk_size`` because output chunking dominates the
-       performance profile. A follow-up should decouple the two so that
-       :func:`subset_anndata`, :func:`apply_filter`,
-       :func:`materialize_backed`, and :func:`subset_backed_inplace` can
-       accept independent ``backed_chunk_size`` (source read stride) and
-       ``backed_write_chunk_size`` (destination flush stride) parameters,
-       matching the read/write split already implemented in
-       :func:`~actionet.preprocessing.filter.filter_anndata`,
-       :func:`~actionet.preprocessing.normalize.normalize_anndata`,
-       :func:`~actionet.decomposition.svd.run_svd`, and
-       :func:`~actionet.decomposition.kernel.reduce_kernel`.
+    The native engine treats ``chunk_size`` as a row-count ceiling and also
+    enforces its byte-buffer limit. This fallback retains the historical
+    coupled read/write stride for rollback compatibility.
     """
     from .matrix_source import _is_sparse_matrix_like
 
@@ -733,15 +729,46 @@ def _write_filtered_backed(
     import h5py
     import pandas as pd
 
-    from .anndata_io import _write_dataframe_to_h5, _write_dict_value
-
     total_started = perf_counter()
     _flush_pending(adata)
     _ensure_backed_open(adata)
 
-    obs_sub = adata.obs.iloc[obs_idx].copy()
-    var_sub = adata.var.iloc[var_idx].copy()
-    h5file = adata.file._file
+    adapter = BackedAnnDataAdapter(adata)
+    obs_sub = coerce_nullable_strings_for_write(adata.obs.iloc[obs_idx])
+    var_sub = coerce_nullable_strings_for_write(adata.var.iloc[var_idx])
+    h5file = adapter.file_handle
+    native_jobs: list[tuple[str, object]] = []
+
+    def _write_or_defer_matrix(
+        f,
+        h5_key: str,
+        matrix,
+        row_idx: np.ndarray,
+        col_idx: np.ndarray | None,
+        *,
+        compression_policy=None,
+    ) -> None:
+        effective_columns = (
+            np.arange(matrix.shape[1], dtype=np.int64)
+            if col_idx is None
+            else col_idx
+        )
+        location = adapter.matrix_location(matrix, h5_key)
+        native_plan = plan_native_subset(location, row_idx, effective_columns)
+        if native_plan is not None:
+            native_jobs.append((h5_key, native_plan))
+            return
+
+        _write_subsetted_matrix(
+            f,
+            h5_key,
+            matrix,
+            row_idx,
+            col_idx,
+            chunk_size,
+            compression_policy=compression_policy,
+            profile_callback=profile_callback,
+        )
 
     def _write_profiled_component(f, component: str, kind: str, writer):
         if profile_callback is None:
@@ -797,7 +824,21 @@ def _write_filtered_backed(
 
         for k in keys:
             component = f"{name}/{k}"
-            if is_identity and name in h5file and k in h5file[name]:
+            mat = container[k]
+            if mat is None:
+                continue
+
+            # Only fast-copy when the in-memory value is still the live
+            # backed handle at the same logical path. Any in-memory
+            # replacement (e.g. ``adata.obsm[k] = np.array(...)``) must go
+            # through the codec/native writer so the on-disk stale value
+            # is never silently republished.
+            if (
+                is_identity
+                and name in h5file
+                and k in h5file[name]
+                and adapter.matrix_location(mat, f"{name}/{k}") is not None
+            ):
                 _write_profiled_component(
                     f,
                     component,
@@ -808,18 +849,14 @@ def _write_filtered_backed(
                 )
                 continue
 
-            mat = container[k]
-            if mat is None:
-                continue
-
             if isinstance(mat, pd.DataFrame):
-                mat_sub = mat.iloc[row_idx]
+                mat_sub = coerce_nullable_strings_for_write(mat.iloc[row_idx])
                 _write_profiled_component(
                     f,
                     component,
                     "dataframe",
-                    lambda component=component, mat_sub=mat_sub: _write_dataframe_to_h5(
-                        f, component, mat_sub
+                    lambda k=k, group=group, mat_sub=mat_sub: ad.io.write_elem(
+                        group, k, mat_sub
                     ),
                 )
                 continue
@@ -827,15 +864,13 @@ def _write_filtered_backed(
             policy = None
             if name in h5file and k in h5file[name]:
                 policy = get_matrix_compression_policy(h5file[name][k])
-            _write_subsetted_matrix(
+            _write_or_defer_matrix(
                 f,
                 component,
                 mat,
                 row_idx,
                 col_idx,
-                chunk_size,
                 compression_policy=policy,
-                profile_callback=profile_callback,
             )
 
     with h5py.File(dest_path, "w") as f:
@@ -843,22 +878,20 @@ def _write_filtered_backed(
             f.attrs[key] = value
 
         x_policy = get_matrix_compression_policy(h5file["X"]) if "X" in h5file else None
-        _write_subsetted_matrix(
+        _write_or_defer_matrix(
             f,
             "X",
             adata.X,
             obs_idx,
             var_idx,
-            chunk_size,
             compression_policy=x_policy,
-            profile_callback=profile_callback,
         )
 
         _write_profiled_component(
-            f, "obs", "dataframe", lambda: _write_dataframe_to_h5(f, "obs", obs_sub)
+            f, "obs", "dataframe", lambda: ad.io.write_elem(f, "obs", obs_sub)
         )
         _write_profiled_component(
-            f, "var", "dataframe", lambda: _write_dataframe_to_h5(f, "var", var_sub)
+            f, "var", "dataframe", lambda: ad.io.write_elem(f, "var", var_sub)
         )
 
         layer_keys = _real_layer_keys(adata)
@@ -870,15 +903,13 @@ def _write_filtered_backed(
                 layer_policy = None
                 if "layers" in h5file and lk in h5file["layers"]:
                     layer_policy = get_matrix_compression_policy(h5file["layers"][lk])
-                _write_subsetted_matrix(
+                _write_or_defer_matrix(
                     f,
                     f"layers/{lk}",
                     adata.layers[lk],
                     obs_idx,
                     var_idx,
-                    chunk_size,
                     compression_policy=layer_policy,
-                    profile_callback=profile_callback,
                 )
 
         for container, idx, is_identity, name in [
@@ -895,14 +926,12 @@ def _write_filtered_backed(
 
         if adata.uns:
 
-            def _write_uns():
-                uns_grp = f.create_group("uns")
-                uns_grp.attrs["encoding-type"] = "dict"
-                uns_grp.attrs["encoding-version"] = "0.1.0"
-                for k, v in adata.uns.items():
-                    _write_dict_value(uns_grp, k, v)
-
-            _write_profiled_component(f, "uns", "metadata", _write_uns)
+            _write_profiled_component(
+                f,
+                "uns",
+                "metadata",
+                lambda: ad.io.write_elem(f, "uns", dict(adata.uns)),
+            )
         elif "uns" in h5file:
             _write_profiled_component(
                 f,
@@ -920,24 +949,73 @@ def _write_filtered_backed(
             raw_policy = None
             if "raw" in h5file and "X" in h5file["raw"]:
                 raw_policy = get_matrix_compression_policy(h5file["raw"]["X"])
-            _write_subsetted_matrix(
+            _write_or_defer_matrix(
                 f,
                 "raw/X",
                 raw.X,
                 obs_idx,
                 None,
-                chunk_size,
                 compression_policy=raw_policy,
-                profile_callback=profile_callback,
             )
+            raw_var = coerce_nullable_strings_for_write(raw.var)
             _write_profiled_component(
                 f,
                 "raw/var",
                 "dataframe",
-                lambda: _write_dataframe_to_h5(f, "raw/var", raw.var.copy()),
+                lambda: ad.io.write_elem(raw_grp, "var", raw_var),
             )
 
-            if "raw" in h5file and "varm" in h5file["raw"]:
+            raw_varm = getattr(raw, "varm", None)
+            raw_varm_keys = (
+                list(raw_varm.keys()) if raw_varm is not None else []
+            )
+            if raw_varm_keys:
+                varm_grp = raw_grp.create_group("varm")
+                varm_grp.attrs["encoding-type"] = "dict"
+                varm_grp.attrs["encoding-version"] = "0.1.0"
+                for vk in raw_varm_keys:
+                    varm_component = f"raw/varm/{vk}"
+                    vmat = raw_varm[vk]
+                    if vmat is None:
+                        continue
+                    # h5copy only when the in-memory value is still the
+                    # live backed handle at the same logical path;
+                    # otherwise the in-memory replacement is authoritative.
+                    if (
+                        "raw" in h5file
+                        and "varm" in h5file["raw"]
+                        and vk in h5file["raw"]["varm"]
+                        and adapter.matrix_location(vmat, f"raw/varm/{vk}")
+                        is not None
+                    ):
+                        _write_profiled_component(
+                            f,
+                            varm_component,
+                            "h5copy",
+                            lambda vk=vk, varm_grp=varm_grp: h5file[
+                                "raw"
+                            ]["varm"].copy(vk, varm_grp, name=vk),
+                        )
+                        continue
+                    if isinstance(vmat, pd.DataFrame):
+                        vmat_sub = coerce_nullable_strings_for_write(vmat)
+                        _write_profiled_component(
+                            f,
+                            varm_component,
+                            "dataframe",
+                            lambda vk=vk, varm_grp=varm_grp, vmat_sub=vmat_sub: ad.io.write_elem(
+                                varm_grp, vk, vmat_sub
+                            ),
+                        )
+                        continue
+                    _write_or_defer_matrix(
+                        f,
+                        varm_component,
+                        vmat,
+                        np.arange(vmat.shape[0], dtype=np.int64),
+                        None,
+                    )
+            elif "raw" in h5file and "varm" in h5file["raw"]:
                 _write_profiled_component(
                     f,
                     "raw/varm",
@@ -945,8 +1023,20 @@ def _write_filtered_backed(
                     lambda: h5file.copy("raw/varm", raw_grp, name="varm"),
                 )
 
+        known_top_level = {
+            "X",
+            "obs",
+            "var",
+            "layers",
+            "obsm",
+            "varm",
+            "obsp",
+            "varp",
+            "uns",
+            "raw",
+        }
         for top_key in h5file.keys():
-            if top_key in f:
+            if top_key in known_top_level or top_key in f:
                 continue
             _write_profiled_component(
                 f,
@@ -957,13 +1047,81 @@ def _write_filtered_backed(
 
         close_started = perf_counter() if profile_callback is not None else 0.0
 
+    close_s = perf_counter() - close_started if profile_callback is not None else 0.0
+
+    for h5_key, native_plan in native_jobs:
+        output_bytes_before = os.path.getsize(dest_path)
+        transfer_started = perf_counter()
+        stats = execute_native_subset(
+            native_plan,
+            dest_path,
+            h5_key,
+            max_rows_per_batch=chunk_size,
+            collect_span_stats=profile_callback is not None,
+        )
+        if profile_callback is not None:
+            component_event = (
+                "dense_component"
+                if stats["source"]["encoding"] == "dense"
+                else "sparse_component"
+            )
+            _emit_write_profile(
+                profile_callback,
+                component_event,
+                component=h5_key,
+                native=True,
+                rows=stats["destination"]["shape"][0],
+                columns=stats["destination"]["shape"][1],
+                nnz=stats["destination"]["nnz"],
+                chunk_size=chunk_size,
+                source_read_s=stats["source_read_seconds"],
+                selection_s=stats["planning_seconds"],
+                conversion_s=stats["packing_seconds"],
+                destination_write_s=stats["destination_write_seconds"],
+                finalize_s=stats["flush_seconds"],
+                total_s=perf_counter() - transfer_started,
+                output_bytes=os.path.getsize(dest_path),
+            )
+            _emit_write_profile(
+                profile_callback,
+                "component_flush",
+                component=h5_key,
+                kind="native_matrix",
+                write_s=stats["destination_write_seconds"],
+                hdf5_flush_s=stats["flush_seconds"],
+                total_s=perf_counter() - transfer_started,
+                output_bytes_before=output_bytes_before,
+                output_bytes=os.path.getsize(dest_path),
+            )
+            _emit_write_profile(
+                profile_callback,
+                "native_matrix_component",
+                component=h5_key,
+                total_s=perf_counter() - transfer_started,
+                output_bytes_before=output_bytes_before,
+                output_bytes=os.path.getsize(dest_path),
+                **stats,
+            )
+
+    # AnnData performs the final whole-file structural check. Keep the object
+    # backed so validation never materializes the numeric payloads. The
+    # close is best-effort so an unexpected handle-shape does not leak
+    # exceptions into the caller after validation already succeeded.
+    validated = ad.read_h5ad(dest_path, backed="r")
+    file_handle = getattr(validated, "file", None)
+    if file_handle is not None:
+        try:
+            file_handle.close()
+        except Exception:
+            pass
+
     if profile_callback is not None:
         output_bytes = os.path.getsize(dest_path)
         _emit_write_profile(
             profile_callback,
             "close",
             component=dest_path,
-            close_s=perf_counter() - close_started,
+            close_s=close_s,
             output_bytes=output_bytes,
         )
         _emit_write_profile(
@@ -975,16 +1133,69 @@ def _write_filtered_backed(
         )
 
 
-def _view_idx_to_int(idx, axis_size: int) -> np.ndarray:
-    """Convert a view index (slice or ndarray) to an int64 index array."""
-    if isinstance(idx, slice):
-        return np.arange(*idx.indices(axis_size), dtype=np.int64)
-    return _normalize_index_array(
-        idx,
-        axis_size,
-        name="view selector",
-        allow_negative=True,
-    )
+def _atomic_filtered_rewrite(
+    adata: AnnData,
+    obs_idx: np.ndarray,
+    var_idx: np.ndarray,
+    destination_path: str,
+    chunk_size: int,
+    *,
+    refresh_source: bool,
+    profile_callback: _WriteProfileCallback | None = None,
+) -> None:
+    """Write, validate, fsync, and atomically publish a filtered H5AD."""
+    _flush_pending(adata)
+    _ensure_backed_open(adata)
+    adapter = BackedAnnDataAdapter(adata)
+    source_path = adapter.filename
+    destination_path = os.path.realpath(os.fspath(destination_path))
+    in_place = source_path == destination_path
+    original_mode = adapter.mode
+
+    with RewriteTransaction(source_path, destination_path) as transaction:
+        _write_filtered_backed(
+            adata,
+            obs_idx,
+            var_idx,
+            transaction.temp_path,
+            chunk_size,
+            profile_callback=profile_callback,
+        )
+        commit_stats = transaction.commit(
+            close_source=adapter.close if in_place else None,
+            restore_source=(
+                (lambda: adapter.reopen(mode=original_mode))
+                if in_place
+                else None
+            ),
+        )
+        _emit_write_profile(
+            profile_callback,
+            "transaction_commit",
+            component=destination_path,
+            temp_fsync_s=commit_stats.temp_fsync_seconds,
+            fingerprint_s=commit_stats.fingerprint_seconds,
+            source_close_s=commit_stats.source_close_seconds,
+            replace_s=commit_stats.replace_seconds,
+            parent_fsync_s=commit_stats.parent_fsync_seconds,
+            total_s=commit_stats.total_seconds,
+        )
+        # Surface the durable-publication tail even without a profile callback.
+        # The trailing temporary-file fsync is the dominant "post-write linger"
+        # on atlas-scale rewrites; logging it lets deployments detect a
+        # writeback regression without attaching a profiling harness.
+        _logger.debug(
+            "backed rewrite commit tail: temp_fsync=%.3fs replace=%.3fs "
+            "parent_fsync=%.3fs total=%.3fs (%s)",
+            commit_stats.temp_fsync_seconds,
+            commit_stats.replace_seconds,
+            commit_stats.parent_fsync_seconds,
+            commit_stats.total_seconds,
+            destination_path,
+        )
+
+    if refresh_source:
+        adapter.reopen(mode=original_mode)
 
 
 def materialize_backed(
@@ -1008,16 +1219,9 @@ def materialize_backed(
         Destination HDF5 path.  When ``None`` (default), the parent backing
         file is atomically rewritten in place.
     backed_write_chunk_size : int, optional (default: 16384)
-        Rows per chunk during the backed write. Atlas-scale sparse rewrites
-        may benefit from starting with ``32768``; larger values can increase
-        temporary-memory use.
-
-        .. note::
-           The filtered-rewrite path currently uses a single coupled
-           read+write chunk stride internally; this parameter drives that
-           stride. Decoupling the read stride from the write stride is
-           tracked as a follow-up (see ``TODO`` in
-           :func:`_write_subsetted_matrix`).
+        Maximum rows per native transfer batch. The native byte-buffer limit
+        may reduce the effective batch size. The rollback Python engine uses
+        this as its historical read/write stride.
 
     Raises
     ------
@@ -1035,12 +1239,9 @@ def materialize_backed(
     if not getattr(adata, "is_view", False):
         return
 
-    parent = adata._adata_ref
+    parent, obs_int, var_int = backed_view_selection(adata)
     _flush_pending(parent)
     _ensure_backed_open(parent)
-
-    obs_int = _view_idx_to_int(adata._oidx, parent.n_obs)
-    var_int = _view_idx_to_int(adata._vidx, parent.n_vars)
 
     parent_path = str(parent.filename)
     dest_path = str(filename) if filename is not None else parent_path
@@ -1048,35 +1249,28 @@ def materialize_backed(
     if in_place_parent:
         _ensure_backed_writable(parent)
 
-    dest_dir = os.path.dirname(dest_path) or "."
-    tmp_fd, tmp_path = tempfile.mkstemp(dir=dest_dir, suffix=".h5ad")
-    os.close(tmp_fd)
-
-    closed_parent = False
     try:
-        _write_filtered_backed(parent, obs_int, var_int, tmp_path, backed_write_chunk_size)
-        if in_place_parent and hasattr(parent, "file") and parent.file is not None:
-            parent.file.close()
-            closed_parent = True
-        os.replace(tmp_path, dest_path)
+        _atomic_filtered_rewrite(
+            parent,
+            obs_int,
+            var_int,
+            dest_path,
+            backed_write_chunk_size,
+            refresh_source=in_place_parent,
+        )
     except Exception:
-        if os.path.exists(tmp_path):
-            os.unlink(tmp_path)
-        if in_place_parent and closed_parent:
+        if in_place_parent:
             try:
                 _refresh_backed_handle(parent, parent_path, mode="r+")
             except Exception:
                 pass
         raise
 
-    if in_place_parent:
-        parent_reopened = ad.read_h5ad(dest_path, backed="r+")
-        _init_from_reopened(parent, parent_reopened)
-        if adata is parent:
-            return
+    if in_place_parent and adata is parent:
+        return
 
     reopened = ad.read_h5ad(dest_path, backed="r+")
-    _init_from_reopened(adata, reopened)
+    init_from_reopened(adata, reopened)
 
 
 def subset_backed_inplace(
@@ -1102,16 +1296,9 @@ def subset_backed_inplace(
     var_idx : ndarray of int64 or None
         Column (feature) indices to keep.  ``None`` keeps all columns.
     backed_write_chunk_size : int, optional (default: 16384)
-        Rows per chunk during the backed write. Atlas-scale sparse rewrites
-        may benefit from starting with ``32768``; larger values can increase
-        temporary-memory use.
-
-        .. note::
-           The filtered-rewrite path currently uses a single coupled
-           read+write chunk stride internally; this parameter drives that
-           stride. Decoupling the read stride from the write stride is
-           tracked as a follow-up (see ``TODO`` in
-           :func:`_write_subsetted_matrix`).
+        Maximum rows per native transfer batch. The native byte-buffer limit
+        may reduce the effective batch size. The rollback Python engine uses
+        this as its historical read/write stride.
 
     Raises
     ------
@@ -1169,19 +1356,11 @@ def subset_backed_inplace(
             return
 
     filepath = str(adata.filename)
-    parent_dir = os.path.dirname(filepath) or "."
-    tmp_fd, tmp_path = tempfile.mkstemp(dir=parent_dir, suffix=".h5ad")
-    os.close(tmp_fd)
-
-    try:
-        _write_filtered_backed(adata, obs_idx, var_idx, tmp_path, backed_write_chunk_size)
-    except Exception:
-        if os.path.exists(tmp_path):
-            os.unlink(tmp_path)
-        raise
-
-    if hasattr(adata, "file") and adata.file is not None:
-        adata.file.close()
-    os.replace(tmp_path, filepath)
-
-    _refresh_backed_handle(adata, filepath, mode="r+")
+    _atomic_filtered_rewrite(
+        adata,
+        obs_idx,
+        var_idx,
+        filepath,
+        backed_write_chunk_size,
+        refresh_source=True,
+    )

@@ -1,8 +1,6 @@
 """Iterative QC filtering and axis-safe subsetting of AnnData objects."""
 
 import os
-import pathlib
-import shutil
 import tempfile
 from typing import Union
 
@@ -13,19 +11,21 @@ import scipy.sparse as sp
 from anndata import AnnData
 
 from ..io.persist import (
+    _ensure_backed_writable,
     is_backed_adata,
     _refresh_backed_handle,
 )
 from ..io.subset import (
     _adaptive_sparse_chunk_size,
+    _atomic_filtered_rewrite,
     _write_filtered_backed,
     _normalize_index_array,
     _warn_if_duplicates,
-    _view_idx_to_int,
     materialize_backed,
     subset_backed_inplace,
 )
 from ..io.matrix_source import MatrixSource
+from ..io.backed_adapter import backed_view_selection, init_from_inmemory
 from ..io.chunking import (
     DEFAULT_BACKED_READ_CHUNK_SIZE,
     DEFAULT_BACKED_WRITE_CHUNK_SIZE,
@@ -273,16 +273,9 @@ def subset_anndata(
         regardless of the mode of the input object.
         Ignored for in-memory objects and when ``inplace=True``.
     backed_write_chunk_size : int, optional (default: 16384)
-        Rows per chunk during backed writes. Atlas-scale sparse rewrites may
-        benefit from starting with ``32768``; larger values can increase
-        temporary-memory use.
-
-        .. note::
-           The backed filtered-rewrite path currently uses a single coupled
-           read+write chunk stride internally; this parameter drives that
-           stride. Decoupling the read stride from the write stride is
-           tracked as a follow-up (see ``TODO`` in
-           ``src/actionet/io/subset.py::_write_subsetted_matrix``).
+        Maximum rows per native transfer batch. The native byte-buffer limit
+        may reduce the effective batch size. The rollback Python engine uses
+        this as its historical read/write stride.
 
     Returns
     -------
@@ -315,9 +308,7 @@ def subset_anndata(
         is_view = getattr(adata, "is_view", False)
 
         if is_view:
-            parent = adata._adata_ref
-            view_obs = _view_idx_to_int(adata._oidx, parent.n_obs)
-            view_var = _view_idx_to_int(adata._vidx, parent.n_vars)
+            parent, view_obs, view_var = backed_view_selection(adata)
             combined_obs = view_obs[obs_int]
             combined_var = view_var[var_int]
             source = parent
@@ -352,7 +343,7 @@ def subset_anndata(
         if output_file is None:
             # No destination given: load subset into memory and clean up temp.
             tmp_fd, tmp_path = tempfile.mkstemp(
-                dir=str(pathlib.Path(filepath).parent),
+                dir=os.path.dirname(filepath) or ".",
                 suffix=".h5ad",
             )
             os.close(tmp_fd)
@@ -371,24 +362,18 @@ def subset_anndata(
 
         # output_file given: write to that path and return a backed handle.
         dest = str(output_file)
-        tmp_fd, tmp_path = tempfile.mkstemp(
-            dir=str(pathlib.Path(dest).parent),
-            suffix=".h5ad",
-        )
-        os.close(tmp_fd)
-        try:
-            _write_filtered_backed(
-                source,
-                combined_obs,
-                combined_var,
-                tmp_path,
-                backed_write_chunk_size,
+        if os.path.realpath(dest) == os.path.realpath(filepath):
+            raise ValueError(
+                "output_file must differ from the source when inplace=False"
             )
-        except Exception:
-            if os.path.exists(tmp_path):
-                os.unlink(tmp_path)
-            raise
-        shutil.move(tmp_path, dest)
+        _atomic_filtered_rewrite(
+            source,
+            combined_obs,
+            combined_var,
+            dest,
+            backed_write_chunk_size,
+            refresh_source=False,
+        )
         return ad.read_h5ad(dest, backed="r+")
 
     # In-memory path.
@@ -428,23 +413,18 @@ def apply_filter(
         If True, modify *adata* in place (returns ``None``).
         If False, return a new (possibly in-memory) AnnData.
     output_file : str or None, optional
-        For backed AnnData, write the filtered result to this path using
-        chunked h5py I/O (constant-memory).  If ``None`` and ``inplace=True``,
-        the backing file is overwritten in place.  If ``None`` and
-        ``inplace=False``, an in-memory AnnData is returned and the source
-        backing file is left unchanged.
-        Ignored for in-memory objects.
+        For backed AnnData, write the filtered result to this path. Bulk
+        matrix transfer runs through the native H5AD engine when supported
+        and falls back to the constant-memory Python writer otherwise
+        (see :envvar:`ACTIONET_BACKED_IO_ENGINE`). If ``None`` and
+        ``inplace=True``, the backing file is overwritten in place. If
+        ``None`` and ``inplace=False``, an in-memory AnnData is returned
+        and the source backing file is left unchanged. Ignored for
+        in-memory objects.
     backed_write_chunk_size : int, optional (default: 16384)
-        Rows per chunk during backed writes. Atlas-scale sparse rewrites may
-        benefit from starting with ``32768``; larger values can increase
-        temporary-memory use.
-
-        .. note::
-           The backed filtered-rewrite path currently uses a single coupled
-           read+write chunk stride internally; this parameter drives that
-           stride. Decoupling the read stride from the write stride is
-           tracked as a follow-up (see ``TODO`` in
-           ``src/actionet/io/subset.py::_write_subsetted_matrix``).
+        Maximum rows per native transfer batch. The native byte-buffer limit
+        may reduce the effective batch size. The rollback Python engine uses
+        this as its historical read/write stride.
     """
     backed_write_chunk_size = validate_chunk_size(
         backed_write_chunk_size,
@@ -462,7 +442,7 @@ def apply_filter(
         if not inplace and output_file is None:
             filepath = str(adata.filename)
             tmp_fd, tmp_path = tempfile.mkstemp(
-                dir=str(pathlib.Path(filepath).parent),
+                dir=os.path.dirname(filepath) or ".",
                 suffix=".h5ad",
             )
             os.close(tmp_fd)
@@ -474,33 +454,36 @@ def apply_filter(
                     os.unlink(tmp_path)
 
         dest = str(output_file)
-
-        tmp_fd, tmp_path = tempfile.mkstemp(
-            dir=str(pathlib.Path(dest).parent),
-            suffix=".h5ad",
+        source_path = str(adata.filename)
+        same_path = os.path.realpath(dest) == os.path.realpath(source_path)
+        if not inplace and same_path:
+            raise ValueError(
+                "output_file must differ from the source when inplace=False"
+            )
+        # An in-place rewrite (either implicit or via same-path
+        # ``output_file``) atomically replaces the backing store, so require
+        # a writable handle up front instead of failing mid-transaction.
+        if inplace and same_path:
+            _ensure_backed_writable(adata)
+        _atomic_filtered_rewrite(
+            adata,
+            obs_idx,
+            var_idx,
+            dest,
+            backed_write_chunk_size,
+            refresh_source=False,
         )
-        os.close(tmp_fd)
-        try:
-            _write_filtered_backed(adata, obs_idx, var_idx, tmp_path, backed_write_chunk_size)
-        except Exception:
-            if os.path.exists(tmp_path):
-                os.unlink(tmp_path)
-            raise
 
         if inplace:
-            if hasattr(adata, "file") and adata.file is not None:
-                adata.file.close()
-            shutil.move(tmp_path, dest)
             _refresh_backed_handle(adata, dest, mode="r+")
             return None
 
-        shutil.move(tmp_path, dest)
         return ad.read_h5ad(dest, backed="r+")
 
     # In-memory path.
     if inplace:
         subset = adata[obs_mask, var_mask].copy()
-        adata._init_as_actual(subset)
+        init_from_inmemory(adata, subset)
         return None
 
     return adata[obs_mask, var_mask].copy()
@@ -553,10 +536,10 @@ def filter_anndata(
         Rows per streaming chunk while computing backed filter statistics
         (read-only path).
     backed_write_chunk_size : int or None, optional (default: None)
-        Rows per chunk during the backed structural rewrite. ``None`` uses
-        the shared write default of ``16384``. Atlas-scale writes may benefit
-        from starting with ``32768``; larger values use proportionally more
-        temporary memory.
+        Maximum rows per native transfer batch. ``None`` uses the shared
+        default of ``16384``; the native byte-buffer limit may reduce the
+        effective batch size. The rollback Python engine uses this as its
+        historical read/write stride.
     """
     backed_chunk_size, backed_write_chunk_size = resolve_backed_write_chunk_size(
         backed_chunk_size,

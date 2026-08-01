@@ -21,7 +21,7 @@ import actionet as an
 from actionet import _core
 from actionet.io.matrix_source import MatrixSource
 
-from .conftest import make_test_adata, open_backed, MatrixLike
+from .conftest import make_test_adata, open_backed
 
 _has_run_svd_backed_operator = hasattr(_core, "run_svd_backed_operator")
 requires_rebuilt_ext = pytest.mark.skipif(
@@ -337,7 +337,8 @@ def test_backed_preprocessing_csr_and_csc(tmp_path, fmt, target_layer, seed):
     nonzero_rows = row_sums > 0
     assert np.allclose(row_sums[nonzero_rows], 1e4, rtol=1e-2, atol=1e-2)
     if fmt == "csc":
-        assert _sparse_encoding(adata, layer=target_layer) == "csr_matrix"
+        expected_encoding = "csc_matrix" if target_layer is None else "csr_matrix"
+        assert _sparse_encoding(adata, layer=target_layer) == expected_encoding
 
     # Now apply log_transform via a second call with scaling disabled
     # (already normalised, just test the combined path works)
@@ -351,14 +352,16 @@ def test_backed_preprocessing_csr_and_csc(tmp_path, fmt, target_layer, seed):
         inplace=True,
     )
     if fmt == "csc":
-        assert _sparse_encoding(adata, layer=target_layer) == "csr_matrix"
+        expected_encoding = "csc_matrix" if target_layer is None else "csr_matrix"
+        assert _sparse_encoding(adata, layer=target_layer) == expected_encoding
 
     if hasattr(adata, "file") and adata.file is not None:
         adata.file.close()
 
     reopened = ad.read_h5ad(path, backed="r")
     if fmt == "csc":
-        assert _sparse_encoding(reopened, layer=target_layer) == "csr_matrix"
+        expected_encoding = "csc_matrix" if target_layer is None else "csr_matrix"
+        assert _sparse_encoding(reopened, layer=target_layer) == expected_encoding
     if hasattr(reopened, "file") and reopened.file is not None:
         reopened.file.close()
 
@@ -591,8 +594,8 @@ def test_normalize_layer_added_backed_hardlink_and_dtype(tmp_path):
         ("logcounts", 27),
     ],
 )
-def test_normalize_layer_added_backed_csc_rewrites_destination_to_csr(tmp_path, source_layer, seed):
-    """Backed CSC sources write layer_added outputs as CSR and preserve the source."""
+def test_normalize_layer_added_backed_csc_preserves_destination_orientation(tmp_path, source_layer, seed):
+    """Backed CSC sources preserve CSC orientation and the source matrix."""
     path = tmp_path / f"csc_layer_added_{source_layer or 'X'}.h5ad"
     adata_mem = make_test_adata(n_cells=64, n_genes=48, sparse_fmt="csc", seed=seed)
     source_before = adata_mem.X.copy() if source_layer is None else adata_mem.layers["logcounts"].copy()
@@ -625,7 +628,8 @@ def test_normalize_layer_added_backed_csc_rewrites_destination_to_csr(tmp_path, 
 
     np.testing.assert_allclose(_as_dense(source_after), _as_dense(source_before), rtol=1e-12, atol=1e-12)
     np.testing.assert_allclose(_as_dense(norm_after), _as_dense(expected_norm), rtol=1e-5, atol=1e-6)
-    assert _sparse_encoding(adata, layer="normalized") == "csr_matrix"
+    expected_encoding = "csc_matrix" if source_layer is None else "csr_matrix"
+    assert _sparse_encoding(adata, layer="normalized") == expected_encoding
 
     if hasattr(adata, "file") and adata.file is not None:
         adata.file.close()
@@ -633,7 +637,7 @@ def test_normalize_layer_added_backed_csc_rewrites_destination_to_csr(tmp_path, 
     reopened = ad.read_h5ad(path, backed="r")
     reopened_norm = MatrixSource(reopened, layer="normalized").to_memory()
     np.testing.assert_allclose(_as_dense(reopened_norm), _as_dense(expected_norm), rtol=1e-5, atol=1e-6)
-    assert _sparse_encoding(reopened, layer="normalized") == "csr_matrix"
+    assert _sparse_encoding(reopened, layer="normalized") == expected_encoding
     if hasattr(reopened, "file") and reopened.file is not None:
         reopened.file.close()
 
