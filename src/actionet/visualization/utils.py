@@ -379,3 +379,102 @@ def compute_transparency(
     alpha_val[z > trans_th] = 1
     alpha_val = alpha_val ** trans_fac
     return alpha_val
+
+
+_FIGURE_FORMATTER_REGISTERED = False
+
+
+def register_figure_display_formatter() -> bool:
+    """Ensure bare ``matplotlib.figure.Figure`` objects render in IPython consoles.
+
+    The ``plot_*_raster`` functions return a ``Figure`` built directly via
+    :class:`matplotlib.figure.Figure` with a manually attached ``FigureCanvasAgg``.
+    This bypasses ``pyplot``'s figure manager on purpose so the inline backend
+    renders the figure exactly once instead of duplicating it. The trade-off is
+    that display then depends entirely on IPython having a rich type formatter
+    registered for ``Figure`` objects; a returned bare figure carries no manager
+    that ``matplotlib_inline``'s post-cell ``flush_figures`` hook would pick up.
+
+    Some frontends (observed with the 2026-08-06 Positron build) no longer
+    auto-register that ``Figure`` formatter, so a returned bare figure falls back
+    to ``__repr__`` and only prints ``<Figure size ... with N Axes>``. This
+    registers a PNG (and SVG) formatter for ``Figure`` on the active IPython
+    shell, restoring rich display without reintroducing the pyplot registry.
+
+    Returns
+    -------
+    bool
+        ``True`` if a formatter is registered (now or already), ``False`` when
+        there is no interactive IPython shell or dependencies are unavailable.
+    """
+    global _FIGURE_FORMATTER_REGISTERED
+    if _FIGURE_FORMATTER_REGISTERED:
+        return True
+
+    try:
+        from IPython import get_ipython
+    except ImportError:
+        return False
+
+    shell = get_ipython()
+    if shell is None:
+        return False
+
+    try:
+        from matplotlib.backends.backend_agg import FigureCanvasAgg
+        from matplotlib.figure import Figure
+    except ImportError:
+        return False
+
+    def _figure_to_png(fig: "Figure") -> Optional[bytes]:
+        import io
+
+        if fig.canvas is None or not isinstance(fig.canvas, FigureCanvasAgg):
+            FigureCanvasAgg(fig)
+        buf = io.BytesIO()
+        fig.savefig(buf, format="png", dpi=fig.dpi, facecolor=fig.get_facecolor())
+        return buf.getvalue()
+
+    def _figure_to_svg(fig: "Figure") -> Optional[str]:
+        import io
+
+        if fig.canvas is None or not isinstance(fig.canvas, FigureCanvasAgg):
+            FigureCanvasAgg(fig)
+        buf = io.BytesIO()
+        fig.savefig(buf, format="svg", facecolor=fig.get_facecolor())
+        return buf.getvalue().decode("utf-8")
+
+    formatters = getattr(shell, "display_formatter", None)
+    if formatters is None:
+        return False
+
+    def _apply(*_args, **_kwargs) -> None:
+        png_formatter = formatters.formatters.get("image/png")
+        if png_formatter is not None:
+            try:
+                current = png_formatter.lookup_by_type(Figure)
+            except KeyError:
+                current = None
+            if current is not _figure_to_png:
+                png_formatter.for_type(Figure, _figure_to_png)
+        svg_formatter = formatters.formatters.get("image/svg+xml")
+        if svg_formatter is not None:
+            try:
+                current = svg_formatter.lookup_by_type(Figure)
+            except KeyError:
+                current = None
+            if current is not _figure_to_svg:
+                svg_formatter.for_type(Figure, _figure_to_svg)
+
+    _apply()
+
+    # ``matplotlib_inline``'s ``configure_inline_support`` (triggered by a later
+    # ``%matplotlib inline`` or first pyplot use) can rebuild the type
+    # formatters and drop ours. Re-assert on every cell so display stays robust.
+    try:
+        shell.events.register("pre_run_cell", _apply)
+    except Exception:  # pragma: no cover - event API is best-effort
+        pass
+
+    _FIGURE_FORMATTER_REGISTERED = True
+    return True

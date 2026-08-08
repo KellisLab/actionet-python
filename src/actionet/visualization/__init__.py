@@ -14,6 +14,9 @@ from .qc import (
     plot_qc_violin_raster,
 )
 from .umap import plot_umap, plot_umap_interactive, plot_umap_raster
+from .utils import register_figure_display_formatter
+
+register_figure_display_formatter()
 
 __all__ = [
     "compute_node_colors",
@@ -29,4 +32,5 @@ __all__ = [
     "plot_umap",
     "plot_umap_interactive",
     "plot_umap_raster",
+    "register_figure_display_formatter",
 ]
