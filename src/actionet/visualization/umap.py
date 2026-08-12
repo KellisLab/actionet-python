@@ -944,7 +944,7 @@ def plot_umap_interactive(
     legend: bool = True,
     hover_text: Optional[Union[str, Sequence, np.ndarray, pd.Series]] = None,
     title: Optional[str] = None,
-    fig_size: tuple[Optional[int], Optional[int]] = (600, 500),
+    fig_size: tuple[Optional[int], Optional[int]] = (None, None),
     vmin: Optional[float] = None,
     vmax: Optional[float] = None,
     na_color: str = "#cccccc",
@@ -992,8 +992,9 @@ def plot_umap_interactive(
     title
         Optional plot title.
     fig_size
-        Figure size as ``(width, height)`` in **pixels**. Pass ``None`` for either
-        dimension to use a responsive (full-width or full-height) layout.
+        Figure size as ``(width, height)`` in **pixels**. Defaults to
+        ``(None, None)`` so the plot resizes with its viewer container.
+        Pass explicit pixel integers to lock the width, the height, or both.
     vmin, vmax
         Optional clamping bounds for continuous values.
     na_color
