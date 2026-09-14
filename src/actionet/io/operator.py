@@ -3,9 +3,6 @@
 from __future__ import annotations
 
 import contextlib
-import os
-import shutil
-import tempfile
 import time
 import warnings
 from typing import Any, Generator, Optional
@@ -51,6 +48,52 @@ def _is_lock_open_error(exc: BaseException) -> bool:
     return any(fragment in msg for fragment in _LOCK_OPEN_ERROR_FRAGMENTS)
 
 
+def _release_backed_handle(adata: Optional[AnnData], *, context: str) -> Optional[str]:
+    """Flush and close AnnData's h5py file manager, returning the prior file mode.
+
+    On network filesystems (NFS/GPFS/Lustre) HDF5's in-process reconciliation
+    of the h5py handle against a second ``H5Fopen`` request rejects the second
+    open even when both handles are read-only and locking is disabled at the
+    C++ side. Releasing h5py's handle for the duration of the C++ read removes
+    that in-process entry and lets the second open succeed directly.
+
+    Returns the saved ``_filemode`` for a later :func:`_restore_backed_handle`
+    call, or ``None`` when no restore is required (adata absent / not backed /
+    already closed).
+    """
+    if adata is None or not bool(getattr(adata, "isbacked", False)):
+        return None
+
+    from .backed_adapter import BackedAnnDataAdapter
+
+    _flush_backed_handle(adata, context=context)
+    return BackedAnnDataAdapter(adata).release_file_handle()
+
+
+def _restore_backed_handle(
+    adata: Optional[AnnData], saved_mode: Optional[str], *, context: str
+) -> None:
+    """Re-open AnnData's h5py handle in the mode captured by :func:`_release_backed_handle`.
+
+    Any failure is surfaced as a ``UserWarning`` rather than raised so that a
+    successful caller result is not masked by a restore-time error.
+    """
+    if adata is None or saved_mode is None:
+        return
+
+    from .backed_adapter import BackedAnnDataAdapter
+
+    try:
+        BackedAnnDataAdapter(adata).restore_file_handle(saved_mode)
+    except Exception as exc:
+        warnings.warn(
+            f"{context}: failed to reopen backed AnnData handle in mode "
+            f"'{saved_mode}' ({type(exc).__name__}: {exc})",
+            UserWarning,
+            stacklevel=3,
+        )
+
+
 def _create_backed_operator(
     *,
     file_path: str,
@@ -81,6 +124,19 @@ def _create_backed_operator(
     return _core.create_backed_operator(**kwargs)
 
 
+def _close_backed_operator(op: Any) -> None:
+    """Release native operator resources even if its Python wrapper survives."""
+    close = getattr(op, "close", None)
+    if callable(close):
+        # Test doubles and any future directly-exposed concrete operators.
+        close()
+        return
+
+    from .. import _core
+
+    _core.close_backed_operator(op)
+
+
 @contextlib.contextmanager
 def _open_backed_operator(
     *,
@@ -97,103 +153,80 @@ def _open_backed_operator(
     retry_attempts: int = 3,
     retry_backoff_seconds: float = 0.25,
 ) -> Generator[Any, None, None]:
-    """Open a lock-safe backed operator with retry and temp-copy fallback.
+    """Open a read-only backed operator for the given HDF5 path.
 
     Use as a context manager::
 
         with _open_backed_operator(...) as op:
             result = _core.some_call(op, ...)
+
+    The backing AnnData's h5py file manager (when present) is flushed and
+    closed for the duration of the yield, then reopened in its original mode
+    on exit. This avoids the in-process HDF5 lock/handle reconciliation that
+    rejects a second ``H5Fopen`` on network filesystems (NFS/GPFS/Lustre) even
+    when the C++ side disables locking and requests read-only access.
+
+    Callers must not touch ``adata.X``, ``adata.layers``, or any lazy backed
+    ``obsm``/``obsp`` datasets inside the ``with`` block; all backed reads
+    must go through the yielded C++ operator. In-memory attributes
+    (``adata.obs``, ``adata.uns``, dense ``obsm``/``obsp`` values) remain
+    accessible because AnnData does not evict them when the file manager is
+    closed. The yielded operator is explicitly closed when the block exits
+    and must not be reused afterward, even if the caller retains a reference.
+
+    A short retry loop with backoff is preserved to absorb genuinely
+    transient lock-open failures (e.g. brief NFS unavailability). No file
+    copy or shadow-file fallback is performed: the release-and-reopen
+    protocol above is the primary and only remedy for the observed failure
+    mode.
     """
     if retry_attempts < 1:
         raise ValueError("retry_attempts must be >= 1")
 
-    if adata is not None:
-        _flush_backed_handle(adata, context=context)
+    saved_mode = _release_backed_handle(adata, context=context)
 
-    lock_errors: list[BaseException] = []
     op = None
-
-    for attempt in range(retry_attempts):
-        try:
-            op = _create_backed_operator(
-                file_path=file_path,
-                group_path=group_path,
-                chunk_size=chunk_size,
-                row_scale_factors=row_scale_factors,
-                apply_log1p=apply_log1p,
-                log_scale=log_scale,
-                io_target_chunk_bytes=io_target_chunk_bytes,
-                n_threads=n_threads,
-            )
-            break
-        except Exception as exc:
-            if not _is_lock_open_error(exc):
-                raise
-            lock_errors.append(exc)
-            if attempt + 1 < retry_attempts:
-                time.sleep(max(0.0, float(retry_backoff_seconds)) * (attempt + 1))
-
-    fallback_path: Optional[str] = None
-
-    if op is None:
-        warnings.warn(
-            f"{context}: retries exhausted for '{file_path}'; "
-            f"copying to temporary file for lock-free access "
-            f"(this may be slow for large files on network storage)",
-            UserWarning,
-            stacklevel=3,
-        )
-        parent = os.path.dirname(file_path) or "."
-        fd, fallback_path = tempfile.mkstemp(
-            prefix="actionet_lock_fallback_",
-            suffix=".h5ad",
-            dir=parent,
-        )
-        os.close(fd)
-
-        try:
-            shutil.copy2(file_path, fallback_path)
-            op = _create_backed_operator(
-                file_path=fallback_path,
-                group_path=group_path,
-                chunk_size=chunk_size,
-                row_scale_factors=row_scale_factors,
-                apply_log1p=apply_log1p,
-                log_scale=log_scale,
-                io_target_chunk_bytes=io_target_chunk_bytes,
-                n_threads=n_threads,
-            )
-        except Exception as exc:
+    lock_errors: list[BaseException] = []
+    try:
+        for attempt in range(retry_attempts):
             try:
-                if fallback_path is not None and os.path.exists(fallback_path):
-                    os.remove(fallback_path)
-            except OSError:
-                pass
+                op = _create_backed_operator(
+                    file_path=file_path,
+                    group_path=group_path,
+                    chunk_size=chunk_size,
+                    row_scale_factors=row_scale_factors,
+                    apply_log1p=apply_log1p,
+                    log_scale=log_scale,
+                    io_target_chunk_bytes=io_target_chunk_bytes,
+                    n_threads=n_threads,
+                )
+                break
+            except Exception as exc:
+                if not _is_lock_open_error(exc):
+                    raise
+                lock_errors.append(exc)
+                if attempt + 1 < retry_attempts:
+                    time.sleep(
+                        max(0.0, float(retry_backoff_seconds)) * (attempt + 1)
+                    )
 
-            if not _is_lock_open_error(exc):
-                raise
-
-            primary_err = str(lock_errors[-1]) if lock_errors else "unknown primary open error"
+        if op is None:
+            primary_err = (
+                str(lock_errors[-1]) if lock_errors else "unknown open error"
+            )
             raise RuntimeError(
                 f"{context}: failed to open backed operator for '{file_path}' "
-                f"after {retry_attempts} retries and fallback copy '{fallback_path}'. "
-                f"Primary error: {primary_err}. Fallback error: {exc}"
-            ) from exc
+                f"after {retry_attempts} lock-open retries. Last error: "
+                f"{primary_err}"
+            )
 
-    try:
-        yield op
+        try:
+            yield op
+        finally:
+            _close_backed_operator(op)
+            op = None
     finally:
-        op = None
-        if fallback_path is not None and os.path.exists(fallback_path):
-            try:
-                os.remove(fallback_path)
-            except OSError as exc:
-                warnings.warn(
-                    f"{context}: failed to remove fallback operator copy '{fallback_path}' "
-                    f"({type(exc).__name__}: {exc})",
-                    UserWarning,
-                    stacklevel=4,
-                )
+        _restore_backed_handle(adata, saved_mode, context=context)
 
 
 @contextlib.contextmanager

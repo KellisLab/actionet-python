@@ -209,6 +209,14 @@ std::shared_ptr<actionet::MatrixOperator> create_backed_operator(
     );
 }
 
+void close_backed_operator(const std::shared_ptr<actionet::MatrixOperator>& op) {
+    dispatch_backed_op(
+        op,
+        "close_backed_operator",
+        [](auto& concrete_op) { concrete_op.close(); }
+    );
+}
+
 py::dict run_svd_backed_operator(std::shared_ptr<actionet::MatrixOperator> op,
                                  int k = 30, int max_it = 0, int seed = 0,
                                  int algorithm = actionet::ALG_HALKO, bool verbose = true) {
@@ -311,6 +319,10 @@ void init_io(py::module_ &m) {
           py::arg("io_target_chunk_bytes") = 0,
           py::arg("io_target_chunk_fraction_of_cap") = 0.5,
           py::arg("n_threads") = 0);
+
+    m.def("close_backed_operator", &close_backed_operator,
+          "Release HDF5 resources owned by a backed matrix operator",
+          py::arg("op"));
 
     m.def("run_svd_backed_operator", &run_svd_backed_operator,
           "Run SVD with a MatrixOperator-backed input",

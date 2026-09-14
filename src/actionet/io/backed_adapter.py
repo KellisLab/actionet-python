@@ -65,6 +65,23 @@ class BackedAnnDataAdapter:
                 f"({type(exc).__name__}: {exc})"
             ) from exc
 
+    def release_file_handle(self) -> str | None:
+        """Close the backing file, returning its mode for restoration."""
+        manager = getattr(self.adata, "file", None)
+        if manager is None or not bool(getattr(manager, "is_open", False)):
+            return None
+
+        mode = str(getattr(manager, "_filemode", None) or "r+")
+        manager.close()
+        return mode
+
+    def restore_file_handle(self, mode: str) -> None:
+        """Reopen a handle previously released by :meth:`release_file_handle`."""
+        manager = getattr(self.adata, "file", None)
+        if manager is None:
+            raise RuntimeError("AnnData does not expose a backed file manager")
+        manager.open(filemode=mode)
+
     @property
     def mode(self) -> str:
         handle = self.file_handle
