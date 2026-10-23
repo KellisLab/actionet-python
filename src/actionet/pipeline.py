@@ -31,9 +31,9 @@ def run_actionet(
     network_metric: Literal["jsd", "l2", "ip"] = "jsd",
     network_algorithm: Literal["k*nn", "knn"] = "k*nn",
     network_density: float = 1.0,
-    network_M: int = 16,
-    network_ef_construction: float = 200,
-    network_ef: float = 200,
+    network_M: Optional[int] = None,
+    network_ef_construction: Optional[int] = None,
+    network_ef: Optional[int] = None,
     network_k: int = 100,
     mutual_edges_only: bool = True,
     layout_method: Literal["umap", "tumap", "largevis"] = "umap",
@@ -87,16 +87,18 @@ def run_actionet(
         - "k*nn": k-star nearest neighbors (adaptive)
     network_density : float, optional (default: 1.0)
         Density factor for network construction.
-    network_M : int, optional (default: 16)
-        HNSW graph connectivity parameter for network construction.
-    network_ef_construction : float, optional (default: 200)
-        HNSW construction search breadth for network construction.
-        For ``network_algorithm="k*nn"``, the effective value is
-        ``max(network_ef_construction, kNN)``.
-    network_ef : float, optional (default: 200)
-        HNSW query search breadth for network construction.
-        For ``network_algorithm="k*nn"``, the effective value is
-        ``max(network_ef, kNN)``.
+    network_M : int or None, optional (default: None)
+        HNSW graph connectivity for network construction. ``None`` resolves
+        to 16.
+    network_ef_construction : int or None, optional (default: None)
+        HNSW construction search breadth. ``None`` resolves to
+        ``max(200, 4 * network_k)`` for ``"knn"`` and ``max(200, kNN)`` for
+        ``"k*nn"`` (``kNN = 5 * sqrt(n_obs)``). For ``"k*nn"``, explicit
+        values are floored at ``kNN``. See :func:`build_network`.
+    network_ef : int or None, optional (default: None)
+        HNSW query search breadth. ``None`` resolves to
+        ``max(200, 5 * network_k)`` for ``"knn"`` and ``max(200, kNN)`` for
+        ``"k*nn"``. For ``"k*nn"``, explicit values are floored at ``kNN``.
     network_k : int, optional (default: 100)
         Number of nearest neighbors for ``network_algorithm="knn"``.
     mutual_edges_only : bool, optional (default: True)

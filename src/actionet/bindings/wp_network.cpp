@@ -11,8 +11,9 @@ namespace py = pybind11;
 py::object build_network(py::array_t<float, py::array::c_style | py::array::forcecast> X,
                          std::string algorithm = "k*nn",
                          std::string distance_metric = "jsd", double density = 1.0,
-                         int thread_no = 0, double M = 16, double ef_construction = 200,
-                         double ef = 200, bool mutual_edges_only = true, int k = 10) {
+                         int thread_no = 0, std::optional<double> M = std::nullopt,
+                         std::optional<double> ef_construction = std::nullopt,
+                         std::optional<double> ef = std::nullopt, bool mutual_edges_only = true, int k = 10) {
     py::buffer_info buf = X.request();
     if (buf.ndim != 2) {
         throw std::runtime_error("Expected 2D array");
@@ -23,9 +24,10 @@ py::object build_network(py::array_t<float, py::array::c_style | py::array::forc
     params.distance_metric = std::move(distance_metric);
     params.density = density;
     params.thread_no = thread_no;
-    params.M = M;
-    params.ef_construction = ef_construction;
-    params.ef = ef;
+    // None maps to the core's 0 = auto sentinel.
+    params.M = M.value_or(0.0);
+    params.ef_construction = ef_construction.value_or(0.0);
+    params.ef = ef.value_or(0.0);
     params.mutual_edges_only = mutual_edges_only;
     params.k = k;
 
@@ -124,8 +126,8 @@ void init_network(py::module_ &m) {
     // build_network
     m.def("build_network", &build_network, "Build cell-cell network",
           py::arg("H"), py::arg("algorithm") = "k*nn", py::arg("distance_metric") = "jsd",
-          py::arg("density") = 1.0, py::arg("thread_no") = 0, py::arg("M") = 16,
-          py::arg("ef_construction") = 200, py::arg("ef") = 200,
+          py::arg("density") = 1.0, py::arg("thread_no") = 0, py::arg("M") = py::none(),
+          py::arg("ef_construction") = py::none(), py::arg("ef") = py::none(),
           py::arg("mutual_edges_only") = true, py::arg("k") = 10);
 
     // label_propagation

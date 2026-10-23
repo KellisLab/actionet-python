@@ -13,6 +13,20 @@ from .. import _core
 from ..io.persist import persist_updates
 
 
+def _check_hnsw_param(name: str, value) -> Optional[int]:
+    if value is None:
+        return None
+    if isinstance(value, (bool, np.bool_)):
+        raise ValueError(f"{name} must be a positive integer or None, got {value!r}")
+    if isinstance(value, (float, np.floating)):
+        if not float(value).is_integer():
+            raise ValueError(f"{name} must be a positive integer or None, got {value!r}")
+        value = int(value)
+    if not isinstance(value, (int, np.integer)) or value <= 0:
+        raise ValueError(f"{name} must be a positive integer or None, got {value!r}")
+    return int(value)
+
+
 def build_network(
     adata: AnnData,
     algorithm: Literal["knn", "k*nn"] = "k*nn",
@@ -20,9 +34,9 @@ def build_network(
     density: float = 1.0,
     n_threads: int = 0,
     mutual_edges_only: bool = True,
-    M: float = 16,
-    ef_construction: float = 200,
-    ef: float = 200,
+    M: Optional[int] = None,
+    ef_construction: Optional[int] = None,
+    ef: Optional[int] = None,
     k: int = 10,
     obsm_key: str = "H_stacked",
     key_added: str = "actionet",
@@ -41,17 +55,22 @@ def build_network(
     distance_metric : str
         Distance metric for similarity.
     density : float
-        Graph density factor.
-    M : float
-        HNSW graph connectivity parameter.
-    ef_construction : float
-        HNSW construction search breadth. For ``algorithm="k*nn"`` the
-        effective value is ``max(ef_construction, kNN)``.
-    ef : float
-        HNSW query search breadth. For ``algorithm="k*nn"`` the effective
-        value is ``max(ef, kNN)``.
+        Graph density factor (``algorithm="k*nn"`` only).
+    M : int or None
+        HNSW graph connectivity. ``None`` resolves to 16. Explicit values
+        must be at least 2.
+    ef_construction : int or None
+        HNSW index construction search breadth. ``None`` resolves to
+        ``max(200, 4 * k)`` for ``algorithm="knn"`` and ``max(200, kNN)`` for
+        ``algorithm="k*nn"``, where ``kNN = min(n - 1, 5 * round(sqrt(n)))``
+        is the adaptive query size. For ``"k*nn"``, explicit values are
+        floored at ``kNN``.
+    ef : int or None
+        HNSW query search breadth. ``None`` resolves to ``max(200, 5 * k)``
+        for ``algorithm="knn"`` and ``max(200, kNN)`` for ``algorithm="k*nn"``.
+        For ``"k*nn"``, explicit values are floored at ``kNN``.
     k : int
-        Number of nearest neighbors for ``algorithm="knn"``.
+        Number of nearest neighbors (``algorithm="knn"`` only).
     mutual_edges_only : bool
         Only keep mutual nearest neighbors.
     n_threads : int
@@ -66,6 +85,10 @@ def build_network(
     None or AnnData
         ``None`` if ``inplace=True``; modified copy otherwise.
     """
+    M = _check_hnsw_param("M", M)
+    ef_construction = _check_hnsw_param("ef_construction", ef_construction)
+    ef = _check_hnsw_param("ef", ef)
+
     if not inplace:
         adata = adata.copy()
     if obsm_key not in adata.obsm:

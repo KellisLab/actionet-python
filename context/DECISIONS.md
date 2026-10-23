@@ -306,6 +306,42 @@ This document records **deliberate architectural and operational decisions** for
 
 ---
 
+## Network construction parameters
+
+### HNSW parameters auto-resolved in C++
+
+**Decision:**
+
+- `build_network` / `run_actionet` expose `M`, `ef_construction`, and `ef`
+  (`network_M`, `network_ef_construction`, `network_ef`) as `Optional[int] = None`.
+  `None` means auto; explicit values must be positive integers.
+- `libactionet` owns resolution. `BuildNetworkParams` uses `0` as the auto
+  sentinel (never exposed in Python); negative values are rejected.
+- Rules, with `kNN = min(n-1, 5*round(sqrt(n)))`:
+  - `M`: 16. Explicit values must be at least 2.
+  - `knn`: `ef_construction = max(200, 4k)`, `ef = max(200, 5k)`. Explicit
+    values are used as given.
+  - `k*nn`: both `max(200, kNN)`. Explicit values are floored at `kNN`.
+- Default outputs are unchanged for `k*nn` and for `knn` with `k <= 40`.
+  `run_actionet(network_algorithm="knn")` with the default `network_k=100`
+  now uses `ef_construction=400, ef=500` instead of `200/200`.
+
+**Rationale:**
+
+- Choosing HNSW parameters requires HNSW knowledge that users should not need.
+  The fixed `200/200` defaults under-search for large `knn` `k`, which led the
+  Perturb-seq pipeline to hard-code `4k/5k`; the `k=100, 400/500` baseline is
+  also the one used by the scaling benchmark suite.
+- Resolving in C++ keeps the `k*nn` `kNN` heuristic in one place and lets the R
+  front-end adopt the same behavior (tracked in `src/libactionet/TODO.md`).
+
+**Related:**
+
+- `src/libactionet/include/network/build_network_core.hpp`
+- `tests/test_build_network_params.py`
+
+---
+
 ## Change management
 
 ### Native H5AD backed-I/O boundary

@@ -305,7 +305,10 @@ Multi-resolution archetypal analysis to identify cell states.
 an.build_network(adata, obsm_key='H_stacked', 
                  algorithm='k*nn', distance_metric='jsd')
 ```
-Build cell-cell interaction network from archetype footprints.
+Build cell-cell interaction network from archetype footprints. The HNSW index
+parameters `M`, `ef_construction`, and `ef` default to `None` and are resolved
+automatically from the algorithm, `k` (for `knn`), and the number of cells (for
+`k*nn`). Pass explicit integers only to override them.
 
 ### Network Diffusion
 
