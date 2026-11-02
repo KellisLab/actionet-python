@@ -64,9 +64,11 @@ def scale(
         If ``True``, center each column by its mean.  If an array, use
         those values directly.  ``False`` disables centering.
     scale : bool or array-like, default True
-        If ``True``, scale each column by its sample standard deviation
-        (``ddof=1``).  If an array, use those values directly.  ``False``
-        disables scaling.
+        If ``True``, divide each column, after any centering, by its root
+        mean square ``sqrt(sum(x**2) / max(1, n - 1))``, as R does.  With
+        ``center=True`` this is the sample standard deviation (``ddof=1``);
+        with ``center=False`` or explicit centers it is not.  If an array,
+        use those values directly.  ``False`` disables scaling.
 
     Returns
     -------
@@ -93,8 +95,16 @@ def scale(
         if center_vals.shape[0] != n_cols:
             raise ValueError("Length of center does not match number of columns")
 
+    centered = X - center_vals
+
     if isinstance(scale, bool):
-        scale_vals = X.std(axis=0, ddof=1) if scale else np.ones(n_cols)
+        if scale:
+            # R's base::scale divides by the root mean square of the centered
+            # columns; it equals the sample sd only when center=TRUE.
+            denom = max(1, X.shape[0] - 1)
+            scale_vals = np.sqrt((centered ** 2).sum(axis=0) / denom)
+        else:
+            scale_vals = np.ones(n_cols)
     else:
         scale_vals = np.asarray(scale, dtype=np.float64).ravel()
         if scale_vals.shape[0] != n_cols:
@@ -102,5 +112,5 @@ def scale(
 
     scale_vals = np.where(scale_vals == 0, 1, scale_vals)
 
-    result = (X - center_vals) / scale_vals
+    result = centered / scale_vals
     return result.ravel() if squeezed else result
