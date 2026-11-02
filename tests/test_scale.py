@@ -5,9 +5,8 @@ sqrt(sum(x^2) / max(1, n - 1)) of the (possibly) centered column, which is
 the sample standard deviation only when center=TRUE.
 """
 
-import warnings
-
 import numpy as np
+import pytest
 import scipy.sparse as sp
 
 from actionet.tools.scale import scale
@@ -66,8 +65,20 @@ def test_unchanged_paths():
     )
 
 
-def test_single_row_is_finite_without_warning():
-    with warnings.catch_warnings():
-        warnings.simplefilter("error")
+def test_single_row_default_preserves_nan_and_warning():
+    with pytest.warns(RuntimeWarning):
         out = scale(np.array([[3.0, 4.0]]))
-    np.testing.assert_array_equal(out, [[0.0, 0.0]])
+    assert np.isnan(out).all()
+
+
+def test_single_row_without_centering_uses_rms():
+    np.testing.assert_allclose(
+        scale(np.array([[3.0, -4.0, 0.0]]), center=False),
+        [[1.0, -1.0, np.nan]],
+        equal_nan=True,
+    )
+
+
+def test_single_row_explicit_center_zero_scale_is_nan():
+    out = scale(np.array([[3.0, 4.0]]), center=np.array([3.0, 4.0]))
+    assert np.isnan(out).all()

@@ -101,8 +101,12 @@ def scale(
         if scale:
             # R's base::scale divides by the root mean square of the centered
             # columns; it equals the sample sd only when center=TRUE.
-            denom = max(1, X.shape[0] - 1)
-            scale_vals = np.sqrt((centered ** 2).sum(axis=0) / denom)
+            if center is True and X.shape[0] == 1:
+                # Preserve the default single-row NaN and warning.
+                scale_vals = X.std(axis=0, ddof=1)
+            else:
+                denom = max(1, X.shape[0] - 1)
+                scale_vals = np.sqrt((centered ** 2).sum(axis=0) / denom)
         else:
             scale_vals = np.ones(n_cols)
     else:
@@ -110,6 +114,9 @@ def scale(
         if scale_vals.shape[0] != n_cols:
             raise ValueError("Length of scale does not match number of columns")
 
+    if X.shape[0] == 1 and scale is True:
+        # R leaves a zero single-row scale as 0, yielding NaN for 0 / 0.
+        scale_vals = np.where(scale_vals == 0, np.nan, scale_vals)
     scale_vals = np.where(scale_vals == 0, 1, scale_vals)
 
     result = centered / scale_vals
