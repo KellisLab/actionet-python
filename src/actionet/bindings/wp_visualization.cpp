@@ -17,8 +17,7 @@ std::vector<float> optional_float_vector(py::object values, const char* name) {
         return {};
     }
 
-    py::array_t<double, py::array::forcecast> arr =
-        values.cast<py::array_t<double, py::array::forcecast>>();
+    contiguous_array_t<double> arr = values.cast<contiguous_array_t<double>>();
     py::buffer_info buf = arr.request();
     if (buf.ndim != 1) {
         throw std::runtime_error(std::string("'") + name + "' must be a 1D array");

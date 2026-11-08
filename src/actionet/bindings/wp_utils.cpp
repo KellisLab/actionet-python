@@ -169,9 +169,11 @@ arma::sp_mat scipy_to_arma_sparse(py::object scipy_sparse) {
     // Ensure CSC format — AnnData typically stores X as CSC, so this is usually a no-op.
     py::object csc = scipy_sparse.attr("tocsc")();
 
-    auto data = csc.attr("data").cast<py::array_t<double, py::array::forcecast>>();
-    auto indices = csc.attr("indices").cast<py::array_t<py::ssize_t, py::array::forcecast>>();
-    auto indptr = csc.attr("indptr").cast<py::array_t<py::ssize_t, py::array::forcecast>>();
+    // SciPy keeps arrays passed to its constructors without copying, so these can
+    // be strided views; the loops below read them as packed memory.
+    auto data = csc.attr("data").cast<contiguous_array_t<double>>();
+    auto indices = csc.attr("indices").cast<contiguous_array_t<py::ssize_t>>();
+    auto indptr = csc.attr("indptr").cast<contiguous_array_t<py::ssize_t>>();
     auto shape = csc.attr("shape").cast<std::pair<py::ssize_t, py::ssize_t>>();
 
     auto data_ptr = data.data();

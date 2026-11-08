@@ -104,7 +104,8 @@ py::array_t<int> compute_coreness(py::object G) {
 py::array_t<double> compute_archetype_centrality(py::object G, py::array_t<int> sample_assignments) {
     arma::sp_mat G_sp = scipy_to_arma_sparse(G);
 
-    auto assignments_buf = sample_assignments.request();
+    const auto assignments = ensure_contiguous<int>(sample_assignments, "sample_assignments");
+    auto assignments_buf = assignments.request();
     auto assignments_ptr = static_cast<int*>(assignments_buf.ptr);
     arma::uvec assignments_vec(assignments_buf.size);
     for (size_t i = 0; i < assignments_buf.size; ++i) {
