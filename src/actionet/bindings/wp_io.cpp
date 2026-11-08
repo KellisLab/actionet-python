@@ -34,8 +34,7 @@ namespace {
             return {};
         }
 
-        py::array_t<double, py::array::forcecast> arr =
-            row_scale_factors.cast<py::array_t<double, py::array::forcecast>>();
+        contiguous_array_t<double> arr = row_scale_factors.cast<contiguous_array_t<double>>();
         py::buffer_info buf = arr.request();
         if (buf.ndim != 1) {
             throw std::runtime_error("row_scale_factors must be a 1D array");

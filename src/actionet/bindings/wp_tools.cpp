@@ -80,7 +80,8 @@ namespace {
             throw std::runtime_error("weights/means/sigma guide dimensions must match");
         }
 
-        py::buffer_info status_buf = status_arr.request();
+        const auto status_packed = ensure_contiguous<int>(status_arr, "status");
+        py::buffer_info status_buf = status_packed.request();
         if (status_buf.ndim != 1) {
             throw std::runtime_error("status must be a 1D array");
         }

@@ -65,6 +65,28 @@ arma::vec numpy_to_arma_vec(py::array_t<double, py::array::c_style | py::array::
 // Convert Armadillo vector to NumPy array
 py::array_t<double> arma_vec_to_numpy(const arma::vec& vec);
 
+/// @brief NumPy array type whose buffer is guaranteed C-contiguous.
+///
+/// ``py::array_t<T>`` and ``py::array_t<T, py::array::forcecast>`` convert the
+/// dtype but keep the caller's strides, so a view such as ``x[::2]``,
+/// ``x[::-1]`` or ``M[:, 0]`` arrives with non-unit strides.  Code that reads
+/// ``request().ptr`` as packed memory then reads the wrong elements, or reads
+/// outside the array for negative strides.  Adding ``c_style`` makes pybind11
+/// copy only when the input is not already C-contiguous, so the usual
+/// contiguous inputs are still passed through without a copy.
+template <typename T>
+using contiguous_array_t = py::array_t<T, py::array::c_style | py::array::forcecast>;
+
+/// @brief Return a C-contiguous version of ``arr`` (no copy if it already is).
+template <typename T>
+contiguous_array_t<T> ensure_contiguous(const py::handle& arr, const char* name) {
+    auto packed = contiguous_array_t<T>::ensure(arr);
+    if (!packed) {
+        throw std::runtime_error(std::string(name) + ": could not convert to a contiguous array");
+    }
+    return packed;
+}
+
 /// @brief Copy a 1-D signed integer NumPy array into an ``arma::uvec``.
 ///
 /// Consolidates the label / index unpacking loops that were previously
@@ -79,7 +101,10 @@ template <typename T>
 arma::uvec int_array_to_uvec(const py::array_t<T>& arr, const char* name = "index array") {
     static_assert(std::is_integral<T>::value, "int_array_to_uvec requires an integer element type");
 
-    py::buffer_info buf = arr.request();
+    // `arr` may be a strided or reversed NumPy view; the loop below indexes
+    // `buf.ptr` as packed memory, so normalise to C order first.
+    const contiguous_array_t<T> packed = ensure_contiguous<T>(arr, name);
+    py::buffer_info buf = packed.request();
     if (buf.ndim != 1) {
         throw std::runtime_error(
             std::string("Expected a 1D array for ") + name);
@@ -144,7 +169,9 @@ py::dict kernel_result_to_dict(const actionet::KernelReductionResult& res);
 
 /// @brief Parse a flexible singular-value argument (1D, Nx1, or 1xN) into arma::vec.
 inline arma::vec parse_sigma(py::object d) {
-    py::array_t<double, py::array::forcecast> d_arr = d.cast<py::array_t<double, py::array::forcecast>>();
+    // c_style: a reversed or strided `d` (e.g. `s[::-1]`) must be packed before
+    // its buffer is read as contiguous memory below.
+    contiguous_array_t<double> d_arr = d.cast<contiguous_array_t<double>>();
     py::buffer_info d_buf = d_arr.request();
     auto* ptr = static_cast<double*>(d_buf.ptr);
     if (d_buf.ndim == 1) {
