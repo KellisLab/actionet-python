@@ -1,0 +1,119 @@
+---
+title: "Untitled"
+---
+
+
+```{python}
+import anndata
+import actionet as an
+import numpy as np
+import pandas as pd
+```
+
+
+### Load backed data
+```{python}
+adata = anndata.read_h5ad("tmp/adata_agg_ALL_fil.h5ad", backed="r+")
+```
+
+## Within-cluster batch design (prototype)
+```{python}
+def make_batch_design(
+    adata,
+    cluster_key,
+    batch_key="Donor",
+    strata_key=None,
+    depth=None,
+    reduction_key="action",
+    protect_centroids=False,
+    max_batch_frac=0.3,
+    tol=1e-8,
+):
+    """Design matrix for ``an.correct_batch_effect(design=...)`` that removes batch effects within clusters.
+
+    ``correct_batch_effect`` removes span(S' D) from the reduction, where S is the uncentred,
+    lazy-transformed cells x genes matrix. Columns here are batch one-hots (plus an optional
+    depth covariate), centred within cluster x stratum so that differences in cluster
+    composition between batches are not removed, then made orthogonal over cells to:
+
+    * ``s = S mu_hat`` and ``r = S 1 / n_genes`` (recovered from ``obsm[f"{reduction_key}_B"]``),
+      which keeps the gene-mean direction and the all-ones gene vector out of span(S' D).
+      ``reduce_kernel`` already removed both; removing them again reflects ``s`` back into the
+      embedding as a constant offset plus a depth-correlated axis.
+    * optionally ``X xbar_g`` for each group centroid of ``obsm[reduction_key]``
+      (``protect_centroids``), so group means in the reduced space stay in place.
+
+    ``reduction_key`` must be the ``reduce_kernel`` output computed with the lazy transform that
+    is later passed to ``correct_batch_effect``. Clusters in which one batch exceeds
+    ``max_batch_frac`` of cells are first merged into the nearest remaining cluster centroid;
+    otherwise their batch effect is kept as if it were biology. ``depth`` is an optional
+    per-cell vector (e.g. log total counts) added as one column.
+
+    Returns an (n_obs x rank) orthonormal basis of the design column space, scaled to unit
+    root-mean-square over cells.
+    """
+    X = np.asarray(adata.obsm[reduction_key], dtype=float)
+    B_prior = np.asarray(adata.obsm[f"{reduction_key}_B"], dtype=float)
+    A_prior = np.asarray(adata.varm[f"{reduction_key}_A"], dtype=float)
+    if not np.allclose(A_prior[:, 1], 1.0):
+        raise ValueError(f"'{reduction_key}' does not carry reduce_kernel centring terms in its first two A/B columns.")
+
+    clusters = adata.obs[cluster_key].astype(str).to_numpy().copy()
+    batches = adata.obs[batch_key].astype(str).to_numpy()
+
+    top_frac = pd.crosstab(clusters, batches, normalize="index").max(axis=1)
+    keep = top_frac.index[top_frac <= max_batch_frac]
+    if len(keep) == 0:
+        raise ValueError("Every cluster is dominated by one batch; lower the resolution or raise max_batch_frac.")
+    centroids = pd.DataFrame(X).groupby(clusters).mean()
+    for c in top_frac.index.difference(keep):
+        clusters[clusters == c] = ((centroids.loc[keep] - centroids.loc[c]) ** 2).sum(axis=1).idxmin()
+
+    groups = clusters if strata_key is None else clusters + "|" + adata.obs[strata_key].astype(str).to_numpy()
+    g_codes, _ = pd.factorize(groups)
+
+    def center(M):
+        M = np.asarray(M, dtype=float).reshape(len(g_codes), -1)
+        return M - pd.DataFrame(M).groupby(g_codes).transform("mean").to_numpy()
+
+    D = center(pd.get_dummies(batches, dtype=float).to_numpy())
+    if depth is not None:
+        D = np.hstack([D, center(depth)])
+
+    s = -B_prior[:, 0]
+    r = A_prior[:, 0].mean() * s - B_prior[:, 1]
+    constraints = [np.ones(len(g_codes)), s, r]
+    if protect_centroids:
+        G = pd.get_dummies(g_codes, dtype=float).to_numpy()
+        constraints.append(X @ (X.T @ G / G.sum(axis=0)))
+    C, _ = np.linalg.qr(np.column_stack(constraints))
+    D -= C @ (C.T @ D)
+
+    evals, evecs = np.linalg.eigh(D.T @ D)
+    keep = evals > tol * evals.max()
+    return D @ (evecs[:, keep] / np.sqrt(evals[keep])) * np.sqrt(len(g_codes))
+```
+
+```{python}
+batch_key = "Donor"
+strata_key = "Region"
+reduction_use = "action_corrected"
+
+an.filter_anndata(adata, min_cells_per_feat = 0.001, inplace=True)
+
+layer_use=None
+lzt = an.create_lazy_transform(adata, target_sum=np.median(an.matrix_sums(adata, axis=1)))
+
+an.reduce_kernel(adata, n_components=30, layer=layer_use, lazy_transform=lzt)
+
+crude = anndata.AnnData(obs=pd.DataFrame(index=adata.obs_names), obsm={"action": np.asarray(adata.obsm["action"])})
+an.build_network(crude, algorithm="knn", distance_metric="l2", k=30, mutual_edges_only=False, obsm_key="action", key_added="unc_knn")
+an.cluster_network(crude, network_key="unc_knn", resolution_parameter=0.05, key_added="leiden_unc")
+adata.obs["leiden_unc"] = crude.obs["leiden_unc"].to_numpy()
+del crude
+design = make_batch_design(adata, cluster_key="leiden_unc", batch_key=batch_key, strata_key=strata_key)
+
+an.correct_batch_effect(adata, design=design, layer=layer_use, lazy_transform=lzt)
+an.run_actionet(adata, k_max = 30, reduction_key=reduction_use, layout_epochs=300, layout_min_dist=1, layout_spread=1, layout_3d=False)
+an.compute_archetype_feature_specificity(adata, layer=layer_use, lazy_transform=lzt)
+```

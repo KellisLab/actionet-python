@@ -338,9 +338,18 @@ Compute 2D/3D layout using UMAP or t-SNE.
 ```python
 an.correct_batch_effect(adata, batch_key='batch',
                         reduction_key='action',
-                        corrected_key='action_corrected')
+                        corrected_suffix='corrected')
 ```
 Remove batch effects from reduced representation using orthogonalization.
+
+```python
+an.correct_batch_effect(adata, batch_key='Donor', groups='auto',
+                        strata_key='Region')
+```
+Within-group correction: batches are compared only between cells of the same
+coarse cluster and stratum, which protects covariates such as brain region and
+removes the within-cluster sequencing-depth axis. See `an.build_batch_design`
+and `an.estimate_batch_groups` for step-by-step control.
 
 ```python
 an.correct_basal_expression(adata, basal_genes=['ACTB', 'GAPDH'],

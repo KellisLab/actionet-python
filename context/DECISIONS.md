@@ -342,6 +342,60 @@ This document records **deliberate architectural and operational decisions** for
 
 ---
 
+## Batch correction
+
+### Orthogonalization basis and within-group designs
+
+**Decision:**
+
+- The orthogonalization entry points (`batch`, `basal`, dense, sparse, sparse
+  labels, operator) project the correction basis `Z = orth(S' D)` off
+  `span([A_prior, 1_g])` before deflating, where `A_prior` is the reduction's
+  gene-side history (`varm[f"{key}_A"]`). The intercept augmentation
+  (`A = [1 | Z]`, `B = [-mu | B]`) is removed; after the projection it is
+  identically zero.
+- `Z` and the perturbed-SVD residuals `P`, `Q` are orthonormalized with rank
+  detection (relative tolerance `1e-10`). Dependent design columns drop only
+  their own direction. Designs may be rank deficient.
+- Every correction applies the full Brand (2006) rank-k update. The previous
+  behavior, where a near-zero column made `gram_schmidt` discard the cell-side
+  residual for `<= 16` correction columns, is gone.
+- Within-group batch correction is part of the Python API:
+  `estimate_batch_groups`, `build_batch_design`, and `correct_batch_effect`
+  parameters `groups`, `strata_key`, `depth`, `max_batch_frac`,
+  `group_kwargs`. Batch one-hots are centred within cluster x stratum and
+  decorrelated from `[1_n, obsm[f"{key}_B"]]`. The depth column is opt-in and
+  experimental.
+- Output changes (breaking): `batch_key`, `design`, and basal corrections no
+  longer reflect the gene-mean direction back into the embedding, so their
+  `sigma` and embeddings differ from earlier releases. The prototype design
+  with more than 16 batches reproduces earlier outputs to `1e-13`.
+  `uns[f"{key}_params"]` gains `correction_rank`.
+
+**Rationale:**
+
+- Re-removing directions already removed by `reduce_kernel` (the gene-mean
+  direction `a1` and the all-ones vector) reflected `s = S a1` back into the
+  embedding as a depth-correlated axis. On the synthetic regression data this
+  axis was the leading component (`sigma_1` 46.4 vs 36.6 after the fix).
+- The silent rank-dependent switch between two different updates made results
+  depend on the number of donors.
+- The within-group design fixes the two limitations found on multi-region
+  brain atlases: sequencing depth as the largest unwanted axis, and
+  over-correction of biology that differs between strata (e.g. region).
+
+**Related:**
+
+- `src/libactionet/src/decomposition/orthogonalization.cpp`
+- `src/libactionet/src/utils_internal/utils_decomp.cpp` (`orthonormal_basis`,
+  `orthonormal_factor`)
+- `src/actionet/tools/batch_correction.py`
+- `tests/test_batch_correction_grouped.py`
+- `plans/GROUPED_BATCH_CORRECTION_HANDOFF.md` (atlas validation outstanding)
+- R front-end follow-up tracked in `src/libactionet/TODO.md`
+
+---
+
 ## Change management
 
 ### Native H5AD backed-I/O boundary

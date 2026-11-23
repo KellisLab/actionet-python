@@ -17,6 +17,10 @@ For each `b` in --batch-counts:
     - Run `correct_batch_effect(adata.copy(), batch_key=...)` for `--trials`.
     - Record wall, peak RSS, sigma, and the perturbed S_r/U for parity probes.
 
+`--mode grouped` instead times the within-group pipeline stage by stage:
+`estimate_batch_groups` → `build_batch_design` (optionally with
+`--strata-key`) → `correct_batch_effect(design=...)`. `wall_s` is the sum.
+
 Usage:
     python tests/benchmark_batch_correction.py \\
         --dataset data/adata_agg_Hm_STR_MSN_1000plus_only_processed.h5ad \\
@@ -174,11 +178,13 @@ class TrialResult:
     wall_s: float
     peak_rss_mb: float
     sigma: List[float] = field(default_factory=list)
+    stages: Dict[str, Dict[str, float]] = field(default_factory=dict)
 
 
 @dataclass
 class SweepResult:
     tag: str
+    mode: str
     dataset: str
     n_obs: int
     n_vars: int
@@ -228,6 +234,9 @@ def run_sweep(
     seed: int,
     k: int,
     natural_batch_key: str,
+    mode: str = "plain",
+    strata_key: Optional[str] = None,
+    max_batch_frac: float = 0.3,
 ) -> SweepResult:
     import actionet
 
@@ -240,6 +249,7 @@ def run_sweep(
     git_sha = _git_sha()
     out = SweepResult(
         tag=tag,
+        mode=mode,
         dataset=str(dataset_path),
         n_obs=n_obs,
         n_vars=n_vars,
@@ -277,21 +287,46 @@ def run_sweep(
             adata.uns["action_params"] = dict(snap_params)
 
             gc.collect()
-            with StageProfiler() as prof:
-                actionet.correct_batch_effect(
-                    adata,
-                    batch_key="_bench_batch",
-                    reduction_key="action",
-                    inplace=True,
-                )
+            stages: Dict[str, Dict[str, float]] = {}
+            if mode == "plain":
+                with StageProfiler() as prof:
+                    actionet.correct_batch_effect(
+                        adata,
+                        batch_key="_bench_batch",
+                        reduction_key="action",
+                        inplace=True,
+                    )
+                wall_s, peak_rss_mb = prof.elapsed, prof.peak_rss_mb
+            else:
+                frac = max_batch_frac if max_batch_frac > 1.0 / n_unique else None
+                with StageProfiler() as p_groups:
+                    groups = actionet.estimate_batch_groups(adata, reduction_key="action")
+                with StageProfiler() as p_design:
+                    design = actionet.build_batch_design(
+                        adata, "_bench_batch", groups=groups, strata_key=strata_key,
+                        max_batch_frac=frac, reduction_key="action",
+                    )
+                with StageProfiler() as p_correct:
+                    actionet.correct_batch_effect(
+                        adata, design=design, reduction_key="action", inplace=True,
+                    )
+                del design
+                profs = {"groups": p_groups, "design": p_design, "correct": p_correct}
+                stages = {
+                    name: {"wall_s": p.elapsed, "peak_rss_mb": p.peak_rss_mb}
+                    for name, p in profs.items()
+                }
+                wall_s = sum(p.elapsed for p in profs.values())
+                peak_rss_mb = max(p.peak_rss_mb for p in profs.values())
 
             sigma = list(map(float, adata.uns["action_corrected_params"]["sigma"]))
             tr = TrialResult(
                 n_batches=n_unique,
                 trial=trial,
-                wall_s=prof.elapsed,
-                peak_rss_mb=prof.peak_rss_mb,
+                wall_s=wall_s,
+                peak_rss_mb=peak_rss_mb,
                 sigma=sigma,
+                stages=stages,
             )
             out.trials.append(asdict(tr))
 
@@ -308,9 +343,10 @@ def run_sweep(
             if "action_corrected_params" in adata.uns:
                 del adata.uns["action_corrected_params"]
 
+            stage_txt = " ".join(f"{name}={s['wall_s']:.3f}s" for name, s in stages.items())
             print(
                 f"[run] b={n_unique:>4d} trial={trial} "
-                f"wall={prof.elapsed:7.3f}s rss_delta={prof.peak_rss_mb:7.1f}MB",
+                f"wall={wall_s:7.3f}s rss_delta={peak_rss_mb:7.1f}MB {stage_txt}",
                 flush=True,
             )
 
@@ -425,6 +461,12 @@ def main(argv: Optional[List[str]] = None) -> int:
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--k", type=int, default=30, help="Reduction rank")
     p.add_argument("--natural-batch-key", type=str, default="UID")
+    p.add_argument("--mode", choices=["plain", "grouped"], default="plain")
+    p.add_argument("--strata-key", type=str, default=None, help="obs column protected in grouped mode")
+    p.add_argument(
+        "--max-batch-frac", type=float, default=0.3,
+        help="Grouped mode merge threshold; merging is skipped when it is <= 1/b",
+    )
     p.add_argument(
         "--baseline-json",
         type=Path,
@@ -446,6 +488,9 @@ def main(argv: Optional[List[str]] = None) -> int:
         seed=args.seed,
         k=args.k,
         natural_batch_key=args.natural_batch_key,
+        mode=args.mode,
+        strata_key=args.strata_key,
+        max_batch_frac=args.max_batch_frac,
     )
 
     if args.baseline_json is not None:

@@ -27,6 +27,38 @@ def _check_hnsw_param(name: str, value) -> Optional[int]:
     return int(value)
 
 
+def _build_network_matrix(
+    H: np.ndarray,
+    *,
+    algorithm: str = "k*nn",
+    distance_metric: str = "jsd",
+    density: float = 1.0,
+    n_threads: int = 0,
+    mutual_edges_only: bool = True,
+    M: Optional[int] = None,
+    ef_construction: Optional[int] = None,
+    ef: Optional[int] = None,
+    k: int = 10,
+    label: str = "input matrix",
+):
+    """Build the cell-cell graph for ``H`` (cells x features) and return it as SciPy CSR."""
+    M = _check_hnsw_param("M", M)
+    ef_construction = _check_hnsw_param("ef_construction", ef_construction)
+    ef = _check_hnsw_param("ef", ef)
+
+    H = np.ascontiguousarray(H, dtype=np.float32)
+    if not np.isfinite(H).all():
+        raise ValueError(
+            f"{label} contains NaN or Inf values. "
+            "Clean the input matrix before building a network."
+        )
+
+    return _core.build_network(
+        H, algorithm, distance_metric, density, n_threads,
+        M, ef_construction, ef, mutual_edges_only, k
+    )
+
+
 def build_network(
     adata: AnnData,
     algorithm: Literal["knn", "k*nn"] = "k*nn",
@@ -94,19 +126,18 @@ def build_network(
     if obsm_key not in adata.obsm:
         raise ValueError(f"Archetype matrix '{obsm_key}' not found. Run run_action first.")
 
-    H = adata.obsm[obsm_key]
-
-    H = np.ascontiguousarray(H, dtype=np.float32)
-
-    if not np.isfinite(H).all():
-        raise ValueError(
-            f"obsm['{obsm_key}'] contains NaN or Inf values. "
-            "Clean the input matrix before building a network."
-        )
-
-    G = _core.build_network(
-        H, algorithm, distance_metric, density, n_threads,
-        M, ef_construction, ef, mutual_edges_only, k
+    G = _build_network_matrix(
+        adata.obsm[obsm_key],
+        algorithm=algorithm,
+        distance_metric=distance_metric,
+        density=density,
+        n_threads=n_threads,
+        mutual_edges_only=mutual_edges_only,
+        M=M,
+        ef_construction=ef_construction,
+        ef=ef,
+        k=k,
+        label=f"obsm['{obsm_key}']",
     )
 
     persist_updates(adata, obsp={key_added: G})
