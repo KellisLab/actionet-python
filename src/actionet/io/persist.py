@@ -414,7 +414,8 @@ def persist_updates(
     if not is_backed_adata(adata):
         return
 
-    _ensure_backed_writable(adata)
+    if get_auto_persist(adata):
+        _ensure_backed_writable(adata)
 
     results = {
         "obs_columns": obs,

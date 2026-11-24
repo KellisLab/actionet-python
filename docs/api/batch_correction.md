@@ -5,17 +5,19 @@ Batch-effect correction and basal-expression correction routines.
 `correct_batch_effect` removes the gene-space directions spanned by `S' D`
 (`S` the cells x genes matrix, `D` the design) from a `reduce_kernel`
 reduction with a rank-k SVD update. With only `batch_key`, `D` is the batch
-one-hot matrix. Passing `groups`, `strata_key` or `depth` switches to
-within-group correction:
+one-hot matrix. Passing `groups`, `strata_key`, `depth` or
+`decorrelate_from_reduction=True` switches to within-group correction:
 
 - Batch one-hots are centred within each group (cluster x stratum), so
   differences in cell-type or region composition between batches are not
   removed as batch effects.
 - Groups dominated by one batch (more than `max_batch_frac` of their cells)
   are merged into the group with the nearest centroid.
-- The design is decorrelated from the reduction's cell-side centring terms
-  (`obsm[f"{reduction_key}_B"]`), which removes the main sequencing-depth
-  confound.
+- `decorrelate_from_reduction=True` makes the design orthogonal to the
+  reduction's cell-side centring terms (`obsm[f"{reduction_key}_B"]`), as in
+  the original prototype. It is off by default. Those terms track
+  sequencing depth, so with it on, most within-batch depth variation is left
+  in the corrected embedding.
 
 ```python
 import actionet as an

@@ -11,6 +11,7 @@ from actionet.io.persist import (
     is_backed_adata,
     persist_updates,
     apply_inmemory_updates,
+    set_auto_persist,
 )
 
 from .conftest import make_test_adata, open_backed
@@ -260,6 +261,22 @@ class TestBackedPersist:
                 tmp_h5,
                 {"obsp_keys": {"conn": df}},
             )
+
+    def test_persist_updates_readonly_backed_deferred(self, tmp_path):
+        """Read-only backed objects take in-memory updates when auto-persist is off."""
+        path = tmp_path / "ro.h5ad"
+        make_test_adata(n_cells=10, n_genes=5, sparse_fmt="csr", seed=1).write_h5ad(path)
+        emb = np.ones((10, 2))
+        ro = ad.read_h5ad(path, backed="r")
+        try:
+            with pytest.raises(ValueError, match="read-only"):
+                persist_updates(ro, uns={"foo": "bar"})
+            set_auto_persist(ro, False)
+            persist_updates(ro, obsm={"emb": emb})
+            np.testing.assert_array_equal(ro.obsm["emb"], emb)
+        finally:
+            ro.file.close()
+        assert "emb" not in ad.read_h5ad(path).obsm
 
 
 # ---------------------------------------------------------------------------

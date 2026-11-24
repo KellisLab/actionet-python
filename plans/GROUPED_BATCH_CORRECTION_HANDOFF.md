@@ -1,8 +1,15 @@
 # Within-group batch correction: implementation handoff
 
-Status: implemented and tested on synthetic data. Atlas-scale validation is
-outstanding and has to run on the machine that holds the atlas
-(`tmp/adata_agg_ALL_fil.h5ad`, the data behind `new_batch_corr.qmd`).
+Status: implemented and tested on synthetic data and MSN. Validated on the
+PFC/VMB subset of the atlas (section 4c):
+- The grouped path reproduces the prototype result.
+- The plain `batch_key` path still connects dissimilar lineages.
+
+Decisions after validation (recorded in DECISIONS.md):
+- `decorrelate_from_reduction` now defaults to `False`, and
+  `correct_batch_effect` exposes it.
+- The full Brand update stays.
+- The plain path is unchanged.
 
 All changes are **uncommitted** on branch `dev` in both repositories:
 actionet-python on top of `e9e33a7`, libactionet on top of `92c0e2e`.
@@ -62,25 +69,29 @@ actionet-python on top of `e9e33a7`, libactionet on top of `92c0e2e`.
     `obsp`.
   - `build_batch_design(adata, batch_key, groups=None, strata_key=None,
     depth=None, max_batch_frac=0.3, reduction_key="action",
-    decorrelate_from_reduction=True, group_kwargs=None, key_added=None)`.
+    decorrelate_from_reduction=False, group_kwargs=None, key_added=None)`.
+    The default was `True` until the atlas validation (section 4c).
     `groups` accepts an obs key, an array, `"auto"` or `None`.
   - Design steps:
     1. Merge dominated clusters into the nearest centroid.
     2. Form groups as cluster × stratum.
     3. Centre one-hots within groups (bincount, no pandas groupby).
     4. Add the optional centred depth column.
-    5. Project off `[1_n, obsm[key_B]]` with a pivoted QR.
+    5. With `decorrelate_from_reduction=True`, project off
+       `[1_n, obsm[key_B]]` with a pivoted QR.
   - The prototype's eigh-whitening is gone, because the C++ handles rank
     deficiency.
   - `max_batch_frac` must be greater than `1/n_batches`; `None` disables
     merging.
   - `correct_batch_effect` gained `groups`, `strata_key`, `depth`,
-    `max_batch_frac` and `group_kwargs`. Setting any of the first three
-    builds the design from `batch_key`.
+    `max_batch_frac`, `group_kwargs` and `decorrelate_from_reduction`.
+    Setting any of `groups`, `strata_key`, `depth`, or
+    `decorrelate_from_reduction=True` builds the design from `batch_key`.
     - Outputs: `obs[f"{corrected_key}_groups"]` (cluster labels after
       merging) and `uns[f"{corrected_key}_params"]["grouped_design"]` (group
-      source, `strata_key`, `depth`, `max_batch_frac`, merge map, `n_groups`,
-      `n_batches`, design columns).
+      source, `strata_key`, `depth`, `max_batch_frac`,
+      `decorrelate_from_reduction`, merge map, `n_groups`, `n_batches`,
+      design columns).
     - Every correction now records `correction_rank`.
 - `network/build.py`: added the private `_build_network_matrix` (returns CSR,
   no AnnData). `network/cluster.py`: added the private `_leiden_membership`.
@@ -333,6 +344,213 @@ Interpretation, to confirm on the atlas: the full update solves
 `K_k - K Z Z' = K_k (I - Z Z') - (K - K_k) Z Z'`. The second term re-injects
 the batch content of the residual outside the top k. That would explain the
 higher same-donor fraction, and possibly also part of the depth reduction.
+
+### 4c. Atlas validation: PFC/VMB subset (Linux x86_64, MKL)
+
+Data: `/data/adatas/adata_agg_PFC_VMB_fil.h5ad`, opened read-only and backed.
+- Size: 1,154,246 cells × 27,384 genes, 4.19 × 10⁹ nonzeros.
+- Design factors: 129 donors, 198 samples (`UID`), and 2 regions (PFC
+  761,793 cells, VMB 392,453).
+- Annotation: 59 `full_label` types.
+
+The file holds the prototype's validated result, called "gold" below:
+- `obsm["action_corrected"]`, with its ACTIONet graph;
+- the uncorrected reduction `obsm["action"]`;
+- the crude groups `obs["leiden_unc"]` (21 clusters).
+
+Method:
+- **Arms.** The reduction was computed on 1,167,728 cells, and the file was
+  subset afterwards. The section-4 driver recomputes `reduce_kernel`, so it
+  cannot be compared against the gold, and was not used. Instead, every arm
+  corrects the stored `obsm["action"]` through `correct_batch_effect`, using
+  the stored lazy transform (target sum 7928, natural log1p).
+- **Location.** Scripts and full tables are in `build/atlas_pfc_vmb/`
+  (gitignored). `out/summary.md` has every arm in both spaces.
+- **Embedding metrics.** These use a k = 30 kNN graph on L1-normalized rows,
+  which is what `run_action(prenormalize=True)` sees. Raw-space values agree.
+  - *Cross-lineage*: fraction of neighbours in another of 12 lineages
+    (`full_label` truncated to Glut, GABA, DA, Glia.*, Imm.*, Vasc.*).
+    Imm.Micro ↔ Imm.PVM is not counted. The Vasc.Endo column restricts this
+    to endothelial cells.
+  - *Same sample*: among a cell's neighbours with the same label and
+    region, the fraction from its own `UID`. Perfect mixing gives 0.017.
+  - *Same region*: within label, over labels with at least 200 cells per
+    region. Perfect mixing gives 0.535.
+  - *Depth R²*: the fraction of within-label log-total-count variance that
+    one linear map of the embedding explains, with both centred per label.
+- **Graph metrics.** These apply the same definitions, edge-weighted, to
+  the ACTIONet graph: `run_action(k_max=30)`, then `build_network` with the
+  `run_actionet` defaults (k\*nn, JSD).
+
+Embedding kNN:
+
+| arm | change | cross-lineage | Vasc.Endo cross-lineage | same label | same sample | same region | depth R² |
+|---|---|---|---|---|---|---|---|
+| uncorrected | | 0.0011 | 0.0036 | 0.911 | 0.585 | 0.932 | 0.741 |
+| gold | stored prototype result | 0.0006 | 0.0032 | 0.920 | 0.461 | 0.914 | 0.670 |
+| `pkg` | `groups="leiden_unc"`, Donor, Region (prototype design) | 0.0006 | 0.0026 | 0.920 | 0.457 | 0.916 | 0.662 |
+| `auto` | `groups="auto"` | 0.0007 | 0.0024 | 0.920 | 0.455 | 0.915 | 0.663 |
+| `proj` | projected update | 0.0007 | 0.0024 | 0.925 | 0.310 | 0.910 | 0.709 |
+| `nodecor` | `decorrelate_from_reduction=False` | 0.0004 | 0.0014 | 0.924 | 0.427 | 0.918 | 0.298 |
+| `depth` | depth column | 0.0008 | 0.0026 | 0.920 | 0.460 | 0.917 | 0.686 |
+| `nodecor_depth` | depth column, no decorrelation | 0.0004 | 0.0018 | 0.923 | 0.429 | 0.918 | 0.146 |
+| `proj_nodecor` | projected, no decorrelation | 0.0004 | 0.0019 | 0.929 | 0.290 | 0.916 | 0.717 |
+| `nostrata` | no Region strata | 0.0006 | 0.0028 | 0.920 | 0.458 | 0.883 | 0.675 |
+| `pkg_uid` | `UID` as batch | 0.0007 | 0.0030 | 0.911 | 0.462 | 0.917 | 0.665 |
+| plain Donor | `batch_key="Donor"` | 0.0021 | 0.0168 | 0.916 | 0.470 | 0.874 | 0.522 |
+| plain Donor, pre-change build | | 0.0024 | 0.0311 | 0.918 | 0.438 | 0.863 | 0.596 |
+| plain UID | `batch_key="UID"` | 0.0034 | 0.0405 | 0.907 | 0.480 | 0.879 | 0.455 |
+| plain UID, pre-change build | | 0.0027 | 0.0303 | 0.906 | 0.446 | 0.868 | 0.510 |
+
+ACTIONet graph:
+
+| graph | archetypes (stacked/merged) | cross-lineage | Vasc.Endo cross-lineage | Endo → Oligo | same label | same sample | same region |
+|---|---|---|---|---|---|---|---|
+| gold, stored graph (original, larger `k_max`) | 855/32 | 0.0011 | 0.0020 | 0.0002 | 0.892 | 0.137 | 0.860 |
+| gold | 398/22 | 0.0011 | 0.0018 | 0.0003 | 0.872 | 0.083 | 0.835 |
+| `pkg` | 368/21 | 0.0013 | 0.0021 | 0.0003 | 0.869 | 0.078 | 0.840 |
+| `proj` | 367/21 | 0.0012 | 0.0017 | 0.0003 | 0.874 | 0.077 | 0.838 |
+| `nodecor` | 377/20 | 0.0010 | 0.0017 | 0.0002 | 0.887 | 0.062 | 0.848 |
+| `nodecor_depth` | 355/20 | 0.0009 | 0.0016 | 0.0002 | 0.879 | 0.057 | 0.835 |
+| plain Donor | 401/22 | 0.0017 | 0.0147 | 0.0114 | 0.886 | 0.107 | 0.761 |
+| plain Donor, pre-change build | 292/17 | 0.0041 | 0.1198 | 0.1037 | 0.879 | 0.068 | 0.729 |
+
+"Endo → Oligo" is the fraction of Vasc.Endo cells' neighbours that are
+Glia.Oligo. Compare arms against the gold row built with the same settings,
+not the stored graph.
+
+Results, by the checks in section 4:
+
+1. **Regime and parity: pass.** There are 129 donors, so the full Brand
+   path applies.
+   - On the prototype design, the new build reproduces the pre-change build
+     to 2.8e-14 relative in sigma and 2.7e-6°.
+   - `pkg` equals the prototype design.
+   - Against the stored gold: per-column correlation is 0.987–0.9999, the
+     largest top-10 principal angle is 4.6°, kNN Jaccard is 0.65, and every
+     metric is within 0.01. The residual gap comes from the 13,482 cells
+     removed after the gold was computed.
+   - With the same ACTION settings, the `pkg` and gold graphs agree on every
+     metric to within 0.006.
+   - The stored graph's higher label and region purity comes from its larger
+     `k_max`, not from the correction.
+2. **Full vs projected update: keep full.**
+   - In the embedding, `proj` mixes samples better (0.31 vs 0.46), as on
+     synthetic data.
+   - It cannot remove any cell-level confound that the uncorrected
+     embedding carries. Its cell side stays in `span(U_k)`, so its
+     embedding is a linear re-weighting of the uncorrected one. Raw-space
+     depth R² is exactly the uncorrected 0.756, with or without
+     decorrelation or a depth column.
+   - It also collapses about 8 of the 50 components (σ₅₀ is 76, against
+     773 for the full update).
+   - In the ACTIONet graph the two are indistinguishable: same sample is
+     0.077 vs 0.078, and same label 0.874 vs 0.869. The embedding-level
+     mixing gap does not survive ACTION, so an `update="projected"` option
+     would buy nothing downstream here.
+3. **Group estimation: pass.**
+   - `auto` reproduces `leiden_unc` (ARI 0.955) and merges the same
+     dominated cluster (12 into 1).
+   - Every metric is within 0.003 of `pkg`.
+   - Cost at 1.15M cells: 206 s and 8.9 GB peak RSS.
+   - Unlike MSN, the crude clusters here follow cell type, not donor.
+4. **Decorrelation default: evidence agrees with MSN; the default is now
+   off.** `nodecor` beats `pkg` on every metric:
+   - within-label depth R²: 0.30 vs 0.66;
+   - same sample: 0.43 vs 0.46;
+   - same label: 0.924 vs 0.920;
+   - same region: 0.918 vs 0.916;
+   - Vasc.Endo cross-lineage: 0.0014 vs 0.0026.
+
+   The graph agrees, against the gold built with the same settings:
+   - same label: 0.887 vs 0.872;
+   - same sample: 0.062 vs 0.083;
+   - same region: 0.848 vs 0.835;
+   - cross-lineage: 0.0010 vs 0.0011.
+
+   The constraint makes every batch column orthogonal over cells to the
+   per-cell depth proxies `s` and `r`, so the correction cannot touch
+   within-batch depth variation. The gold, built with the constraint, keeps
+   the same depth signal as `pkg` (0.67). Flipping the default therefore
+   moves away from the validated result: `nodecor` vs gold has kNN Jaccard
+   0.34 and top-10 angles up to 41°.
+5. **Depth column: only without decorrelation, and not free.**
+   - Without decorrelation, it halves depth R² again in the embedding
+     (`nodecor_depth`, 0.30 to 0.15), with no other embedding-level change.
+   - With decorrelation, it slightly raises it (0.66 to 0.69). This matches
+     MSN.
+   - In the graph, it gives the best mixing (same sample 0.057 vs 0.062).
+     It costs some structure relative to `nodecor`: same label 0.879 vs
+     0.887, same region 0.835 vs 0.848.
+   - It still matches or beats the gold on every graph metric.
+   - Keep it opt-in.
+6. **Plain path: the reflection fix works, but the plain path is still
+   unsafe on this atlas.** The reported Vasc.Endo/Glia.Oligo collapse has
+   two causes, and the new build fixes only one.
+   - **Reflection (fixed).** The pre-change build re-adds `s` as the top
+     component:
+     - σ is 41,387, against 18,468 for the uncorrected top and 7,449
+       grouped;
+     - it correlates 1.000 with `s` and 0.84 with log depth;
+     - it is positive in every cell and carries a median 50% of each
+       cell's L1 norm, which ACTION's row normalization then compresses
+       biology against.
+
+     The new build removes this axis: σ₁ for the plain Donor correction is
+     3,055.
+
+     This is what produced the reported collapse. In the pre-change
+     plain-Donor graph, 10.4% of Vasc.Endo neighbours are Glia.Oligo. The
+     new build brings that down to 1.1%.
+   - **Composition (not fixed).** Raw donor one-hots span each donor's mean
+     profile, and so its cell-type composition. Plain correction:
+     - removes 23–30% of the grouped embedding's top axis (Micro/PVM/Oligo
+       vs Astro/OPC) and 35–56% of its fifth;
+     - lets Vasc.Endo cross-lineage neighbours reach 1.7% (Donor) or 4.1%
+       (UID), against 0.3% for gold;
+     - drops region retention to 0.87–0.88.
+
+     For UID, the new plain path is no better than the old one.
+   - In the graph, the new plain-Donor path still has:
+     - Endo → Oligo at 1.1%, against 0.03% for any grouped arm;
+     - same region at 0.761, against 0.835–0.848;
+     - same sample at 0.107, worse than grouped.
+   - Every grouped arm keeps Vasc.Endo cross-lineage at or below the
+     uncorrected 0.36% in the embedding.
+7. **Performance.** Arms ran three to four at a time on 48 cores, so these
+   wall times include contention.
+   - Correction: 342–670 s per arm (two backed passes over 4.19 × 10⁹
+     nonzeros), 12–17 GB peak RSS.
+   - Designs: 2–5 s.
+   - ACTION with `k_max=30`: 100–127 min per arm.
+   - k\*nn network: 56–97 min per arm.
+8. **Reduction determinism: not run.** This atlas is a subset, so the
+   stored reduction was reused.
+
+Also on this atlas:
+- **Strata.** Region strata keep region structure: 0.916, against 0.883
+  without strata.
+- **Batch key.** Donor beats UID. Within a Region stratum a UID is a donor,
+  so `UID` only adds donor × region columns: rank 196 vs 128. Those columns
+  cost label purity (0.911 vs 0.920) and gain no mixing.
+
+Code findings, all fixed after the evaluation:
+- `correct_batch_effect` did not pass through `decorrelate_from_reduction`.
+  It now does.
+- The `build_batch_design` docstring for `depth` said decorrelation "already
+  removes the main depth confound". On both real datasets, decorrelation
+  retains it.
+- `persist_updates` called `_ensure_backed_writable` before checking
+  `get_auto_persist`. Any tool therefore raised on a `backed="r"` object
+  even with auto-persist off. The check now runs only when auto-persist is
+  on.
+
+Decisions taken on this evidence:
+- `decorrelate_from_reduction` defaults to `False`.
+- The full Brand update stays.
+- The plain `batch_key` path is unchanged.
+- The tests and the validation driver pass `decorrelate_from_reduction=True`
+  wherever they check parity with the prototype.
 
 ---
 

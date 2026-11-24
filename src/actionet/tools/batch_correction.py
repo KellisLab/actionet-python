@@ -153,7 +153,7 @@ def _batch_design(
     depth: Optional[Union[str, np.ndarray]] = None,
     max_batch_frac: Optional[float] = 0.3,
     reduction_key: str = "action",
-    decorrelate_from_reduction: bool = True,
+    decorrelate_from_reduction: bool = False,
     group_kwargs: Optional[dict] = None,
 ) -> tuple[np.ndarray, dict[str, Any]]:
     """Build the within-group batch design and return it with its provenance."""
@@ -286,7 +286,7 @@ def build_batch_design(
     depth: Optional[Union[str, np.ndarray]] = None,
     max_batch_frac: Optional[float] = 0.3,
     reduction_key: str = "action",
-    decorrelate_from_reduction: bool = True,
+    decorrelate_from_reduction: bool = False,
     group_kwargs: Optional[dict] = None,
     key_added: Optional[str] = None,
 ) -> np.ndarray:
@@ -315,9 +315,9 @@ def build_batch_design(
         estimated between cells of the same stratum.
     depth : str, ndarray, or None
         Optional per-cell depth covariate (e.g. log total counts), added as
-        one extra column centred within groups. Experimental: the
-        ``decorrelate_from_reduction`` constraint already removes the main
-        depth confound.
+        one extra column centred within groups. Experimental. It has little
+        effect with ``decorrelate_from_reduction=True``, which projects most
+        of it away.
     max_batch_frac : float or None
         Groups in which a single batch exceeds this fraction of cells are
         merged into the group with the nearest centroid in
@@ -329,8 +329,10 @@ def build_batch_design(
     decorrelate_from_reduction : bool
         Make the design orthogonal over cells to the all-ones vector and to
         ``obsm[f"{reduction_key}_B"]`` (for a fresh reduction, the per-cell
-        projection on the gene-mean direction and the mean expression), so the
-        correction does not reintroduce those sequencing-depth axes.
+        projection on the gene-mean direction and the mean expression).
+        ``True`` reproduces the original prototype design. Because those terms
+        track sequencing depth, the constraint also keeps most within-batch
+        depth variation out of the correction.
     group_kwargs : dict or None
         Keyword arguments for :func:`estimate_batch_groups` when
         ``groups="auto"``.
@@ -375,15 +377,16 @@ def correct_batch_effect(
     depth: Optional[Union[str, np.ndarray]] = None,
     max_batch_frac: Optional[float] = 0.3,
     group_kwargs: Optional[dict] = None,
+    decorrelate_from_reduction: bool = False,
 ) -> Optional[AnnData]:
     """Correct batch effects using orthogonalization.
 
     The gene-space directions spanned by ``S' D`` (``S`` the cells x genes
     matrix, ``D`` the design) are removed from the reduction. Setting any of
-    *groups*, *strata_key* or *depth* switches to within-group correction:
-    the design is built by :func:`build_batch_design` from *batch_key*, so
-    batches are only compared between cells of the same group (cluster x
-    stratum).
+    *groups*, *strata_key*, *depth* or *decorrelate_from_reduction* switches
+    to within-group correction: the design is built by
+    :func:`build_batch_design` from *batch_key*, so batches are only compared
+    between cells of the same group (cluster x stratum).
 
     Parameters
     ----------
@@ -427,6 +430,10 @@ def correct_batch_effect(
     group_kwargs : dict or None
         Keyword arguments for :func:`estimate_batch_groups` when
         ``groups="auto"``.
+    decorrelate_from_reduction : bool
+        Make the design orthogonal to the reduction's cell-side centring
+        terms, as in the original prototype. See :func:`build_batch_design`.
+        Requires *batch_key*.
 
     Returns
     -------
@@ -441,9 +448,14 @@ def correct_batch_effect(
     if (batch_key is None) == (design is None):
         raise ValueError("Provide exactly one of 'batch_key' or 'design'.")
 
-    grouped = groups is not None or strata_key is not None or depth is not None
+    grouped = (
+        groups is not None or strata_key is not None or depth is not None
+        or decorrelate_from_reduction
+    )
     if grouped and batch_key is None:
-        raise ValueError("'groups', 'strata_key' and 'depth' require 'batch_key'.")
+        raise ValueError(
+            "'groups', 'strata_key', 'depth' and 'decorrelate_from_reduction' require 'batch_key'."
+        )
     if group_kwargs is not None and not grouped:
         raise ValueError("'group_kwargs' only applies when groups='auto'.")
 
@@ -469,6 +481,7 @@ def correct_batch_effect(
             depth=depth,
             max_batch_frac=max_batch_frac,
             reduction_key=reduction_key,
+            decorrelate_from_reduction=decorrelate_from_reduction,
             group_kwargs=group_kwargs,
         )
 
@@ -555,6 +568,7 @@ def correct_batch_effect(
             "strata_key": strata_key,
             "depth": depth if isinstance(depth, str) else ("array" if depth is not None else None),
             "max_batch_frac": None if max_batch_frac is None else float(max_batch_frac),
+            "decorrelate_from_reduction": bool(decorrelate_from_reduction),
             "merged_groups": design_info["merged_groups"],
             "n_groups": design_info["n_groups"],
             "n_batches": design_info["n_batches"],

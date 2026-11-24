@@ -363,14 +363,19 @@ This document records **deliberate architectural and operational decisions** for
 - Within-group batch correction is part of the Python API:
   `estimate_batch_groups`, `build_batch_design`, and `correct_batch_effect`
   parameters `groups`, `strata_key`, `depth`, `max_batch_frac`,
-  `group_kwargs`. Batch one-hots are centred within cluster x stratum and
-  decorrelated from `[1_n, obsm[f"{key}_B"]]`. The depth column is opt-in and
-  experimental.
+  `group_kwargs`, `decorrelate_from_reduction`. Batch one-hots are centred
+  within cluster x stratum. The depth column is opt-in and experimental.
+- Decorrelating the design from `[1_n, obsm[f"{key}_B"]]` (the prototype's
+  constraint) is opt-in: `decorrelate_from_reduction=False` by default in
+  `build_batch_design` and `correct_batch_effect`.
 - Output changes (breaking): `batch_key`, `design`, and basal corrections no
   longer reflect the gene-mean direction back into the embedding, so their
   `sigma` and embeddings differ from earlier releases. The prototype design
   with more than 16 batches reproduces earlier outputs to `1e-13`.
-  `uns[f"{key}_params"]` gains `correction_rank`.
+  Default grouped corrections differ from the prototype design; pass
+  `decorrelate_from_reduction=True` to reproduce it.
+  `uns[f"{key}_params"]` gains `correction_rank`, and
+  `grouped_design` records `decorrelate_from_reduction`.
 
 **Rationale:**
 
@@ -383,6 +388,17 @@ This document records **deliberate architectural and operational decisions** for
 - The within-group design fixes the two limitations found on multi-region
   brain atlases: sequencing depth as the largest unwanted axis, and
   over-correction of biology that differs between strata (e.g. region).
+- Decorrelation was needed on the old build to block the gene-mean
+  reflection, which the C++ now prevents itself. Without the reflection, the
+  constraint mainly keeps within-batch depth variation out of the
+  correction, because `B` tracks depth.
+- Two real datasets favoured turning decorrelation off (synthetic data
+  favoured keeping it):
+  - PFC/VMB atlas (1.15M cells, 129 donors): within-label depth R² fell from
+    0.66 to 0.30. Same-label and same-region purity and sample mixing all
+    improved in both the embedding and the ACTIONet graph.
+  - Hm STR MSN: within-subtype depth R² fell from 0.80 to 0.64, with subtype
+    and region purity within 0.005.
 
 **Related:**
 
@@ -391,7 +407,8 @@ This document records **deliberate architectural and operational decisions** for
   `orthonormal_factor`)
 - `src/actionet/tools/batch_correction.py`
 - `tests/test_batch_correction_grouped.py`
-- `plans/GROUPED_BATCH_CORRECTION_HANDOFF.md` (atlas validation outstanding)
+- `plans/GROUPED_BATCH_CORRECTION_HANDOFF.md` (atlas validation: section 4c;
+  MSN: section 4b)
 - R front-end follow-up tracked in `src/libactionet/TODO.md`
 
 ---

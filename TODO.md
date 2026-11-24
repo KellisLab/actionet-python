@@ -1,4 +1,6 @@
 ## Primary
+* Update agents-generated docstrings. Some have undesired commentary.
+* Finalize batch correction defaults.
 * Consolidate plotting paths with render backend (lets_plot or matplotlib)
 * NaN and Inf support for _anndata_io
 * Recreate LazyTransform from uns

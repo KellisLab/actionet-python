@@ -15,11 +15,13 @@ Two stages, run with different builds against the same input file:
 
     ========  ==========================================================
     nb        prototype design, captured groups           (≈ capture)
-    pkg       ``build_batch_design``, captured groups      (≈ nb)
-    auto      ``correct_batch_effect(groups="auto")``      (end to end)
+    pkg       ``build_batch_design(decorrelate_from_reduction=True)``,
+              captured groups (≈ nb)
+    auto      ``correct_batch_effect`` with estimated groups and
+              ``decorrelate_from_reduction=True`` (≈ pkg)
     proj      projected rank-k update K_k (I - Z Z') with ``pkg``'s Z
               (candidate one-pass alternative; computed in numpy)
-    nodecor   ``pkg`` with ``decorrelate_from_reduction=False``
+    nodecor   ``pkg`` without decorrelation (the current default)
     depth     ``pkg`` plus the experimental depth column
     nodecor_depth  depth column without decorrelation (the decorrelation
               projects most of the depth column away)
@@ -364,7 +366,7 @@ def compare(args) -> None:
     run_design("nb", design)
 
     with Stage("pkg_design", timings):
-        design = an.build_batch_design(adata, groups=groups, **common)
+        design = an.build_batch_design(adata, groups=groups, decorrelate_from_reduction=True, **common)
     run_design("pkg", design)
 
     Z = arms["pkg"]["A"][:, red["A"].shape[1]:]
@@ -375,23 +377,28 @@ def compare(args) -> None:
     del Z
 
     with Stage("nodecor_design", timings):
-        design = an.build_batch_design(adata, groups=groups, decorrelate_from_reduction=False, **common)
+        design = an.build_batch_design(adata, groups=groups, **common)
     run_design("nodecor", design)
 
     depth = np.log1p(np.asarray(an.matrix_sums(adata, axis=1), dtype=float).ravel())
     with Stage("depth_design", timings):
-        design = an.build_batch_design(adata, groups=groups, depth=depth, **common)
+        design = an.build_batch_design(
+            adata, groups=groups, depth=depth, decorrelate_from_reduction=True, **common,
+        )
     run_design("depth", design)
 
     with Stage("nodecor_depth_design", timings):
-        design = an.build_batch_design(adata, groups=groups, depth=depth, decorrelate_from_reduction=False, **common)
+        design = an.build_batch_design(adata, groups=groups, depth=depth, **common)
     run_design("nodecor_depth", design)
     del design
 
     with Stage("auto_groups", timings):
         auto_groups = an.estimate_batch_groups(adata, k=args.group_k, resolution=args.resolution)
     with Stage("auto_correct", timings):
-        an.correct_batch_effect(adata, groups=auto_groups, lazy_transform=lzt, corrected_suffix="auto", **common)
+        an.correct_batch_effect(
+            adata, groups=auto_groups, decorrelate_from_reduction=True, lazy_transform=lzt,
+            corrected_suffix="auto", **common,
+        )
     arms["auto"], params = pop_corrected(adata, "action_auto")
     arm_meta["auto"] = {
         "correction_rank": int(params["correction_rank"]),

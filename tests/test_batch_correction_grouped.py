@@ -116,6 +116,7 @@ def test_design_spans_notebook_design(adata, batch_key, with_depth):
     )
     packaged = an.build_batch_design(
         adata, batch_key, groups="cluster", strata_key="region", depth=depth,
+        decorrelate_from_reduction=True,
     )
     n_batches = adata.obs[batch_key].nunique()
     assert packaged.shape == (adata.n_obs, n_batches + with_depth)
@@ -124,16 +125,18 @@ def test_design_spans_notebook_design(adata, batch_key, with_depth):
 
 
 def test_design_is_orthogonal_to_reduction_centring_terms(adata):
-    D = an.build_batch_design(adata, "donor", groups="cluster", strata_key="region", depth="log_counts")
+    D = an.build_batch_design(
+        adata, "donor", groups="cluster", strata_key="region", depth="log_counts",
+        decorrelate_from_reduction=True,
+    )
     C = np.column_stack([np.ones(adata.n_obs), adata.obsm["action_B"]])
     assert np.abs(C.T @ D).max() < 1e-10 * np.abs(D).max() * adata.n_obs
 
-    raw = an.build_batch_design(
-        adata, "donor", groups="cluster", strata_key="region", decorrelate_from_reduction=False,
-    )
+    raw = an.build_batch_design(adata, "donor", groups="cluster", strata_key="region")
     groups = adata.obs["cluster"].astype(str) + "|" + adata.obs["region"].astype(str)
     group_sums = pd.DataFrame(raw).groupby(groups.to_numpy()).sum().to_numpy()
     assert np.abs(group_sums).max() < 1e-10
+    assert np.abs(C[:, 1:].T @ raw).max() > 1e-6 * np.abs(raw).max() * adata.n_obs
 
 
 def test_array_and_key_inputs_agree(adata):
@@ -211,7 +214,10 @@ def test_notebook_design_reproduces_golden(adata, reference):
 
 
 def test_grouped_correction_reproduces_golden(adata, reference):
-    an.correct_batch_effect(adata, batch_key="donor", groups="cluster", strata_key="region")
+    an.correct_batch_effect(
+        adata, batch_key="donor", groups="cluster", strata_key="region",
+        decorrelate_from_reduction=True,
+    )
     np.testing.assert_allclose(_sigma(adata), reference["b20_sigma"], rtol=1e-8)
     assert _signed_frob_diff(reference["b20_S_r"], adata.obsm["action_corrected"]) < 1e-8
 
@@ -220,6 +226,7 @@ def test_grouped_correction_reproduces_golden(adata, reference):
     grouped = params["grouped_design"]
     assert grouped["groups"] == "cluster"
     assert grouped["strata_key"] == "region"
+    assert grouped["decorrelate_from_reduction"] is True
     assert grouped["n_groups"] == 8
     assert grouped["n_batches"] == 20
     assert grouped["merged_groups"] == {}
@@ -232,7 +239,9 @@ def test_grouped_correction_reproduces_golden(adata, reference):
 @pytest.mark.parametrize("tag,batch_key", [("b20", "donor"), ("b8", "donor8")])
 def test_correction_is_full_brand_update(adata, reference, tag, batch_key):
     """Few batches used to discard the cell-side residual; both regimes now apply the full update."""
-    design = an.build_batch_design(adata, batch_key, groups="cluster", strata_key="region")
+    design = an.build_batch_design(
+        adata, batch_key, groups="cluster", strata_key="region", decorrelate_from_reduction=True,
+    )
     S = adata.X.toarray()
     Z = _correction_basis(S, reference["red_A"], design)
     sigma_o, S_r_o = _brand_oracle(reference["red_S_r"], reference["red_sigma"], reference["red_U"], -S @ Z, Z)
@@ -323,10 +332,34 @@ def test_estimate_batch_groups_recovers_clusters(adata):
     np.testing.assert_array_equal(adata.obs["crude"].to_numpy(), labels)
 
 
+def test_default_design_is_not_decorrelated(adata):
+    design = an.build_batch_design(
+        adata, "donor", groups="cluster", strata_key="region", decorrelate_from_reduction=False,
+    )
+    grouped = adata.copy()
+    an.correct_batch_effect(grouped, batch_key="donor", groups="cluster", strata_key="region")
+    explicit = adata.copy()
+    an.correct_batch_effect(explicit, design=design)
+    np.testing.assert_allclose(_sigma(grouped), _sigma(explicit), rtol=1e-10)
+    params = grouped.uns["action_corrected_params"]["grouped_design"]
+    assert params["decorrelate_from_reduction"] is False
+
+    plain = adata.copy()
+    an.correct_batch_effect(plain, batch_key="donor")
+    decorrelated = adata.copy()
+    an.correct_batch_effect(decorrelated, batch_key="donor", decorrelate_from_reduction=True)
+    params = decorrelated.uns["action_corrected_params"]["grouped_design"]
+    assert params["groups"] == "none" and params["decorrelate_from_reduction"] is True
+    assert np.abs(_sigma(decorrelated) - _sigma(plain)).max() > 1e-6 * _sigma(plain)[0]
+
+    with pytest.raises(ValueError, match="require 'batch_key'"):
+        an.correct_batch_effect(adata, design=design, decorrelate_from_reduction=True)
+
+
 def test_auto_groups_in_correct_batch_effect(adata, reference):
     an.correct_batch_effect(
         adata, batch_key="donor", groups="auto", strata_key="region",
-        group_kwargs={"k": 20, "random_state": 1},
+        group_kwargs={"k": 20, "random_state": 1}, decorrelate_from_reduction=True,
     )
     assert len(adata.obsp) == 0
     assert adata.uns["action_corrected_params"]["grouped_design"]["groups"] == "auto"
