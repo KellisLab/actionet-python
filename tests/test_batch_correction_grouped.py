@@ -9,6 +9,7 @@ in ``reduce_kernel``.
 
 from __future__ import annotations
 
+import warnings
 from pathlib import Path
 
 import anndata as ad
@@ -149,6 +150,48 @@ def test_array_and_key_inputs_agree(adata):
     np.testing.assert_allclose(from_key, from_array)
 
 
+def test_strata_list_combines_columns(adata):
+    adata.obs["sex"] = pd.Categorical(np.where(adata.obs["donor"].cat.codes % 2, "F", "M"))
+    adata.obs["region_sex"] = adata.obs["region"].astype(str) + "|" + adata.obs["sex"].astype(str)
+    combined = an.build_batch_design(adata, "donor", groups="cluster", strata_key="region_sex")
+    listed = an.build_batch_design(adata, "donor", groups="cluster", strata_key=["region", "sex"])
+    np.testing.assert_allclose(listed, combined)
+    single = an.build_batch_design(adata, "donor", groups="cluster", strata_key=["region"])
+    by_name = an.build_batch_design(adata, "donor", groups="cluster", strata_key="region")
+    np.testing.assert_allclose(single, by_name)
+
+    an.correct_batch_effect(adata, batch_key="donor", groups="cluster", strata_key=["region", "sex"])
+    assert list(adata.uns["action_corrected_params"]["grouped_design"]["strata_key"]) == ["region", "sex"]
+
+    for bad in ([], ["region", 3]):
+        with pytest.raises(ValueError, match="non-empty list"):
+            an.build_batch_design(adata, "donor", strata_key=bad)
+    with pytest.raises(ValueError, match="not found in adata.obs"):
+        an.build_batch_design(adata, "donor", strata_key=["region", "missing"])
+
+
+def test_groups_that_follow_batches_warn(adata):
+    donor_quads = (adata.obs["donor"].cat.codes // 4).to_numpy()
+    with pytest.warns(UserWarning, match="follow batches"):
+        an.correct_batch_effect(adata, batch_key="donor", groups=donor_quads)
+    confounding = adata.uns["action_corrected_params"]["grouped_design"]["batch_confounding"]
+    assert confounding["batch_entropy_ratio"] < 0.7
+
+    # Batches nested in a stratum (sex per donor) must not count as confounding.
+    adata.obs["sex"] = pd.Categorical(np.where(adata.obs["donor"].cat.codes % 2, "F", "M"))
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        an.correct_batch_effect(adata, batch_key="donor", groups="cluster", strata_key=["region", "sex"])
+    assert not [w for w in caught if "follow batches" in str(w.message)]
+    confounding = adata.uns["action_corrected_params"]["grouped_design"]["batch_confounding"]
+    assert confounding["dominated_cell_frac"] == 0.0
+    assert confounding["batch_entropy_ratio"] > 0.95
+
+    an.correct_batch_effect(adata, batch_key="donor", strata_key="region")
+    assert "batch_confounding" not in adata.uns["action_corrected_params"]["grouped_design"]
+
+
+@pytest.mark.filterwarnings("ignore:The cell groups")
 def test_dominated_cluster_merges_into_nearest_centroid():
     rng = np.random.default_rng(3)
     n_per = 60
@@ -164,7 +207,8 @@ def test_dominated_cluster_merges_into_nearest_centroid():
     adata.obsm["action"] = X
     adata.obsm["action_B"] = rng.normal(size=(3 * n_per, 2))
 
-    D = an.build_batch_design(adata, "batch", groups="cluster", key_added="merged")
+    with pytest.warns(UserWarning, match="33% of cells are in groups dominated"):
+        D = an.build_batch_design(adata, "batch", groups="cluster", key_added="merged")
     assert D.shape == (3 * n_per, 4)
     merged = adata.obs["merged"].astype(str).to_numpy()
     assert set(merged[cluster == "C"]) == {"B"}

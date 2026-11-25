@@ -552,6 +552,41 @@ Decisions taken on this evidence:
 - The tests and the validation driver pass `decorrelate_from_reduction=True`
   wherever they check parity with the prototype.
 
+Visual comparison, new default vs prototype configuration:
+- **Figures.** In `build/atlas_pfc_vmb/out/viz/`:
+  `side_by_side_{Donor,Region,full_label}.png` and `side_by_side_all.png`.
+- **Columns.**
+  - the stored original layout;
+  - `pkg`, the prototype configuration;
+  - `nodecor`, the new default.
+
+  Both new columns use the graphs from the table above. Each header shows
+  that graph's metrics.
+- **Layouts.** `layout_network` with the `run_actionet` defaults (UMAP, 100
+  epochs, spread 1, `min_dist` 1, seed 0). Both started from the
+  standardized stored layout.
+  - UMAP still rearranges clusters, so placement is only roughly comparable
+    across columns.
+  - Cost: 16 and 20 min, run in parallel. Each process peaked at 69–91 GB
+    RSS, about 160 GB together, because the C++ layout keeps its own edge
+    lists.
+- **Re-running.** `bash build/atlas_pfc_vmb/run_viz.sh`.
+  - It can be launched detached and skips finished layouts.
+  - Progress goes to `out/viz/STATUS`.
+  - It needs matplotlib (the `plotting` extra), which was installed in the
+    atlas machine's venv for this.
+- **Observations.**
+  - Both configurations keep lineages apart, with no Vasc.Endo–Glia.Oligo
+    bridging.
+  - Both keep the PFC/VMB split within oligodendrocytes, and the VMB-only
+    populations, as in the original.
+  - Donors look well mixed in both, with no donor-specific islands. At 129
+    donors only the graph metric separates them: same sample is 0.078 for
+    the prototype and 0.062 for the new default.
+  - The new-default layout is more compact, because its graph is denser
+    (mean degree 961 vs 759). That is a layout property, not merged cell
+    types: its same-label purity is higher, 0.887 vs 0.868.
+
 ---
 
 ## 5. Out-of-scope opportunities (noted while tracing, not implemented)
@@ -618,11 +653,18 @@ Decisions taken on this evidence:
   `src/libactionet/src/decomposition/svd_main.cpp`,
   `src/libactionet/{include,src}/utils_internal/utils_decomp.{hpp,cpp}`
 - Python: `src/actionet/tools/batch_correction.py`,
-  `src/actionet/network/{build,cluster}.py`, `src/actionet/{,tools/}__init__.py`
+  `src/actionet/network/{build,cluster}.py`, `src/actionet/{,tools/}__init__.py`,
+  `src/actionet/io/persist.py` (read-only fix from section 4c)
 - Tests and tools: `tests/test_batch_correction_grouped.py`,
   `tests/_batch_design_reference.py`, `tests/fixtures/`,
   `tests/benchmark_batch_correction.py`,
-  `tests/validate_grouped_batch_correction_atlas.py`
+  `tests/validate_grouped_batch_correction_atlas.py`,
+  `tests/backed/test_infrastructure.py`
+- Atlas evaluation (gitignored, atlas machine only): `build/atlas_pfc_vmb/`.
+  - Scripts: arms, metrics and graphs (`run_arms.py`, `metrics.py`,
+    `eta2.py`, `graph_arm.py`), the summary (`summarize.py`), and the
+    layouts and plots (`viz_layouts.py`, `run_viz.sh`).
+  - Outputs: `out/summary.md` and `out/viz/`.
 - Docs: `docs/api/batch_correction.md`, `README.md`, `context/DECISIONS.md`,
   `src/libactionet/docs/batch_orthogonalization_algorithm.md`,
   `src/libactionet/TODO.md`

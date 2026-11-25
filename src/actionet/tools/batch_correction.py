@@ -1,6 +1,7 @@
 """Batch correction and normalization utilities."""
 
-from typing import Any, Literal, Optional, Union
+import warnings
+from typing import Any, Literal, Optional, Sequence, Union
 import numpy as np
 import scipy.linalg
 import scipy.sparse as sp
@@ -63,6 +64,55 @@ def _obs_labels(adata: AnnData, key: str, param: str) -> tuple[np.ndarray, np.nd
     if key not in adata.obs:
         raise ValueError(f"{param} '{key}' not found in adata.obs")
     return _factorize_labels(adata.obs[key].to_numpy(), f"adata.obs['{key}']", adata.n_obs)
+
+
+def _strata_keys(strata_key: Optional[Union[str, Sequence[str]]]) -> Optional[list[str]]:
+    if strata_key is None:
+        return None
+    keys = [strata_key] if isinstance(strata_key, str) else list(strata_key)
+    if not keys or not all(isinstance(k, str) for k in keys):
+        raise ValueError("'strata_key' must be an adata.obs column name or a non-empty list of them.")
+    return keys
+
+
+def _strata_codes(adata: AnnData, keys: list[str]) -> tuple[np.ndarray, int]:
+    """One stratum per observed combination of levels across ``keys``."""
+    codes = np.zeros(adata.n_obs, dtype=np.int64)
+    for key in keys:
+        k_codes, k_names = _obs_labels(adata, key, "Strata key")
+        _, codes = np.unique(codes * k_names.shape[0] + k_codes, return_inverse=True)
+        codes = codes.reshape(-1)
+    return codes, int(codes.max()) + 1
+
+
+# Groups beyond either limit mostly separate batches instead of cutting across
+# them, and within-group correction then removes little of the batch effect.
+_CONFOUNDED_CELL_FRAC = 0.2
+_CONFOUNDED_ENTROPY_RATIO = 0.7
+
+
+def _batch_confounding(counts: np.ndarray, max_batch_frac: float) -> dict[str, float]:
+    """Summarize a (groups x batches) cell-count table.
+
+    ``dominated_cell_frac`` is the share of cells in groups where one batch
+    exceeds ``max_batch_frac``. ``batch_entropy_ratio`` is the size-weighted
+    mean batch entropy within groups over the batch entropy of all cells: 1
+    when every group mixes batches like the whole dataset, 0 when each group
+    holds a single batch.
+    """
+    counts = counts.astype(float)
+    sizes = counts.sum(axis=1)
+    n = sizes.sum()
+
+    def entropy(p: np.ndarray) -> np.ndarray:
+        return -(p * np.log(np.where(p > 0, p, 1.0))).sum(axis=-1)
+
+    within = entropy(counts / sizes[:, None])
+    dominated = sizes[counts.max(axis=1) / sizes > max_batch_frac].sum()
+    return {
+        "dominated_cell_frac": float(dominated / n),
+        "batch_entropy_ratio": float((within * sizes).sum() / n / entropy(counts.sum(axis=0) / n)),
+    }
 
 
 def _group_means(codes: np.ndarray, n_groups: int, X: np.ndarray) -> np.ndarray:
@@ -149,7 +199,7 @@ def _batch_design(
     adata: AnnData,
     batch_key: str,
     groups: Optional[Union[str, np.ndarray]] = None,
-    strata_key: Optional[str] = None,
+    strata_key: Optional[Union[str, Sequence[str]]] = None,
     depth: Optional[Union[str, np.ndarray]] = None,
     max_batch_frac: Optional[float] = 0.3,
     reduction_key: str = "action",
@@ -162,6 +212,7 @@ def _batch_design(
         raise ValueError(f"Reduction '{reduction_key}' not found. Run reduce_kernel first.")
     if group_kwargs is not None and not (isinstance(groups, str) and groups == "auto"):
         raise ValueError("'group_kwargs' only applies when groups='auto'.")
+    strata_keys = _strata_keys(strata_key)
 
     b_codes, b_names = _obs_labels(adata, batch_key, "Batch key")
     n_batches = b_names.shape[0]
@@ -199,11 +250,35 @@ def _batch_design(
     c_names = c_names.astype(str).astype(object)
     n_clusters = c_names.shape[0]
 
+    # --- Check that clusters cut across batches (before strata, which batches may nest in) ---
+    confounding: Optional[dict[str, float]] = None
+    if n_clusters > 1:
+        counts = np.bincount(c_codes * n_batches + b_codes, minlength=n_clusters * n_batches)
+        counts = counts.reshape(n_clusters, n_batches)
+        confounding = _batch_confounding(counts, 0.3 if max_batch_frac is None else max_batch_frac)
+        if (
+            confounding["dominated_cell_frac"] > _CONFOUNDED_CELL_FRAC
+            or confounding["batch_entropy_ratio"] < _CONFOUNDED_ENTROPY_RATIO
+        ):
+            auto = groups_source == "auto"
+            message = (
+                f"The cell groups{' estimated by groups=auto' if auto else ''} follow batches: "
+                f"{confounding['dominated_cell_frac']:.0%} of cells are in groups dominated by one "
+                "batch, and the within-group batch entropy is "
+                f"{confounding['batch_entropy_ratio']:.2f} of the overall batch entropy. "
+                "Within-group correction then removes little of the batch effect. "
+            )
+            if auto:
+                message += (
+                    "Clusters of an uncorrected reduction follow batches when batch effects "
+                    "are strong. "
+                )
+            message += "Pass coarse cell-class labels as 'groups', or correct with 'batch_key' alone."
+            warnings.warn(message, UserWarning, stacklevel=3)
+
     # --- Merge batch-dominated clusters into the nearest remaining centroid ---
     merged: dict[str, str] = {}
     if max_batch_frac is not None and n_clusters > 1:
-        counts = np.bincount(c_codes * n_batches + b_codes, minlength=n_clusters * n_batches)
-        counts = counts.reshape(n_clusters, n_batches)
         top_frac = counts.max(axis=1) / counts.sum(axis=1)
         kept = np.flatnonzero(top_frac <= max_batch_frac)
         dominated = np.flatnonzero(top_frac > max_batch_frac)
@@ -223,9 +298,9 @@ def _batch_design(
             c_codes = remap[c_codes]
 
     # --- Groups = cluster x stratum ---
-    if strata_key is not None:
-        s_codes, s_names = _obs_labels(adata, strata_key, "Strata key")
-        g_codes = c_codes * s_names.shape[0] + s_codes
+    if strata_keys is not None:
+        s_codes, n_strata = _strata_codes(adata, strata_keys)
+        g_codes = c_codes * n_strata + s_codes
     else:
         g_codes = c_codes
     _, g_codes = np.unique(g_codes, return_inverse=True)
@@ -271,9 +346,11 @@ def _batch_design(
     info = {
         "groups": c_names[c_codes],
         "groups_source": groups_source,
+        "strata_key": strata_keys if strata_keys is None or len(strata_keys) > 1 else strata_keys[0],
         "merged_groups": merged,
         "n_groups": n_groups,
         "n_batches": int(n_batches),
+        "batch_confounding": confounding,
     }
     return D, info
 
@@ -282,7 +359,7 @@ def build_batch_design(
     adata: AnnData,
     batch_key: str,
     groups: Optional[Union[str, np.ndarray]] = None,
-    strata_key: Optional[str] = None,
+    strata_key: Optional[Union[str, Sequence[str]]] = None,
     depth: Optional[Union[str, np.ndarray]] = None,
     max_batch_frac: Optional[float] = 0.3,
     reduction_key: str = "action",
@@ -308,11 +385,18 @@ def build_batch_design(
         Cell groups within which batches are compared. An ``adata.obs`` column,
         a per-cell label array, ``"auto"`` to estimate them with
         :func:`estimate_batch_groups` on ``obsm[reduction_key]``, or ``None``
-        for a single group.
-    strata_key : str or None
-        Column in ``adata.obs`` with a covariate to protect (e.g. brain
-        region). Groups become cluster x stratum, so batch effects are only
-        estimated between cells of the same stratum.
+        for a single group. Groups should separate cell classes and cut across
+        batches. A ``UserWarning`` is raised when they follow batches instead
+        (more than 20% of cells in batch-dominated groups, or within-group
+        batch entropy below 0.7 of the overall entropy), which is common for
+        ``"auto"`` when batch effects dominate the uncorrected reduction.
+    strata_key : str, list of str, or None
+        Column(s) in ``adata.obs`` with covariates to protect (e.g. brain
+        region, or disease status when batches are donors). Groups become
+        cluster x stratum, so batch effects are only estimated between cells of
+        the same stratum. With several columns, each observed combination of
+        their levels is one stratum. A variable that is constant within each
+        batch has its effect removed by the correction unless it is a stratum.
     depth : str, ndarray, or None
         Optional per-cell depth covariate (e.g. log total counts), added as
         one extra column centred within groups. Experimental. It has little
@@ -373,7 +457,7 @@ def correct_batch_effect(
     backed_chunk_size: int = 8192,
     lazy_transform: Optional[LazyTransform] = None,
     groups: Optional[Union[str, np.ndarray]] = None,
-    strata_key: Optional[str] = None,
+    strata_key: Optional[Union[str, Sequence[str]]] = None,
     depth: Optional[Union[str, np.ndarray]] = None,
     max_batch_frac: Optional[float] = 0.3,
     group_kwargs: Optional[dict] = None,
@@ -417,10 +501,12 @@ def correct_batch_effect(
     groups : str, ndarray, "auto", or None
         Cell groups for within-group correction: an ``adata.obs`` column, a
         per-cell label array, or ``"auto"`` to estimate them with
-        :func:`estimate_batch_groups`. Requires *batch_key*.
-    strata_key : str or None
-        Column in ``adata.obs`` with a covariate to protect (e.g. region).
+        :func:`estimate_batch_groups`. Warns when the groups follow batches.
         Requires *batch_key*.
+    strata_key : str, list of str, or None
+        Column(s) in ``adata.obs`` with covariates to protect (e.g. region, or
+        disease status when batches are donors). Several columns are combined.
+        See :func:`build_batch_design`. Requires *batch_key*.
     depth : str, ndarray, or None
         Experimental per-cell depth covariate added to the design.
         Requires *batch_key*.
@@ -565,7 +651,7 @@ def correct_batch_effect(
     if design_info is not None:
         corrected_params["grouped_design"] = {
             "groups": design_info["groups_source"],
-            "strata_key": strata_key,
+            "strata_key": design_info["strata_key"],
             "depth": depth if isinstance(depth, str) else ("array" if depth is not None else None),
             "max_batch_frac": None if max_batch_frac is None else float(max_batch_frac),
             "decorrelate_from_reduction": bool(decorrelate_from_reduction),
@@ -574,6 +660,8 @@ def correct_batch_effect(
             "n_batches": design_info["n_batches"],
             "design_columns": int(design.shape[1]),
         }
+        if design_info["batch_confounding"] is not None:
+            corrected_params["grouped_design"]["batch_confounding"] = design_info["batch_confounding"]
         obs_updates[f"{corrected_key}_groups"] = pd.Categorical(design_info["groups"])
 
     persist_updates(

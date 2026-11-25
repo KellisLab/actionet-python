@@ -341,15 +341,24 @@ an.correct_batch_effect(adata, batch_key='batch',
                         corrected_suffix='corrected')
 ```
 Remove batch effects from reduced representation using orthogonalization.
+With only `batch_key`, each batch's mean deviation is removed. This is the
+right default for strong technical batches with similar cell-type composition.
 
 ```python
 an.correct_batch_effect(adata, batch_key='Donor', groups='auto',
                         strata_key='Region')
 ```
-Within-group correction: batches are compared only between cells of the same
-coarse cluster and stratum, which protects covariates such as brain region and
-removes the within-cluster sequencing-depth axis. See `an.build_batch_design`
-and `an.estimate_batch_groups` for step-by-step control.
+Within-group correction compares batches only between cells of the same
+cluster and stratum. Use it when batches differ in composition:
+- `groups` keeps composition differences out of the correction.
+- `strata_key` (one or more columns) protects covariates such as brain region,
+  or disease status when batches are donors.
+- `depth` removes the within-group sequencing-depth axis.
+
+`groups='auto'` needs clusters that follow cell type. A warning is raised when
+they follow batches instead. See `docs/api/batch_correction.md` for choosing a
+configuration, and `an.build_batch_design` and `an.estimate_batch_groups` for
+step-by-step control.
 
 ```python
 an.correct_basal_expression(adata, basal_genes=['ACTB', 'GAPDH'],

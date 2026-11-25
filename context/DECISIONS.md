@@ -368,6 +368,21 @@ This document records **deliberate architectural and operational decisions** for
 - Decorrelating the design from `[1_n, obsm[f"{key}_B"]]` (the prototype's
   constraint) is opt-in: `decorrelate_from_reduction=False` by default in
   `build_batch_design` and `correct_batch_effect`.
+- Vanilla correction (`batch_key` only) stays the default. `groups="auto"` is
+  not a general default and is not presented as the standard call in the
+  docs. User guidance is organized by data regime
+  (`docs/api/batch_correction.md`).
+- `strata_key` accepts one `obs` column or a list of them. Each observed
+  combination of levels is one stratum.
+- Batch-confounded groups trigger a `UserWarning`. The diagnostic is computed
+  on the clusters before merging and before strata, because batches may be
+  nested in strata. It warns above either threshold:
+  - more than 20% of cells in groups where one batch exceeds
+    `max_batch_frac` (0.3 when merging is disabled);
+  - size-weighted within-group batch entropy below 0.7 of the overall batch
+    entropy.
+
+  Both values are stored as `grouped_design["batch_confounding"]`.
 - Output changes (breaking): `batch_key`, `design`, and basal corrections no
   longer reflect the gene-mean direction back into the embedding, so their
   `sigma` and embeddings differ from earlier releases. The prototype design
@@ -399,6 +414,33 @@ This document records **deliberate architectural and operational decisions** for
     improved in both the embedding and the ACTIONet graph.
   - Hm STR MSN: within-subtype depth R² fell from 0.80 to 0.64, with subtype
     and region purity within 0.005.
+- A cross-dataset evaluation covered three regimes:
+  - the atlas (composition-heavy, asymmetric depth);
+  - MSN (strong technical batches, libraries re-sequenced across protocols
+    and years);
+  - Scn4b (littermates, no technical batch, one batch per mouse nested in
+    genotype).
+
+  It was scored on embeddings and ACTIONet graphs, and found:
+  - **No configuration is best everywhere.** Vanilla is the safe default.
+    Groups are needed when composition differs: they remove the vanilla
+    endothelial leak on the atlas (graph 0.0147 to 0.0017; lineage labels
+    0.0015; Region strata alone 0.0145) and on Scn4b.
+  - **Auto groups fail under strong batch effects.** On MSN, 64% of cells
+    were in batch-dominated clusters, and mixing was worse than vanilla
+    (same-UID 0.30 vs 0.23; cell-class label groups 0.21). The warning
+    thresholds separate MSN (64%, ratio 0.38) from the atlas (1.2%, 0.94),
+    Scn4b (0.4%, 0.98) and every label grouping (ratio 0.95 or higher) at
+    resolutions 0.02 to 1.0.
+  - **Decorrelation off** is confirmed on MSN (graph mixing 0.21 vs 0.33)
+    and Scn4b. On the atlas it is a trade-off: the prototype keeps more
+    donor-level, phenotype-associated structure within sequencing date
+    (76% vs 67% kept, emb). Phenotype strata do not recover it, so it is
+    depth-linked.
+  - **Batch-nested biology needs strata, especially with groups.** Comparing
+    batches within a cell type isolates cell-type-specific condition
+    effects. Scn4b genotype structure kept: vanilla 0.62, lineage groups
+    0.42, lineage groups with Genotype x Condition strata 1.07 (graph).
 
 **Related:**
 
@@ -409,6 +451,9 @@ This document records **deliberate architectural and operational decisions** for
 - `tests/test_batch_correction_grouped.py`
 - `plans/GROUPED_BATCH_CORRECTION_HANDOFF.md` (atlas validation: section 4c;
   MSN: section 4b)
+- `plans/BATCH_CORRECTION_CROSS_DATASET_EVAL.md` (three-regime evaluation and
+  the user guidance behind `docs/api/batch_correction.md`)
+- `docs/api/batch_correction.md`
 - R front-end follow-up tracked in `src/libactionet/TODO.md`
 
 ---
